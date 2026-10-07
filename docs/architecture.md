@@ -958,7 +958,7 @@ class Retriever:
         vector_store = make_vector_store(config, embedder.dimension)
         _planner = CachingPlanner(QueryPlanner(config.embedder), plan_cache_size)
         DimensionGuard.check(db, embedder.dimension, config.embedder.provider)
-        _debug_dir = <repo>/.trelix/debug/    # per-query JSON traces
+        _debug_dir = <index dir>/debug/       # per-query JSON traces; <repo>/.trelix/debug/ by default
         _sparse_embedder = None               # memoized slot (SPLADE model load ~seconds)
 ```
 
@@ -1064,7 +1064,8 @@ def get_importers(module_path: str) -> list[SearchResult]
 
 ### Debug Tracing
 
-Every `retrieve()` call writes:
+Every `retrieve()` call writes, beside the index (`db_path_resolved.parent`, which is
+`<repo>/.trelix/` for the default `store.db_path`):
 ```
 <repo>/.trelix/debug/<ISO-timestamp>_<query-slug>.json
 ```
@@ -1871,6 +1872,7 @@ Most tuning is done through environment variables rather than flags; see
 | `eval-synthesis [repo]` | --golden/-g | GroUSE synthesis scoring |
 | `eval-validate <golden>` | --repo, --rev, --min-per-stratum, --min-validated | Check a golden file without running a query |
 | `eval-compare <base> <cand>` | --prereg | Judge a candidate results file against a baseline under a pre-registration (exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE, 3 REFUSED) |
+| `eval-suite <suite.json>` | --arm, --out, --cache-dir, --prepare-only | Verify a committed suite and its pinned clone, index it once for one arm, replay the frozen plans, write results.json (exit 0 written, 1 refused or a query raised) |
 | `taint [repo]` | --tier/-t, --severity/-s, --json | Semgrep taint analysis |
 | `review [repo]` | --diff/-d, --base, --head, --json, --max-files, --pr, --post-comments | Diff review (v2.4.0) |
 | `search-all <query>` | --config, --k, --json | Federated search |

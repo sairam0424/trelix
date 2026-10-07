@@ -470,7 +470,11 @@ Two things that are **not** version sites, and must not be bumped with them:
   does move: `trelix-mcp` and both adapters import `trelix.core.index_check`, which the core
   ships from the release that contains the read-surface fix, so that release's PR raises the
   three `trelix>=` floors to it (CI installs the core editable and cannot notice a missing
-  bump; an older core under a newer package fails on import). `trelix-mcp` also passes
+  bump; an older core under a newer package fails on import). `trelix-mcp` alone also imports
+  `trelix.core.confinement` (`resolve_allowed_roots`, `is_within_allowed_roots`), and its HTTP
+  transport will import `trelix.api.request_guard.is_health_probe`; neither name is in a
+  published core yet, so the next release's PR raises `trelix-mcp`'s `trelix>=` floor to that
+  release as well. `trelix-mcp` also passes
   `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
   `server.disable(names=, components=)`, so its `fastmcp` floor is `>=4.0.10`, the release
   those were run against (4.0.0 to 4.0.9 were not tested);
@@ -644,8 +648,9 @@ Each package has its own `pyproject.toml` and `tests/` directory. The `src/` lay
 ## Working on the Claude Code plugin
 
 `.claude-plugin/marketplace.json` (the marketplace) and `plugins/trelix/` (the plugin: `.mcp.json`,
-`plugin.json`, the `use-trelix-index` skill, and a README that lists every command the plugin
-runs) are read by Claude Code, not by this package. Rules:
+`plugin.json`, the `use-trelix-index` skill, the SessionStart hook (`hooks/hooks.json` and the
+stdlib-only `scripts/session_start.py`, which `make lint` and CI's ruff job cover), and a README
+that lists every command the plugin runs) are read by Claude Code, not by this package. Rules:
 
 - **Any change under `plugins/trelix/` bumps `plugin.json`'s `version`** (`<pin>`, or `<pin>.N`
   for a plugin-only change) **and the `_PLUGIN_TREE_SHA256` literal in
@@ -660,20 +665,28 @@ runs) are read by Claude Code, not by this package. Rules:
 - **The skill describes the pinned release, not `develop`.** A tool or parameter that only
   `develop` has stays out of `SKILL.md` until the pin reaches a release that has it;
   `tests/unit/test_claude_plugin_skill.py` pins the tool names and the develop-only parameters.
-- **Validate before committing** (a manual step: CI runs the offline tests, not the validator,
-  which would need an npm install of Claude Code):
+- **Validate before committing; CI validates too.** `.github/workflows/ci.yml`'s `TypeScript SDK`
+  job runs the same two commands through a pinned `npx -y @anthropic-ai/claude-code@<version>`
+  with `--strict`, so a manifest Claude Code would warn on fails CI; the version is a literal in
+  `tests/unit/test_claude_plugin_validate_ci.py` and in the three `npx` lines, moved together by
+  hand (put the output of `npm view @anthropic-ai/claude-code@<version> version dist.integrity`
+  and the two `✔ Validation passed` lines at that version in the PR body; a newer validator that
+  warns on something the old one accepted is a plugin change to make, not a warning to silence).
+  Locally:
 
   ```bash
   claude plugin validate --strict .
   claude plugin validate --strict plugins/trelix
   ```
 
-  Both must end with `✔ Validation passed`.
+  Both must end with `✔ Validation passed`; `--strict` turns a warning into exit 1.
 - **Smoke-test from the checkout.** `claude plugin marketplace add /path/to/this/checkout` loads
   the plugin in place (edits take effect at the next session or after `/reload-plugins`, no
   version bump needed); then `claude plugin install trelix@trelix`, open a scratch project, and
-  confirm that `/mcp` shows `plugin:trelix:trelix` and that `/trelix:use-trelix-index` loads the
-  skill. Afterwards `claude plugin marketplace remove trelix` (it also uninstalls the plugin).
+  confirm that `/mcp` shows `plugin:trelix:trelix`, that `/trelix:use-trelix-index` loads the
+  skill, and that the session context carries a line starting `trelix:` (with `claude --debug`,
+  a `trelix session_start: skipped (<reason>)` line says why the hook printed nothing).
+  Afterwards `claude plugin marketplace remove trelix` (it also uninstalls the plugin).
 - The server-registration test in `tests/unit/test_claude_plugin_skill.py` needs `trelix_mcp`
   and `fastmcp` (`pip install -e packages/trelix-mcp`); without them it skips. CI's unit job has
   them.

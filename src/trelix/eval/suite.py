@@ -296,9 +296,11 @@ def input_problems(spec: SuiteSpec) -> list[str]:
     report = validate_golden(spec.golden_file, tree=None, min_per_stratum=0, min_validated=0.0)
     if report.violations:
         return [f"golden: {violation}" for violation in report.violations]
+    # OSError too: the loader opens a `<stem>-metadata.json` sidecar when one exists, and one
+    # that is a directory or unreadable must be a refusal, not a traceback.
     try:
         queries = [entry.query for entry in _parse_golden(spec.golden_file)]
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         return [f"golden: {clip(str(exc), 200)}"]
     return _plan_problems(spec.plans_file, queries)
 

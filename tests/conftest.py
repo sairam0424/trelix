@@ -71,6 +71,14 @@ SLOW_FILES = frozenset(
     {
         "regressions/test_regressions.py",
         "unit/test_audit_wipe_detection.py",
+        # The Claude Code plugin's SessionStart hook: 13 of the file's 17 tests run the hook
+        # script as a child interpreter (one to six runs each) and six of those build a git
+        # repository first, so its cost is structural (about 20 child processes). Measured
+        # 2026-10-07 on two runs: 11.82s at a load average of 31 to 35 (the slowest test, five
+        # child runs, 2.00s; the git-backed ones 1.1s to 1.4s each) and 3.67s at a load of 11
+        # to 19; both are quoted, as for test_regressions.py, and the loaded run is the one the
+        # full suite sees.
+        "unit/test_claude_plugin_session_start.py",
         "unit/test_cli_closed_stdout.py",
         "unit/test_cli_eval_suite.py",
         "unit/test_cli_smoke.py",
@@ -94,6 +102,18 @@ SLOW_FILES = frozenset(
         "unit/test_eval_suite_clone.py",
         "unit/test_eval_suite_git_isolation.py",
         "unit/test_eval_suite_gold.py",
+        # The three `run_suite` files and the CLI run file. The indexer file is slow by
+        # construction: ten real index builds (two byte-identical files, four parse workers) plus
+        # one real-Indexer canary run, 17.3s at a load average of 48 to 52 on 2026-10-07 (11.5s +
+        # 1.0s at load 30; the real Chunker needs tiktoken's cl100k_base cache offline). The
+        # other two are 54 stub-driven tests that each clone the demo repository: 27.5s together
+        # at load 48 to 52. The CLI run file is six such tests through Typer, split out of
+        # test_cli_eval_suite.py (above) on 2026-10-07. (test_makefile_eval_suite_target.py
+        # reads one file and stays out.)
+        "unit/test_cli_eval_suite_run.py",
+        "unit/test_eval_suite_run.py",
+        "unit/test_eval_suite_run_indexer.py",
+        "unit/test_eval_suite_run_refusals.py",
         "unit/test_indexer_vector_repair.py",
         "unit/test_marker_taxonomy.py",
         "unit/test_otel_metrics.py",
@@ -175,6 +195,7 @@ SECURITY_FILES = frozenset(
         "unit/test_audit_undetectable.py",
         "unit/test_audit_verify_snapshot.py",
         "unit/test_audit_wipe_detection.py",
+        "unit/test_claude_plugin_session_start.py",
         "unit/test_cli_audit_read_only.py",
         "unit/test_cli_markup_safety.py",
         "unit/test_cli_serve_exposure_warning.py",
@@ -186,6 +207,8 @@ SECURITY_FILES = frozenset(
         "unit/test_eval_suite_git_isolation.py",
         "unit/test_eval_suite_gold.py",
         "unit/test_eval_suite_repo_url.py",
+        "unit/test_eval_suite_run_indexer.py",
+        "unit/test_eval_suite_run_refusals.py",
         "unit/test_graph_visualizer_escaping.py",
         "unit/test_network_is_blocked.py",
         "unit/test_oidc.py",

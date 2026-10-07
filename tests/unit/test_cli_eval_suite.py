@@ -1,14 +1,19 @@
-"""`trelix eval-suite --prepare-only`: the exit codes, the lines, and what stays hidden.
+"""`trelix eval-suite`: the exit codes and the lines of `--prepare-only` and of the refusals
+before a run.
 
 The checks themselves are in `test_eval_suite_spec.py`, `test_eval_suite_clone.py`,
-`test_eval_suite_git_isolation.py` and `test_eval_suite_gold.py`; this file drives the command
+`test_eval_suite_git_isolation.py`, `test_eval_suite_gold.py` and `test_eval_suite_run.py`, and
+a run through the command is in `test_cli_eval_suite_run.py`; this file drives the command
 through Typer with a real suite and a real local repository.
 
 MUTATIONS THAT MUST MAKE THIS FILE FAIL
 ---------------------------------------
-1. the command listed in `--help` (`hidden=True` removed)   (test_the_command_is_hidden_...)
-2. the run accepted without `--prepare-only`, or its message changed
-                                                             (test_without_prepare_only_...)
+1. the command hidden from `--help` again, or `--arm`/`--out` missing from its own
+                                                             (test_the_command_is_listed_...)
+2. a run accepted without `--arm` or without `--out`, or that message changed; `--prepare-only`
+   accepted together with `--arm` or `--out`
+                                                             (TestWithoutArmAndOut,
+                                                              test_prepare_only_with_arm_or_out_...)
 3. a refusal exiting 0, or a reason printed to stdout        (TestRefusals)
 4. only the first reason printed                              (test_every_reason_is_its_own_line)
 5. `_safe_text` dropped from the lines                        (test_a_path_is_printed_literally)
@@ -29,17 +34,19 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner, Result
+from typer.testing import CliRunner
 
 from tests.unit.eval_suite_harness import (
     FIRST_FILES,
     GOLDEN_SHA256,
     Remote,
+    invoke,
     make_remote,
     record_git,
     write_suite,
 )
 from tests.unit.eval_suite_harness import remote as remote
+from tests.unit.eval_suite_harness import suite_json as suite_json
 from tests.unit.eval_validate_harness import plain
 from trelix.cli.main import app
 from trelix.eval import suite_prepare
@@ -48,20 +55,10 @@ from trelix.eval.suite_git import default_cache_root
 from trelix.eval.suite_prepare import PreparedSuite
 
 _ESC = "\x1b"
-
-
-def invoke(*args: str) -> Result:
-    """Run `trelix eval-suite` with stdout and stderr kept apart on any click version."""
-    try:
-        runner = CliRunner(mix_stderr=False)  # type: ignore[call-arg]
-    except TypeError:  # click >= 8.2 has no mix_stderr; its result always separates them
-        runner = CliRunner()
-    return runner.invoke(app, ["eval-suite", *args])
-
-
-@pytest.fixture
-def suite_json(tmp_path: Path, remote: Remote) -> Path:
-    return write_suite(tmp_path / "suite", str(remote.path), remote.first)
+_REQUIRED = (
+    "refused: --arm and --out are required to run a suite; pass --prepare-only to verify it "
+    "without running\n"
+)
 
 
 @pytest.fixture
@@ -114,18 +111,43 @@ class TestPrepareOnly:
         assert f"clone: {cache.resolve()}/clones/" in result.stdout
         assert _ESC not in result.stdout
 
-
-class TestWithoutPrepareOnly:
-    def test_without_prepare_only_the_run_is_not_available_and_nothing_is_cloned(
-        self, tmp_path: Path, suite_json: Path
+    @pytest.mark.parametrize(
+        "given",
+        [
+            ("--arm", "baseline"),
+            ("--out", "results.json"),
+            ("--arm", "baseline", "--out", "r.json"),
+        ],
+        ids=["arm", "out", "both"],
+    )
+    def test_prepare_only_with_arm_or_out_is_refused_and_nothing_is_cloned(
+        self, tmp_path: Path, suite_json: Path, given: tuple[str, ...]
     ) -> None:
-        result = invoke(str(suite_json), "--cache-dir", str(tmp_path / "cache"))
+        """A user who typed all three meant one of two things; neither is guessed."""
+        args = (str(suite_json), "--cache-dir", str(tmp_path / "cache"), "--prepare-only", *given)
+        result = invoke(*args)
         assert result.exit_code == 1
         assert result.stdout == ""
         assert result.stderr == (
-            "refused: running a suite is not available in this release; "
-            "pass --prepare-only to verify the suite and its clone\n"
+            "refused: --prepare-only runs nothing and takes no --arm or --out: drop it to run "
+            "the arm, or drop them to verify the suite\n"
         )
+        assert not (tmp_path / "cache").exists()
+
+
+class TestWithoutArmAndOut:
+    @pytest.mark.parametrize(
+        "given",
+        [(), ("--arm", "baseline"), ("--out", "results.json")],
+        ids=["neither", "arm-only", "out-only"],
+    )
+    def test_a_run_needs_both_and_nothing_is_cloned_without_them(
+        self, tmp_path: Path, suite_json: Path, given: tuple[str, ...]
+    ) -> None:
+        result = invoke(str(suite_json), "--cache-dir", str(tmp_path / "cache"), *given)
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert result.stderr == _REQUIRED
         assert not (tmp_path / "cache").exists()
 
 
@@ -336,14 +358,14 @@ class TestDefaultCacheRoot:
         )
 
 
-class TestHidden:
-    def test_the_command_is_hidden_from_help_but_still_answers_its_own(self) -> None:
+class TestListed:
+    def test_the_command_is_listed_in_help_with_its_four_options(self) -> None:
         listing = CliRunner().invoke(app, ["--help"])
         assert listing.exit_code == 0
-        assert "eval-suite" not in plain(listing.output)
+        assert "eval-suite" in plain(listing.output)
         assert "eval-compare" in plain(listing.output)
 
         own = CliRunner().invoke(app, ["eval-suite", "--help"])
         assert own.exit_code == 0
-        assert "--prepare-only" in plain(own.output)
-        assert "--cache-dir" in plain(own.output)
+        for option in ("--arm", "--out", "--cache-dir", "--prepare-only"):
+            assert option in plain(own.output)

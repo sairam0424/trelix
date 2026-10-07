@@ -5,6 +5,9 @@ The value is operator configuration that may carry a pasted credential
 (`http://user:pw@host/v1`). pydantic 2.13 renders `input_value=...` in `str(ValidationError)`
 unless the model hides it, and `trelix review` built its IndexConfig with no handler, so such
 a value reached stderr and the Actions log. Every expected value below is a literal.
+
+`LLMConfig.local_context_tokens` (env `TRELIX_LLM_LOCAL_CONTEXT_TOKENS`) describes the server
+behind that URL: an optional int, 1024..2_000_000, blank is unset, refused without the URL.
 """
 
 from __future__ import annotations
@@ -21,6 +24,10 @@ from trelix.core.config import IndexConfig, LLMConfig
 _SHAPE_ERROR = "TRELIX_LLM_BASE_URL must be an http:// or https:// URL with a host"
 _USERINFO_ERROR = "TRELIX_LLM_BASE_URL must not carry a user name or password"
 _WHITESPACE_ERROR = "TRELIX_LLM_BASE_URL must not contain whitespace or non-printable characters"
+_LOCAL_CONTEXT_TOKENS_ERROR = (
+    "TRELIX_LLM_LOCAL_CONTEXT_TOKENS needs TRELIX_LLM_BASE_URL: "
+    "it describes the server behind that URL"
+)
 _WITH_CREDENTIAL = "http://user:pw@host/v1"
 _LOCAL_URL = "http://127.0.0.1:11434/v1"
 _ONE_HUNK_DIFF = (
@@ -183,6 +190,92 @@ class TestEnvironmentRoute:
             IndexConfig(repo_path=str(tmp_path))
         assert _USERINFO_ERROR in str(exc_info.value)
         assert "pw" not in str(exc_info.value)
+
+
+class TestLocalContextTokens:
+    """The context length of the server behind the URL; the retriever's budget reads it."""
+
+    @pytest.mark.parametrize(
+        ("raw", "stored"),
+        [
+            ("", None),
+            ("   ", None),
+            (1024, 1024),
+            ("1024", 1024),
+            (32768, 32768),
+            (2_000_000, 2_000_000),
+        ],
+        ids=["blank", "spaces", "floor-int", "floor-str", "typical", "ceiling"],
+    )
+    def test_blank_is_unset_and_a_value_in_range_is_stored(
+        self, raw: str | int, stored: int | None
+    ) -> None:
+        """MUTATION: drop the mode="before" blank validator (the blank rows fail to parse as an
+        int); `ge=1024` -> `gt=1024` (the 1024 rows); `le=2_000_000` -> `lt` (the last row)."""
+        assert _llm(base_url=_LOCAL_URL, local_context_tokens=raw).local_context_tokens == stored
+
+    def test_the_default_is_unset(self) -> None:
+        assert LLMConfig.model_fields["local_context_tokens"].default is None
+
+    def test_a_blank_value_without_the_url_is_simply_unset(self) -> None:
+        """The unit suite pins both variables to "" (tests/_env_isolation.py); blank must read
+        as unset BEFORE the needs-the-URL check, or every test would fail at config time."""
+        assert _llm(local_context_tokens="").local_context_tokens is None
+
+    @pytest.mark.parametrize(
+        ("raw", "message"),
+        [
+            (1023, "Input should be greater than or equal to 1024"),
+            (0, "Input should be greater than or equal to 1024"),
+            (2_000_001, "Input should be less than or equal to 2000000"),
+        ],
+    )
+    def test_out_of_range_is_refused(self, raw: int, message: str) -> None:
+        """MUTATION: floor 1024 -> 1 (1023 constructs); ceiling 2_000_000 -> 3_000_000
+        (2_000_001 constructs)."""
+        with pytest.raises(ValidationError) as exc_info:
+            _llm(base_url=_LOCAL_URL, local_context_tokens=raw)
+        assert message in str(exc_info.value)
+
+    def test_without_the_url_is_refused_and_the_value_is_not_echoed(self) -> None:
+        """MUTATION: drop the model validator (constructs); drop `hide_input_in_errors` from
+        LLMConfig.model_config (`input_value={...'local_context_tokens': 32768...}` appears)."""
+        with pytest.raises(ValidationError) as exc_info:
+            _llm(local_context_tokens=32768)
+        text = str(exc_info.value)
+        assert _LOCAL_CONTEXT_TOKENS_ERROR in text
+        assert "32768" not in text
+        assert "input_value" not in text
+
+
+class TestLocalContextTokensEnvironmentRoute:
+    """`IndexConfig(repo_path=...)` reads `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` by the prefix route."""
+
+    def test_the_env_name_reaches_the_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRELIX_LLM_BASE_URL", _LOCAL_URL)
+        monkeypatch.setenv("TRELIX_LLM_LOCAL_CONTEXT_TOKENS", "32768")
+        assert IndexConfig(repo_path=str(tmp_path)).llm.local_context_tokens == 32768
+
+    def test_an_out_of_range_env_value_is_a_configuration_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRELIX_LLM_BASE_URL", _LOCAL_URL)
+        monkeypatch.setenv("TRELIX_LLM_LOCAL_CONTEXT_TOKENS", "1023")
+        with pytest.raises(ValidationError) as exc_info:
+            IndexConfig(repo_path=str(tmp_path))
+        assert "Input should be greater than or equal to 1024" in str(exc_info.value)
+
+    def test_the_env_value_without_the_url_is_a_configuration_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`TRELIX_LLM_BASE_URL` is pinned to "" (unset) by the suite's env isolation."""
+        monkeypatch.setenv("TRELIX_LLM_LOCAL_CONTEXT_TOKENS", "32768")
+        with pytest.raises(ValidationError) as exc_info:
+            IndexConfig(repo_path=str(tmp_path))
+        assert _LOCAL_CONTEXT_TOKENS_ERROR in str(exc_info.value)
+        assert "32768" not in str(exc_info.value)
 
 
 class TestReviewReportsTheConfigurationError:

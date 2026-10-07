@@ -55,11 +55,13 @@ EXPECTED_PLUGIN_FILES = [
     ".claude-plugin/plugin.json",
     ".mcp.json",
     "README.md",
+    "hooks/hooks.json",
+    "scripts/session_start.py",
     "skills/use-trelix-index/SKILL.md",
 ]
 # sha256 over `rel_path\0bytes\0` for every file above, in that order. Any edit under
 # plugins/trelix/ changes it and must come with a bump of plugin.json's `version`.
-_PLUGIN_TREE_SHA256 = "fdc85bfcb8ad430e893ec08bdc1a79229eab573c0ca33ad76d81d1d14c6a91e4"
+_PLUGIN_TREE_SHA256 = "5b716b17afea0e6c6cc1147964015112cd1035193557913557b2baf9a44891ba"
 # The row of the README's "Every command the plugin executes" table that is the server launch.
 _README_LAUNCH_ROW = (
     "| Session start, by Claude Code | `uvx --from trelix-mcp==3.4.3 trelix-mcp` "
@@ -136,7 +138,7 @@ def test_plugin_manifest_uses_default_component_locations() -> None:
 
     version = data["version"]
     pin = _pin()
-    assert version == "3.4.3", (
+    assert version == "3.4.3.2", (
         f"plugin version is {version!r}: move this literal with every plugin bump (the "
         f"trelix-mcp pin is {pin!r}; `{pin}.N` is the form for a plugin-only change)"
     )

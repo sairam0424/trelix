@@ -329,6 +329,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `nomic-code`) to the embedder code.
 
 ### Added
+- **GenAI `chat` spans for every LLM call, behind `TRELIX_OTEL_ENABLED`** (roadmap C-8, requirement
+  R-C6-02; PR 3 of 4). `build_chat_client()` returns the backend wrapped in a `TracedChatClient`
+  (`src/trelix/llm/otel.py`) when the flag resolves true from the environment, and every
+  `complete()`, `stream()` and `tool_call()` emits one `chat {request model}` span through the same
+  `TelemetryHandler` as the retrieval legs (same instrumentation scope, no new provider). Every span
+  carries `gen_ai.operation.name`, `gen_ai.provider.name` (`openai`, `azure.ai.openai`, `anthropic`,
+  `aws.bedrock`, `gcp.gemini` or `gcp.vertex_ai`, and the custom value `litellm`),
+  `gen_ai.request.model` (the backend's active id: the Azure deployment, the LiteLLM model, Bedrock's
+  possibly swapped id) and `gen_ai.request.max_tokens` (the effective cap). A `complete()` span adds
+  `gen_ai.response.model`, `gen_ai.response.finish_reasons` (the provider's raw word),
+  `trelix.finish_reason` (the normalised one), `gen_ai.usage.input_tokens` (input plus cache read
+  plus cache write, as the GenAI Anthropic conventions require), `gen_ai.usage.output_tokens` and
+  the two cache counts when non-zero; `stream()` and `tool_call()` spans carry request attributes
+  only (`ToolCallResponse` has no usage; a stream is not buffered). A backend exception ends the
+  span `ERROR` with `error.type` and the status description both set to the exception's class name
+  (never `str(exc)`, which can echo a provider error body) and is re-raised unchanged. Prompt,
+  system instruction and reply text reach a span only under `TRELIX_OTEL_CAPTURE_CONTENT=true` AND
+  a span content mode in `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`; `stream()` replies
+  and images never do. The off path returns the same backend object and type as before and imports
+  nothing from `opentelemetry` (one memoised `RetrievalConfig()` read per process). With the flag
+  on but `opentelemetry-util-genai` not installed, one WARNING per process names the cause and the
+  bare backend is returned. The wrapper exposes the backend's `_client` by identity (the
+  synthesizer, the planner's decomposition path and GraphRAG read it to choose the
+  `TrelixChatClient` path over a legacy raw-OpenAI path) and nothing else. The placeholder reply of
+  an unconfigured backend is recorded like any other (`gen_ai.response.model="none"`). With a
+  `MeterProvider` installed, the library also records `gen_ai.client.operation.duration` and
+  `gen_ai.client.token.usage` for these spans. `docs/OBSERVABILITY.md` § LLM chat spans has the
+  attribute table, the provider map and the stream lifecycle; `scripts/mutation.py` gains the
+  `llm.otel` scope and deselects the new span test file (the global TracerProvider is one-shot).
+  Owner decisions taken: the `otel` extra floor (under Changed), the placeholder span, request-only
+  `stream()`/`tool_call()` spans, the custom `litellm` value, the one-time WARNING and the
+  class-name-only error text.
+- **`trelix-mcp --root PATH` (repeatable) and `TRELIX_ALLOWED_REPO_ROOTS`** confine every
+  `repo_path`, `federation_add_repo.path` and `trelix://repo/...` URI to those roots; a path
+  outside answers `isError` with 'repo_path is not inside an allowed repository root';
+  `federation_search_all` skips registry entries outside the roots and reports
+  `repos_outside_roots`. A blank `--root` value is a startup error. Stdio with no root is
+  unchanged.
 - **A Claude Code plugin.** `claude plugin marketplace add sairam0424/trelix` then
   `claude plugin install trelix@trelix` installs the `trelix-mcp` server (launched as
   `uvx --from trelix-mcp==<newest published release> trelix-mcp`, so the plugin trails this
@@ -342,9 +380,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   pin (a literal test that also compares it with the `.mcp.json` pin, so a pin bump that forgets
   `version` fails) and a contents hash in `tests/unit/test_claude_plugin_manifest.py` makes
   every plugin edit loud (it cannot see whether `version` was bumped with it);
-  `claude plugin validate --strict` stays a manual CONTRIBUTING step (CI runs the offline tests,
-  not the validator); and the pin check is offline only (a released CHANGELOG section, not newer
-  than the trelix-mcp stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
+  `claude plugin validate --strict` runs in CI (the bullet below) and before committing; and the
+  pin check is offline only (a released CHANGELOG section, not newer than the trelix-mcp
+  stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
   pin the manifests, the pin form (an exact `==` to a version with a released CHANGELOG section,
   not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
   server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
@@ -365,6 +403,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   without asking for it. A malformed value behaves like a malformed `TRELIX_OTEL_ENABLED`.
   `docs/OBSERVABILITY.md` gains a "Content capture" section; `docs/CONFIGURATION.md` and `.env.example`
   list both names.
+- **The Claude Code plugin tells Claude at session start whether the repository has a trelix
+  index** (files, symbols, when and from which commit it was built, how many commits HEAD is
+  ahead, which embedder provider), from a stdlib-only script (`plugins/trelix/scripts/session_start.py`,
+  run by a `SessionStart` hook on `startup`, `resume` and `clear` with a 15 s timeout) that opens
+  the index read-only, creates nothing under the project, and never blocks the session: exit 0 on
+  every path, nothing on stdout on an error (one `trelix session_start: skipped (<reason>)` line
+  on stderr, which Claude Code keeps in its debug log), at most 1,000 characters. It prints one of
+  three literal lines: `trelix: no index at <repo>/.trelix/index.db. Call
+  index_codebase(repo_path="<repo>") before search_code; until then, use grep.`; the same for an
+  index that `is empty (0 files)` (what a search on the pinned release leaves behind); or
+  `trelix: <repo> is indexed: N files, M symbols; built <when> from commit <12 hex> (= HEAD |
+  HEAD is 1 commit ahead | HEAD is N commits ahead | distance from HEAD unknown); embedder
+  <provider>. Pass repo_path="<repo>" to every trelix tool.` `CLAUDE_PROJECT_DIR` names the
+  project; the hook's stdin `cwd` is used only when it is unset or does not name a directory.
+  Tests pin the hook file (one event, one command), the script's import roots (no `trelix`, no
+  network), each line, the cap and the exit-0 behaviour on bad input; `plugins/trelix/scripts`
+  joins the ruff scope in CI and `make lint`; the plugin README, the skill, the integration guide
+  and SECURITY.md describe the line and what the hook runs; the plugin version moves to
+  `3.4.3.1` (a plugin-only change on the same pin).
+- **CI runs `claude plugin validate --strict` on the marketplace and the plugin** (roadmap B-3,
+  PR 4 of 4). The `TypeScript SDK` job of `ci.yml` runs Claude Code's own validator, through an
+  exactly pinned `npx -y @anthropic-ai/claude-code@<version>` from the repository root, over
+  `.claude-plugin/marketplace.json` and `plugins/trelix/`, with warnings treated as errors, so a
+  manifest Claude Code would warn on (an unquoted `${CLAUDE_PLUGIN_ROOT}`, an unrecognised field,
+  a missing `version`) fails CI instead of reaching users; the offline tests keep pinning the
+  shapes this repository chose. The validator runs with
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the package download is its only network use.
+  A test pins the step (its three command lines, the working directory, the position after the
+  Node setup, no masking) and requires every `npx` in every workflow to carry an exact `@X.Y.Z`;
+  the Claude Code version is a literal in `ci.yml` and that test only. The plugin version moves
+  to `3.4.3.2` (a README sentence; same pin).
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
   of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
   answer the question; this one tags the context and instructs the model, nothing reads the model's
@@ -623,6 +692,53 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     refusal exits 1 with one `refused: ...` line per reason, and without `--prepare-only` it exits 1
     saying the run is not available in this release. New modules `trelix.eval.suite`, `suite_git`,
     `suite_gold` and `suite_prepare`. See `eval/README.md`.
+- **`trelix eval-suite SUITE.json --arm NAME --out results.json` runs one arm of a suite** (the second
+  half of the suite work, part 2 of 2: the groundwork above is now a visible command, and the
+  "`--prepare-only` only" state it describes is superseded). It prepares the suite exactly as
+  `--prepare-only` does, builds ONE index for ONE arm from the verified clone with the local
+  embedder, replays the frozen plans and writes a `results.json` (schema_version 1) that
+  `trelix eval-compare` reads. Exit 0 when the file was written and no query raised; 1 for every
+  refusal (one `refused: ...` line per reason on stderr; `--arm` missing or not
+  `[a-z0-9][a-z0-9_-]{0,62}`, `--out` in a missing directory or itself a directory, both checked
+  before anything is cloned; `--prepare-only` given together with `--arm` or `--out`), for an index
+  that reports any error or cannot be built at all (an `OSError`, or the `ImportError` of a missing
+  `local` extra) or a golden query without a frozen plan at run time (no file is written in those
+  cases, and the refusal ends with a line naming the claimed run directory as left behind), and for
+  queries that raised after the file was written; 2 for a usage error. No retrieval default changes.
+  - One index per arm, in `<cache>/arms/<sha>/<name>/<arm>/`, claimed with `exist_ok=False`: an
+    existing run directory is refused (`arm 'X' already has a run directory at PATH: choose another
+    --arm or delete it`), there is no reuse option, and the command deletes nothing under the cache.
+    The harness reads copies of the verified golden and plans bytes in that directory (re-hashed as
+    they are read), never the committed files.
+  - The settings that change the index or the ranking are forced to literal values whatever the
+    environment or `~/.config/trelix/env` says: no file summaries, no batch API, `embedder.provider`
+    `local`, `walker.follow_symlinks` false, `chunker.contextual` false, `store.backend` `sqlite` in
+    the run directory, `rerank`, `hyde_fallback_enabled`, `multi_query_enabled` and `flare_enabled`
+    false, and the plans copy as `plan_cache_file`. The rest of the effective configuration of
+    `walker`, `parser`, `chunker`, `store`, `retrieval`, `indexer` and `sparse` is recorded in the
+    file's `pipeline.config` with every field named like a secret (`key`, `secret`, `token`,
+    `password`, `endpoint`, `url`, `uri`: a `store.qdrant_url` may carry credentials) and the two
+    per-arm paths removed, and `chunker.max_tokens_per_chunk`, `retrieval.context_token_budget` and
+    `sparse.top_k_tokens` kept by name because each changes the index or the ranking; an `--out` that
+    already exists is refused before anything is cloned (each arm needs its own results file);
+    `embedder` records the provider, the local model, the dimension and the
+    `sentence-transformers` version (`null` when not installed).
+  - The whole index build and query run get the same switched-off git configuration the clone did
+    (`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` the null device, `GIT_CONFIG_NOSYSTEM`,
+    `GIT_ALLOW_PROTOCOL=https`, no terminal prompt, no LFS smudge, no optional locks; restored
+    afterwards) and have `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR` and
+    `GIT_OBJECT_DIRECTORY` removed for the same span, because the Indexer's own `git` in
+    `trelix.store.provenance` inherits the process environment and runs with `cwd=` and no `-C`.
+    Ten real index builds of a tree with two byte-identical files agree record for record, so the
+    insertion order of parsed files did not need to change.
+  - `make eval-suite EVAL_SUITE=... EVAL_ARM=...` (results in `.trelix/eval-suite/results.json` by
+    default, a run artifact, never committed), `trelix.eval.suite_run`, `trelix.eval.suite_git.isolated_git`,
+    `trelix.eval.suite_prepare.prepare_spec`. See `eval/README.md`, "Suites".
+  - Three nits from the review of the groundwork: a `golden-metadata.json` sidecar that is a directory
+    or unreadable is a refusal, not a traceback; a `<name>.partial` beside an already-verified clone is
+    refused with the same text as before a clone exists; and the README says a sidecar that is not
+    valid JSON is a refusal while any other shape yields no labels.
+
 - **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
   llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
   bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
@@ -651,8 +767,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   needs `usage` in the reply and the cl100k_base encoding on disk; when either is missing it warns
   once and stays out of the way. `trelix ask` (a stream) and the query planner's tool call are not
   checked.
+- **`TRELIX_LLM_LOCAL_CONTEXT_TOKENS`** tells the model-aware context budget
+  (`TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null`) the context length of the server behind
+  `TRELIX_LLM_BASE_URL`, instead of falling back to 12,000 for a tag `context_windows` does not
+  know. Optional, `1024` to `2000000`, blank is unset; the budget is then
+  `int(TRELIX_LLM_LOCAL_CONTEXT_TOKENS × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`, and an
+  explicit integer budget still wins. Setting it without `TRELIX_LLM_BASE_URL` is a configuration
+  error that names both variables and never the value.
 
 ### Changed
+- **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim
+  space in vec0 tables, which trelix's `DELETE`+`INSERT` upsert and `--prune` rely on; 0.1.9 is
+  the release the vec0 contract tests were verified against; the ceiling keeps the 0.1.10
+  pre-releases (ivf/diskann) out until they are tested, and PEP 440 places every `0.1.10aN` under
+  `<0.1.10`. `pip install` already resolved 0.1.9, so nothing changes for a fresh install.
+  `tests/unit/test_dependency_floor_guards.py` now pins the requirement string and the installed
+  release (`sqlite_vec.__version__` and `select vec_version()`), so a venv on an older release
+  fails one test with the reason instead of running on it silently.
+- **The retriever's per-query debug trace is written beside the index, not beside the source.**
+  `Retriever._debug_dir` is `<directory of store.db_path>/debug/`, which is the same
+  `<repo>/.trelix/debug/` as before for the default `db_path`; an index kept elsewhere
+  (`TRELIX_STORE_DB_PATH` outside the repository, or a `trelix eval-suite` run) now gets its traces
+  there and the source tree stays untouched. Found by the first two-arm suite run: the trace landed
+  in the shared clone, and the second arm refused a worktree that was no longer pristine.
 - **`trelix ask` and `GET /ask` no longer call the LLM when retrieval found nothing, and an answer
   can abstain** (second of six changes toward `trelix ask` answers that cite the retrieved code and
   abstain when it does not answer the question). `Synthesizer.stream()`, behind plain `trelix ask`
@@ -747,6 +884,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     An unusable `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` stops `trelix-mcp` at start-up
     with exit code 2. `docs/MCP_GUIDE.md` and `docs/BACKWARDS_COMPATIBILITY.md` describe the limits.
   - Not covered: `build_knowledge_graph` and `federation_list_repos` are not cut.
+- **The `otel` extra now requires `opentelemetry-util-genai>=1.2b0`** (it accepted `>=1.0b0`). The
+  chat spans need two things that exist only from 1.2b0: `suspend()`, which detaches a `stream()`
+  span from the caller's context while the stream is drained (without it every span the consumer
+  opens mid-stream would nest under the chat span), and the `gen_ai.usage.cache_write.input_tokens`
+  attribute name (1.0b0 and 1.1b0 emit `gen_ai.usage.cache_creation.input_tokens`, which the GenAI
+  registry no longer has). Verified against 1.2b0 on 2026-10-07; `pip install 'trelix[otel]'` picks
+  it up, and `tests/unit/test_dependency_floor_guards.py` pins the floor. Nothing changes for a
+  default install: the extra is optional.
+- **`trelix.retrieval.otel_tracing` keeps every public name; the OTLP metrics wiring moved.** The
+  metrics endpoint mapping, the `MeterProvider` builder and the embedding counter definitions now
+  live in `trelix.retrieval.otel_metrics` and are re-exported, so `otel_tracing.py` stays under the
+  500-line limit with the `is_enabled_from_env()` and `handler_from_env()` helpers the LLM factory
+  uses. No behaviour change; the metrics tests (`tests/unit/test_otel_metrics*.py`) were not touched
+  by the move.
 
 ## [3.4.3] — 2026-10-04
 

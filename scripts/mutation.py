@@ -155,6 +155,7 @@ SCOPE: dict[str, tuple[str, ...]] = {
     "indexing.embedding_cache": ("src/trelix/indexing/embedding_cache.py",),
     "indexing.walker": ("src/trelix/indexing/walker.py",),
     "llm.offline": ("src/trelix/llm/offline.py",),
+    "llm.otel": ("src/trelix/llm/otel.py",),
     "retrieval.fusion": ("src/trelix/retrieval/fusion.py",),
     "retrieval.bm25": ("src/trelix/retrieval/bm25.py",),
     "retrieval.citations": ("src/trelix/retrieval/citations.py",),
@@ -358,6 +359,9 @@ DESELECTED_FILES: tuple[str, ...] = (
     "tests/unit/test_otel_metrics_reentry.py",
     "tests/unit/test_otel_tracing.py",
     "tests/unit/test_structured_logging.py",
+    # Same attach-to-the-incumbent TracerProvider fixture as test_otel_tracing.py, same
+    # one-shot global. Its SDK-free twin, test_otel_llm_wrapper.py, stays in the kill set.
+    "tests/unit/test_otel_llm_spans.py",
 )
 # ROUND 8 (mutation:widen-scope retry), NOT reproduced from this tuple -- reverted
 # back to the 4 above after the run that needed it, per this task's own prescribed

@@ -17,7 +17,7 @@ from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
-from fastmcp.exceptions import ToolError  # noqa: E402
+from fastmcp.exceptions import ResourceError, ToolError  # noqa: E402
 from fastmcp.prompts import Message  # noqa: E402
 from fastmcp.tools.base import InputRequiredToolResult  # noqa: E402
 from mcp.types import (  # noqa: E402
@@ -29,9 +29,10 @@ from mcp.types import (  # noqa: E402
 
 from trelix.agent.loop import AgentLoop  # noqa: E402
 from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig  # noqa: E402
+from trelix.core.confinement import resolve_allowed_roots  # noqa: E402
 from trelix.core.index_check import IndexNotFoundError, require_index  # noqa: E402
 from trelix.core.models import IndexedFile, Symbol  # noqa: E402
-from trelix.federation.registry import RepoRegistry  # noqa: E402
+from trelix.federation.registry import _DEFAULT_CONFIG, RepoRegistry  # noqa: E402
 from trelix.federation.retriever import FederatedRetriever  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
 from trelix.retrieval.retriever import Retriever  # noqa: E402
@@ -65,6 +66,12 @@ from trelix_mcp.budget import (  # noqa: E402
     limits_from_env,
     null_result,
     truncate_body,
+)
+from trelix_mcp.confinement import (  # noqa: E402
+    REFUSAL,
+    RepoConfinementMiddleware,
+    entries_inside_roots,
+    inside_roots,
 )
 from trelix_mcp.subscriptions import SubscriptionLimitExceeded, SubscriptionRegistry  # noqa: E402
 from trelix_mcp.tool_metadata import (  # noqa: E402
@@ -102,6 +109,36 @@ _log = logging.getLogger("trelix_mcp")
 # the end, and _get_retriever drops entries from the front past the bound.
 _retriever_cache: OrderedDict[str, Retriever] = OrderedDict()
 _retriever_cache_lock = threading.Lock()
+
+# The repository roots every repo_path, federation path and trelix://repo/... URI must resolve
+# inside, set once by main() from --root and TRELIX_ALLOWED_REPO_ROOTS. Empty (the stdio default
+# with neither) confines nothing, which is what every client got before the flag existed.
+_allowed_roots: tuple[Path, ...] = ()
+
+
+def _install_confinement(roots: tuple[Path, ...]) -> None:
+    """Confine tool arguments and resource URIs to `roots`; with no roots, install nothing."""
+    global _allowed_roots
+    _allowed_roots = roots
+    if not roots:
+        return
+    _log.info("Confining repo paths to %s", [str(root) for root in roots])
+    mcp.add_middleware(RepoConfinementMiddleware(roots))
+
+
+def _confine_resource_repo(repo_path: str) -> None:
+    """Refuse a trelix://repo/... read whose repository lies outside the allowed roots.
+
+    Called first in each repo resource handler, where FastMCP has already parsed the URI into
+    `repo_path`, so the same value is checked and then used (a second URI parser in a middleware
+    could disagree with FastMCP's). A `ResourceError` reaches the client with this text verbatim.
+    Nothing to do when no roots are configured.
+    """
+    if not _allowed_roots:
+        return
+    if repo_path.strip() and inside_roots(repo_path, _allowed_roots):
+        return
+    raise ResourceError(REFUSAL.format(field="repo_path"))
 
 
 def _require_index(config: IndexConfig) -> None:
@@ -267,6 +304,7 @@ def resource_repo_index_stats(repo_path: str) -> str:
     Cheap by design — three COUNT(*) queries, no embedder and no graph build — so an
     agent can check whether a repo is indexed at all before committing to a search.
     """
+    _confine_resource_repo(repo_path)
     from trelix_mcp.resources import get_index_stats
 
     _log.info("resource_repo_index_stats repo_path=%r", repo_path)
@@ -280,6 +318,7 @@ def resource_repo_manifest(repo_path: str) -> str:
     Returns JSON with ``file_count`` and ``files[]`` list.
     Example URI: ``trelix://repo//Users/you/myrepo/manifest``
     """
+    _confine_resource_repo(repo_path)
     from trelix_mcp.resources import get_repo_manifest
 
     return get_repo_manifest(repo_path)
@@ -292,6 +331,7 @@ def resource_symbol_source(repo_path: str, qualified_name: str) -> str:
     Returns JSON with ``qualified_name``, ``kind``, ``signature``, ``body``.
     Example URI: ``trelix://repo//Users/you/myrepo/symbols/AuthService.login``
     """
+    _confine_resource_repo(repo_path)
     from trelix_mcp.resources import get_symbol_source
 
     return get_symbol_source(repo_path, qualified_name)
@@ -866,6 +906,14 @@ def graph_search_mcp(
 _FEDERATION_SEARCH_ALL_FETCH_WIDTH = 100
 
 
+def _outside_roots_key(outside: int) -> dict[str, int]:
+    """`repos_outside_roots` for every federation_search_all response while roots are configured.
+
+    Absent when nothing is confined, so the unconfined responses keep the exact keys they had.
+    """
+    return {"repos_outside_roots": outside} if _allowed_roots else {}
+
+
 class ConfigPathNotAllowedError(ValueError):
     """Raised when a caller-supplied federation config_path resolves outside
     every allowlisted root."""
@@ -902,9 +950,6 @@ def _confine_federation_config_path(config_path: str | None) -> str | None:
         "config_path",
         "a path inside ~/.config/trelix or <cwd>/.trelix, or omit it for the default registry",
     )
-
-    from trelix.federation.registry import _DEFAULT_CONFIG
-
     resolved = Path(config_path).resolve()
     allowed_roots = [_DEFAULT_CONFIG.parent, Path.cwd() / ".trelix"]
     if not any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots):
@@ -1033,6 +1078,9 @@ def federation_search_all(
     - Only the first TRELIX_FEDERATION_MAX_REPOS registered repos (default
       50) are actually queried; repos_skipped reports how many were
       omitted.
+    - When the server runs with --root or TRELIX_ALLOWED_REPO_ROOTS, a
+      registered repo outside those roots is not searched, and every
+      response carries repos_outside_roots (how many were left out).
 
     🎯 When to Use:
     - Cross-service / cross-repo questions ("where is auth handled across
@@ -1054,7 +1102,9 @@ def federation_search_all(
          "repos_searched": int, "repos_skipped": int,
          "repos_unindexed": [alias, ...], "error": str|None}
         The error and empty-registry responses keep their shorter shape (no
-        page_size, truncated, omitted or repos_unindexed).
+        page_size, truncated, omitted or repos_unindexed). With --root or
+        TRELIX_ALLOWED_REPO_ROOTS set, every response also has
+        "repos_outside_roots": int.
     """
     limits = _limits()
     check_cursor(cursor)
@@ -1071,9 +1121,13 @@ def federation_search_all(
             "repos_searched": 0,
             "repos_skipped": 0,
             "error": str(exc),
+            **_outside_roots_key(0),
         }
     registry = RepoRegistry.load(confined_path)
-    entries = registry.list()
+    entries, outside = entries_inside_roots(registry.list(), _allowed_roots)
+    if outside:
+        # Search only what the roots allow: a registry holding the kept entries, at the same path.
+        registry = RepoRegistry(confined_path or str(_DEFAULT_CONFIG), entries)
     if not entries:
         return {
             "results": [],
@@ -1082,6 +1136,7 @@ def federation_search_all(
             "repos_searched": 0,
             "repos_skipped": 0,
             "error": None,
+            **_outside_roots_key(outside),
         }
 
     max_repos = RetrievalConfig().federation_max_repos
@@ -1103,6 +1158,7 @@ def federation_search_all(
             "repos_searched": 0,
             "repos_skipped": repos_skipped,
             "error": " ".join(str(missing) for _, missing in unindexed),
+            **_outside_roots_key(outside),
         }
 
     all_results = fed.retrieve(query, k=_FEDERATION_SEARCH_ALL_FETCH_WIDTH)
@@ -1131,6 +1187,7 @@ def federation_search_all(
             "repos_skipped": repos_skipped,
             "repos_unindexed": [entry.alias for entry, _ in unindexed],
             "error": None,
+            **_outside_roots_key(outside),
         },
     )
 
@@ -1331,9 +1388,9 @@ def agent_clear_session(repo_path: str, session_id: str) -> dict[str, Any]:
 def main() -> None:
     """Entry point for the trelix-mcp server (stdio transport).
 
-    Parses argv for --help/--version/--tools and rejects unknown flags — the normal path (no
-    args, launched by an MCP client's server config) falls straight through to running
-    the server with every tool, unchanged from before this parser existed.
+    Parses argv for --help/--version/--tools/--root and rejects unknown flags — the normal path
+    (no args, launched by an MCP client's server config) falls straight through to running
+    the server with every tool and no confinement, unchanged from before this parser existed.
     """
     parser = argparse.ArgumentParser(
         prog="trelix-mcp",
@@ -1347,12 +1404,24 @@ def main() -> None:
         help="tool profile: 'full' (default) lists every tool, 'core' lists only the everyday "
         "search and indexing tools and hides the rest",
     )
+    parser.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="a repository root every repo_path, federation path and trelix://repo/... URI must "
+        "lie inside; repeatable, and TRELIX_ALLOWED_REPO_ROOTS (os.pathsep-separated) adds more. "
+        "With neither, nothing is confined",
+    )
     args = parser.parse_args()
+    if any(not root.strip() for root in args.root):
+        parser.error("--root must not be blank")
     try:
         limits_from_env()
     except BudgetConfigError as exc:
         parser.error(str(exc))
     apply_tool_profile(mcp, args.tools)
+    _install_confinement(resolve_allowed_roots(*args.root))
 
     def _handle_sigterm(signum: int, frame: Any) -> None:
         _log.info("Received SIGTERM — shutting down")

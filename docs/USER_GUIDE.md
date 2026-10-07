@@ -1648,7 +1648,7 @@ that copy-pasted commands fail loudly rather than silently:
 | `--since`, `--query-filter`, `--json` (on `telemetry`) | `--limit`/`-n`, or query the `query_telemetry` table with `sqlite3` |
 | `--repo` (on any command but `eval-validate`) | the repo is positional |
 | `--embedder` | `--provider` |
-| `trelix-mcp --cache-dir` | nothing — `trelix-mcp` accepts only `--help`, `--version` and `--tools core\|full` |
+| `trelix-mcp --cache-dir` | nothing — `trelix-mcp` accepts only `--help`, `--version`, `--tools core\|full` and `--root PATH` |
 
 There is also no `trelix config`, `trelix doctor`, `trelix mcp`, or `trelix federation
 stats` command. `trelix --help` lists the real 26 top-level commands.
