@@ -63,7 +63,11 @@ def _span_text(span: Any) -> str:
 
 
 def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if r.levelno >= logging.WARNING]
+    """trelix's WARNING records only: another library's (an SDK span processor another module left
+    attached) must not count against the warn-once and no-warning pins here."""
+    return [
+        r for r in caplog.records if r.levelno >= logging.WARNING and r.name.startswith("trelix")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +201,6 @@ def _test_tracer_provider():
     from opentelemetry import trace
     from opentelemetry.sdk.resources import SERVICE_NAME, Resource
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
     provider = trace.get_tracer_provider()
     if not isinstance(provider, TracerProvider):
@@ -213,17 +215,12 @@ def _test_tracer_provider():
                 "test set it and did not restore it"
             )
 
-    exporter = InMemorySpanExporter()
-    processor = SimpleSpanProcessor(exporter)
-    provider.add_span_processor(processor)
-    try:
+    from tests.unit.otel_llm_fakes import exporting_spans
+
+    # The provider is shared with the rest of the session: the processor is detached
+    # again on teardown (shutting it down alone leaves it attached, see exporting_spans).
+    with exporting_spans(provider) as exporter:
         yield exporter
-    finally:
-        # The SDK has no remove_span_processor(), and the provider may be shared
-        # with the rest of the session, so shut the processor down instead:
-        # InMemorySpanExporter.export() refuses once stopped, which stops this
-        # module's exporter accumulating every later test's spans.
-        processor.shutdown()
 
 
 @pytest.fixture()
@@ -664,3 +661,38 @@ class TestCaptureContentConfig:
 
         monkeypatch.setattr(otel_tracing, "_env_otel_settings", None)
         assert otel_tracing._otel_settings(None) == (False, "trelix", None, False)
+
+
+class TestExportingSpans:
+    """The real-span fixture plumbing both OTel test modules share (otel_llm_fakes.py): the
+    processor must be DETACHED on exit, not only shut down, or opentelemetry-sdk >= 1.45 logs a
+    WARNING for every later span in the process and the next module's warn-count pins fail."""
+
+    def test_the_processor_is_detached_on_exit(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """MUTATION that must make this fail: `processor.shutdown()` alone in the `finally`
+        (the spy then records "after" too; on sdk >= 1.45 the WARNING is logged as well)."""
+        pytest.importorskip("opentelemetry.sdk", reason="requires pip install trelix[otel]")
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+        from tests.unit.otel_llm_fakes import exporting_spans
+
+        seen: list[str] = []
+        real_on_end = SimpleSpanProcessor.on_end
+
+        def spy(processor: Any, span: Any) -> None:
+            seen.append(span.name)
+            real_on_end(processor, span)
+
+        monkeypatch.setattr(SimpleSpanProcessor, "on_end", spy)
+        provider = TracerProvider()  # this test's own; never installed as the global one
+        with exporting_spans(provider) as exporter:
+            provider.get_tracer("probe").start_span("inside").end()
+        with caplog.at_level(logging.WARNING):
+            provider.get_tracer("probe").start_span("after").end()
+
+        assert [s.name for s in exporter.get_finished_spans()] == ["inside"]
+        assert seen == ["inside"]
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
