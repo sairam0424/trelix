@@ -1356,9 +1356,9 @@ class LLMConfig(BaseSettings):
     # Blank is unset; the SDK's own OPENAI_BASE_URL is left alone when this is unset.
     base_url: str | None = None
 
-    @field_validator("base_url", mode="before")
+    @field_validator("base_url", "local_context_tokens", mode="before")
     @classmethod
-    def _blank_base_url_is_unset(cls, value: object) -> object:
+    def _blank_is_unset(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             raise PydanticUseDefault()
         return value
@@ -1401,13 +1401,6 @@ class LLMConfig(BaseSettings):
     # TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null the retrieval budget would fall back to 12,000;
     # with this set it is int(local_context_tokens * context_window_fraction). Blank is unset.
     local_context_tokens: int | None = Field(default=None, ge=1024, le=2_000_000)
-
-    @field_validator("local_context_tokens", mode="before")
-    @classmethod
-    def _blank_local_context_tokens_is_unset(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip():
-            raise PydanticUseDefault()
-        return value
 
     @model_validator(mode="after")
     def _local_context_tokens_describe_the_local_server(self) -> LLMConfig:

@@ -4,7 +4,8 @@ With `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` the Retriever sizes its contex
 `int(window * TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`, where the window comes from
 `context_windows.resolve_window(model)`. That table knows no local model tags (`qwen2.5-coder:7b`
 carries a `:` no prefix matches), so every local model fell back to 12,000. The new field
-supplies the window instead; the fraction and the fallback are unchanged.
+supplies the window instead; the fraction and the fallback are unchanged. It is the window for
+any tag, including one the table knows (docs/CONFIGURATION.md, the window table).
 
 Built with the `Retriever(` shape of test_retriever_budget_and_ranking_knobs.py: every
 collaborator the constructor touches is a plain double, the budget is read from
@@ -46,6 +47,7 @@ def _build(
     local_context_tokens: int | None,
     fraction: float = 0.5,
     budget: int | None = None,
+    model: str = _LOCAL_TAG,
 ) -> object:
     from trelix.retrieval.retriever import Retriever
 
@@ -63,7 +65,7 @@ def _build(
                     context_token_budget=budget, context_window_fraction=fraction
                 ),
                 llm=LLMConfig(
-                    model=_LOCAL_TAG,
+                    model=model,
                     openai_api_key=None,
                     base_url=_LOCAL_URL,
                     local_context_tokens=local_context_tokens,
@@ -96,6 +98,21 @@ class TestTheLocalWindowSizesTheBudget:
         retriever = _build(tmp_path / "repo", local_context_tokens=32768, fraction=0.25)
 
         assert retriever._effective_budget == 8192  # type: ignore[attr-defined]
+
+    def test_the_variable_wins_for_a_tag_the_table_knows(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """docs/CONFIGURATION.md: `any tag with TRELIX_LLM_LOCAL_CONTEXT_TOKENS=32768` resolves to
+        32,768 "from the variable". A gateway may expose a hosted model's name for a server that
+        runs a smaller window, so the table's 128,000 for `gpt-4o` must not override the value.
+
+        MUTATION: `window = resolve_window(model) or local` (the table wins: 64,000)."""
+        caplog.set_level(logging.INFO, logger=_LOGGER)
+
+        retriever = _build(tmp_path / "repo", local_context_tokens=32768, model="gpt-4o")
+
+        assert retriever._effective_budget == 16384  # type: ignore[attr-defined]
+        assert "Context window 32768 from TRELIX_LLM_LOCAL_CONTEXT_TOKENS" in caplog.text
 
 
 class TestTheRestOfTheResolutionIsUnchanged:
