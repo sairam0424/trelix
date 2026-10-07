@@ -153,6 +153,7 @@ SCOPE: dict[str, tuple[str, ...]] = {
     "indexing.walker": ("src/trelix/indexing/walker.py",),
     "retrieval.fusion": ("src/trelix/retrieval/fusion.py",),
     "retrieval.bm25": ("src/trelix/retrieval/bm25.py",),
+    "retrieval.citations": ("src/trelix/retrieval/citations.py",),
     "eval.ndcg": ("src/trelix/eval/ndcg.py",),
     "store.db": ("src/trelix/store/db.py",),
     "store.vector": ("src/trelix/store/vector.py",),
@@ -273,6 +274,18 @@ MUTMUT_CONFIG: dict[str, object] = {
     # ``.gitignore`` reaches the tree root via the initial `git worktree add` checkout,
     # but was never in `also_copy`, so mutmut's own copy into `mutants/` omits it.)
     #
+    # Four more entries joined when `retrieval.citations` was first measured. The run
+    # died at COLLECTION, before a single test ran: tests/unit/review_workflow_harness.py
+    # reads infra/github-app/tests/fixtures/review-conclusion-cases.json at import time
+    # (FileNotFoundError, "failed to collect stats. runner returned 1"), and eight more
+    # test files read infra/github-app/{Dockerfile,manifest.yml,src,tests}. The other
+    # three were found by grepping the suite for root-relative reads of every top-level
+    # entry absent from this list, not by a failed run: eval/README.md and eval/golden.jsonl
+    # (test_c5_docs_pins, test_eval_prereg, test_eval_results_file, test_cli_eval_validate,
+    # test_eval_golden_v2), and Dockerfile + docker-compose.yml
+    # (test_request_guard_deployment_contracts). `_SYNC_DIRS` / `_SYNC_FILES` below gained
+    # the same four, since the throwaway tree is what mutmut copies from.
+    #
     # The alternative -- deselecting those files -- was rejected: it shrinks the
     # kill set, which is the one thing a survivor count must not do.
     "also_copy": [
@@ -282,8 +295,12 @@ MUTMUT_CONFIG: dict[str, object] = {
         "CHANGELOG.md",
         "config",
         "CONTRIBUTING.md",
+        "docker-compose.yml",
+        "Dockerfile",
         "docs",
+        "eval",
         "helm",
+        "infra",
         "LICENSE",
         "Makefile",
         "packages",
@@ -483,7 +500,18 @@ class ModuleResult:
 # The sync list is a superset of MUTMUT_CONFIG["also_copy"] on purpose: also_copy
 # copies FROM the tree INTO mutants/, so anything it names has to be in the tree
 # first, and the git-worktree fallback path (a plain temp dir) starts empty.
-_SYNC_DIRS = ("src", "tests", "docs", ".github", "helm", "packages", "scripts", "config")
+_SYNC_DIRS = (
+    "src",
+    "tests",
+    "docs",
+    ".github",
+    "helm",
+    "packages",
+    "scripts",
+    "config",
+    "eval",
+    "infra",
+)
 _SYNC_FILES = (
     "pyproject.toml",
     "README.md",
@@ -494,7 +522,14 @@ _SYNC_FILES = (
     "LICENSE",
     "Makefile",
     ".env.example",
+    "Dockerfile",
+    "docker-compose.yml",
 )
+# infra/github-app/node_modules exists in any checkout where `npm ci` has run (it is in that
+# directory's own .gitignore, so the `git worktree add` checkout never has it). Copying it
+# into the throwaway tree, and then again into mutants/, would be hundreds of megabytes
+# that no test reads.
+_SYNC_IGNORE = shutil.ignore_patterns("node_modules")
 
 
 class _ThrowawayTree:
@@ -535,7 +570,9 @@ class _ThrowawayTree:
                 file=sys.stderr,
             )
         for name in _SYNC_DIRS:
-            shutil.copytree(REPO_ROOT / name, self.path / name, dirs_exist_ok=True)
+            shutil.copytree(
+                REPO_ROOT / name, self.path / name, ignore=_SYNC_IGNORE, dirs_exist_ok=True
+            )
             # `dirs_exist_ok=True` is add/overwrite-only, never delete. When the
             # worktree's `HEAD` commit is stale relative to its own live files (a
             # file deleted on disk but never committed -- e.g. this session, before

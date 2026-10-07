@@ -661,6 +661,12 @@ GraphRAG answers (large contexts under the `openai` or `azure` embedder, reached
 `synthesize()` only) get the `[C#]` cite lines but not the abstention sentence, so they cannot
 abstain by protocol: an abstention count over such a run is structurally lower.
 
+When an answer's markers are verified (`trelix.retrieval.citations.verify_citations`; nothing in
+the eval reads them yet), `line_out_of_range` means the cited chunk ends past the file's line
+count, where lines are counted as the extractors count them, `count("\n") + 1`: a newline-terminated
+7-line file has 8 lines and its Python `<module>` symbol spans `1-8`, so a whole-file citation on a
+fresh index is `valid`.
+
 ## Related tooling
 
 `scripts/measure_index_hygiene.py` answers a different question from `trelix eval`: not
