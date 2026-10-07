@@ -15,10 +15,10 @@ an index `DiffReviewer._get_retriever` returns None and no `Retriever` (hence no
 and no planner `tool_call`) is ever built.
 
 `requires_network` is a directory label applied by `tests/e2e/conftest.py`; this test needs no
-model and no network beyond tiktoken's one-time `cl100k_base` download at collection. tiktoken's `cl100k_base` is loaded at collection (module level, before
-pytest-socket's per-test ban) so the on-disk cache the child process reads is warm; the child
-inherits `TIKTOKEN_CACHE_DIR`, `DATA_GYM_CACHE_DIR` and `TMPDIR`, none of which is a `TRELIX_*`
-or provider name, so it never downloads.
+model and no network beyond tiktoken's one-time `cl100k_base` download, which happens at
+collection (module level, before pytest-socket's per-test ban) so the on-disk cache the child
+process reads is warm; the child inherits `TIKTOKEN_CACHE_DIR`, `DATA_GYM_CACHE_DIR` and
+`TMPDIR`, none of which is a `TRELIX_*` or provider name, so it never downloads.
 
 Assertions on the child's stderr normalise whitespace: Rich wraps at 80 columns in a pipe; the
 child runs with `NO_COLOR=1` and without `FORCE_COLOR`, so no ANSI lands in the text. The
