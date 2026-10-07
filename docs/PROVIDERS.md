@@ -360,6 +360,9 @@ TRELIX_LLM_MODEL=qwen2.5-coder:7b                # the server's own tag (the def
   length the server runs with, e.g. Ollama's `OLLAMA_CONTEXT_LENGTH`, and the budget becomes
   `int(length × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`. `1024` to `2000000`; it needs
   `TRELIX_LLM_BASE_URL`.
+  Set it in the same place as `TRELIX_LLM_BASE_URL` (both exported, or both in the operator env
+  file): the two are validated together, and a component that reads only the process environment
+  must see both or neither.
 - The openai SDK's own `OPENAI_BASE_URL` keeps working exactly as before when `TRELIX_LLM_BASE_URL`
   is unset; set this variable instead of that one to get the behaviour above.
 - Plaintext `http://` to a host that is not loopback sends your code over the network unencrypted;

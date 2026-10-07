@@ -13,13 +13,14 @@ field default, a provider name or a credential out of it. That distinction is
 the whole point of a meta-test: an isolation table hand-copied from config.py
 drifts the moment someone adds a field, and a test that hard-codes the same
 hand-copy drifts with it. Deriving the SELECTION at runtime is what makes drift
-impossible; the two ``_EXPECTED_*`` literals below are what keep the ASSERTIONS
+impossible; the three ``_EXPECTED_*`` literals below are what keep the ASSERTIONS
 honest.
 
 So there are two independent guards, and they fail on different mistakes:
 
-* ``test_non_prefixed_table_matches_literal`` / ``test_scrub_prefixes_match_literal``
-  compare the isolation tables against literals written out here. These catch
+* ``test_non_prefixed_table_matches_literal`` / ``test_scrub_prefixes_match_literal`` /
+  ``test_empty_string_table_matches_literal`` compare the isolation tables against
+  literals written out here. These catch
   someone silently shrinking the isolation.
 * ``test_every_config_env_name_is_covered`` compares the isolation against what
   config.py actually declares, at runtime. This catches a NEW alias.
@@ -54,6 +55,7 @@ from pydantic_settings.sources import EnvSettingsSource
 from tests import _env_isolation
 from tests._env_isolation import (
     CONFIG_NON_PREFIXED_ENV,
+    EMPTY_STRING_BY_DEFAULT,
     SCRUB_PREFIXES,
     neutralize_operator_env_file,
     scrub_operator_env,
@@ -175,6 +177,44 @@ def test_non_prefixed_table_matches_literal() -> None:
     assert actual - _EXPECTED_NON_PREFIXED == set(), "entry not in the pinned literal"
     assert _EXPECTED_NON_PREFIXED - actual == set(), "pinned name missing from the table"
     assert len(CONFIG_NON_PREFIXED_ENV) == len(actual), "duplicate entry"
+
+
+# The names the isolation sets to "" instead of deleting: a blank reads as unset,
+# while an operator's value would redirect or resize tests (the comments in
+# tests/_env_isolation.py say which). Nothing else pins this table's membership.
+_EXPECTED_EMPTY_STRING_BY_DEFAULT = {
+    "TRELIX_REVIEW_OUTCOME_FILE",
+    "TRELIX_LINEAR_API_KEY",
+    "TRELIX_LINEAR_TEAM_KEY",
+    "TRELIX_JIRA_BASE_URL",
+    "TRELIX_JIRA_EMAIL",
+    "TRELIX_JIRA_API_TOKEN",
+    "TRELIX_JIRA_PROJECT_KEY",
+    "TRELIX_TESTRAIL_BASE_URL",
+    "TRELIX_TESTRAIL_USERNAME",
+    "TRELIX_TESTRAIL_API_KEY",
+    "TRELIX_LLM_BASE_URL",
+    "TRELIX_LLM_LOCAL_CONTEXT_TOKENS",
+}
+
+
+def test_empty_string_table_matches_literal() -> None:
+    """``EMPTY_STRING_BY_DEFAULT`` is exactly the names written out here.
+
+    The coverage test only checks that the ``TRELIX_`` prefix is scrubbed, so
+    without this literal a name could leave the table unnoticed; an operator
+    whose ``.env`` sets ``TRELIX_LLM_BASE_URL`` would then redirect every
+    hosted-openai test, and one who sets ``TRELIX_LLM_LOCAL_CONTEXT_TOKENS``
+    would resize every budget test (or trip its needs-URL check in every
+    ``LLMConfig`` the suite builds).
+
+    MUTATION that must make this fail: delete ``"TRELIX_LLM_LOCAL_CONTEXT_TOKENS"``
+    from ``EMPTY_STRING_BY_DEFAULT`` in tests/_env_isolation.py.
+    """
+    actual = set(EMPTY_STRING_BY_DEFAULT)
+    assert actual - _EXPECTED_EMPTY_STRING_BY_DEFAULT == set(), "entry not in the pinned literal"
+    assert _EXPECTED_EMPTY_STRING_BY_DEFAULT - actual == set(), "pinned name missing from the table"
+    assert len(EMPTY_STRING_BY_DEFAULT) == len(actual), "duplicate entry"
 
 
 def test_non_prefixed_table_is_upper_case() -> None:
