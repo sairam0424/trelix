@@ -247,7 +247,7 @@ The `trelix.*`-namespaced pipeline-stage spans (fusion/expansion/rerank/etc.) ar
 This is additive — it does not replace either of trelix's existing telemetry mechanisms:
 
 - **`TelemetryWriter`** (`TRELIX_TELEMETRY_ENABLED=true`) — writes one row per `retrieve()` call to the `query_telemetry` SQLite table (query text, intent, latency, result count, expansion columns) in the index DB. The only reader is the `trelix telemetry` CLI report. `trelix eval` does **not** read this table — it re-runs the queries in a golden JSONL file live through `Retriever` and computes nDCG@10 / recall@10 / MRR from those fresh results, so telemetry can be off and `eval` still works. (Earlier revisions of this doc claimed `eval` consumed the telemetry table; that was never true.)
-- **Debug trace JSON** (always on unless commented out in `retriever.py`) — writes a structured `.trelix/debug/<ts>_<slug>.json` file per query with plan/legs/fusion/expansion/rerank/assembly data.
+- **Debug trace JSON** (always on unless commented out in `retriever.py`) — writes a structured `debug/<ts>_<slug>.json` file per query, beside the index (`<repo>/.trelix/debug/` for the default `TRELIX_STORE_DB_PATH`; an index kept elsewhere, as a `trelix eval-suite` run keeps it, gets its traces there and the source tree stays untouched), with plan/legs/fusion/expansion/rerank/assembly data.
 
 Use OTel tracing when you want to export spans to an existing observability stack (Jaeger, Grafana Tempo, Honeycomb, Datadog, etc. — anything that accepts OTLP). Use the other two when you want local-file or in-DB analysis without standing up a collector.
 

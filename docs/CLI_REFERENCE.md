@@ -34,6 +34,7 @@ on most commands.
    - [eval-synthesis](#trelix-eval-synthesis)
    - [eval-validate](#trelix-eval-validate)
    - [eval-compare](#trelix-eval-compare)
+   - [eval-suite](#trelix-eval-suite)
    - [taint](#trelix-taint)
    - [review](#trelix-review)
    - [link-tickets](#trelix-link-tickets)
@@ -115,6 +116,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI chat model for synthesis |
 | `TRELIX_LLM_PROVIDER` | `openai` | LLM backend for synthesis: `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` |
 | `TRELIX_LLM_BASE_URL` | _(unset)_ | OpenAI-compatible server (Ollama, llama-server, a gateway) for the `openai` backend; `OPENAI_API_KEY` is optional with it set and the output cap is sent as `max_tokens`. `http://` or `https://` with a host, no user name or password, no whitespace. See [CONFIGURATION.md](CONFIGURATION.md#llm--synthesis) |
+| `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` | _(unset)_ | Context length of the server behind `TRELIX_LLM_BASE_URL` (`1024`–`2000000`); with `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` the retrieval budget is this × `TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION` instead of the 12,000 fallback for an unknown model tag. Needs `TRELIX_LLM_BASE_URL`. See [CONFIGURATION.md](CONFIGURATION.md#model-aware-context-budget) |
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | Reranker: `cohere` \| `cross_encoder` \| `plaid` |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant connection URL |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
@@ -1381,6 +1383,111 @@ cannot forge a `verdict:` line.
 
 ---
 
+### `trelix eval-suite`
+
+#### Synopsis
+
+```
+trelix eval-suite <suite.json> --arm <arm> --out <results.json> [--cache-dir <dir>]
+trelix eval-suite <suite.json> --prepare-only [--cache-dir <dir>]
+```
+
+#### Description
+
+Runs one arm of a committed suite: verifies `suite.json` and the sha256 of its golden and plans
+files, checks that every golden query has a frozen plan, clones the pinned commit of the suite's
+repository into the cache (or re-verifies the clone that is there), checks that every gold path
+exists at the pin and would be indexed, then builds ONE index for THIS arm from the clone, replays
+the frozen plans through the retrieval pipeline and writes a `results.json` (schema_version 1) for
+[`trelix eval-compare`](#trelix-eval-compare). With `--prepare-only` it stops after the checks and
+the clone, and indexes nothing.
+
+The settings that change the index or the ranking are forced (local embedder, no reranking, HyDE,
+multi-query or FLARE, no file summaries, no contextual chunking, sqlite in the run directory, a walk
+confined to the clone), whatever the environment says; the rest of the effective configuration is
+recorded in the file's `pipeline.config`. One index per arm: the run directory
+`<cache>/arms/<sha>/<name>/<arm>/` is created by the run and an existing one is refused; nothing under
+the cache is ever deleted by the command. Nothing from the cloned repository is executed, imported or
+installed. The format of `suite.json`, the cache layout, every check and every refusal are in
+`eval/README.md`.
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `<suite.json>` | | argument | *(required)* | Path to the suite's `suite.json`; its golden and plans files sit beside it. |
+| `--arm` | | string | *(none)* | Label of this run, `[a-z0-9][a-z0-9_-]{0,62}`. Required unless `--prepare-only`; there is no default, so two runs cannot share a label by accident. `eval-compare` binds its `comparison_id` to two arms. |
+| `--out` | | string | *(none)* | Where to write `results.json`. Its directory must exist and be writable, and `--out` must not name a directory or an existing file (each arm needs its own results file); all checked before anything is cloned. Required unless `--prepare-only`. |
+| `--cache-dir` | | string | `$XDG_CACHE_HOME/trelix/eval-suites`, else `~/.cache/trelix/eval-suites` | Where clones (`clones/<sha>/<name>/`) and per-arm run directories (`arms/<sha>/<name>/<arm>/`) are kept. Outside every repository, so no `trelix index` walks it. |
+| `--prepare-only` | | flag | off | Verify the suite and its pinned clone, print what was verified, run nothing. Refused together with `--arm` or `--out`: neither reading of the three is guessed. |
+
+#### Examples
+
+```bash
+# Verify a suite and warm its clone (CI can do this without an embedder)
+trelix eval-suite eval/suites/trelix-self/suite.json --prepare-only
+
+# The baseline arm, then a candidate arm from another checkout of trelix against the same suite
+trelix eval-suite eval/suites/trelix-self/suite.json --arm baseline --out /tmp/baseline.json
+trelix eval-suite eval/suites/trelix-self/suite.json --arm declaration-boost --out /tmp/cand.json
+trelix eval-compare /tmp/baseline.json /tmp/cand.json --prereg eval/experiments/EXP-declaration-boost.yaml
+
+# The same, through make (EVAL_RESULTS defaults to .trelix/eval-suite/results.json)
+make eval-suite EVAL_SUITE=eval/suites/trelix-self/suite.json EVAL_ARM=baseline
+```
+
+#### Output
+
+One line each on stdout: `suite:`, `repository:`, `sha:`, `golden:` (its sha256, the number of
+queries and of distinct gold files), `plans:` (its sha256), `clone:`, then for a run `arm:`,
+`run directory:`, `index: built, embedding dimension N`, one line with `ndcg@10`, `recall@10`,
+`mrr`, the number of queries and the rerank summary, and `results: <path>`; `--prepare-only` ends
+with `prepared: every check passed; nothing was indexed or run` instead. No PASS or FAIL is
+printed: only `trelix eval-compare` judges. Every refusal is one `refused: <reason>` line per
+reason on stderr. Text that comes from the suite or the repository (names, paths, git output) is
+printed literally, with control bytes dropped.
+
+```
+suite: trelix-self (golden_version 2026-10-r1, license MIT)
+repository: https://github.com/sairam0424/trelix.git
+sha: 5fa2a032147f64d698077e8849e603872d76b5d0
+golden: sha256 1cd3713d..., 52 queries, 61 gold files
+plans: sha256 9f0c2e1a..., a recorded plan for every golden query
+clone: /home/me/.cache/trelix/eval-suites/clones/5fa2a032.../trelix-self
+arm: baseline
+run directory: /home/me/.cache/trelix/eval-suites/arms/5fa2a032.../trelix-self/baseline
+index: built, embedding dimension 384
+ndcg@10 0.6333, recall@10 0.7115, mrr 0.5892 over 52 queries; rerank disabled
+results: /tmp/baseline.json
+```
+
+(Illustrative numbers; the hashes are shortened here and printed whole by the command.)
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | `results.json` was written and no query raised; or, with `--prepare-only`, every check passed. |
+| `1` | A refusal (`suite.json` invalid, a hash mismatch, a golden query without a plan, a clone that is not the pin or not pristine, a gold path missing or not indexed, `--out` unwritable, `--arm` missing or malformed, `--prepare-only` given with `--arm` or `--out`, a run directory that exists, an index error, an index that cannot be built (the `local` extra missing, the disk full), a frozen plan missing at run time; nothing is written in these cases), or queries that raised after `results.json` was written. |
+| `2` | A usage error (an unknown option, a missing argument). |
+
+#### Notes
+
+- `--arm` and `--out` are checked before anything is cloned, so a mistyped path fails in a second.
+- A refusal after the run directory was claimed (an index error, an index that cannot be built, a
+  frozen plan missing at run time) ends with `refused: the run directory PATH is left as it is;
+  delete it before running this arm again`: the command deletes nothing under the cache, and the
+  next run of the same `--arm` would otherwise be refused for a directory this one never named.
+- Only `https://github.com/<owner>/<repo>[.git]` repositories can be named by a `suite.json`
+  (`ALLOWED_REPO_HOSTS` in `trelix.eval.suite`); public repositories only, since git gets no
+  credentials. A local path is accepted only by the Python API's `allow_local=True`, for the tests.
+- The default walker ignores a directory called `packages`, so a gold file under it is refused as
+  "not indexed"; the suite's golden file must leave such queries out (for this repository, two of the
+  shipped golden file's 54 queries).
+- Needs the `local` extra (sentence-transformers) to build the index; `--prepare-only` does not.
+
+---
+
 ### `trelix taint`
 
 #### Synopsis
@@ -1498,8 +1605,8 @@ With `--pr`, fetches the diff directly from the GitHub API.
 |------|---------|
 | `0` | The review covered every hunk it was given: "no issues found", or findings with every hunk reviewed. A partial review also exits `0` when `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` allows the share of unreviewed hunks (a warning with the counts goes to stderr). |
 | `1` | Error: invalid configuration, GitHub API failure, unreadable diff, or (without `--diff`) a `--base` or `--head` that git cannot resolve to an object, or a `git diff` between them that fails. |
-| `3` | The review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review). A hunk cut off after some complete findings keeps them and counts as a partial review, not as one that did not run. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) and nothing else, so an empty array alone does not mean "clean": check the exit code. |
-| `4` | The review ran but more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` of the hunks were not reviewed because the reply was cut off (even after a retry), refused, filtered, not a review, or the call failed. The default `0.0` means any hunk. The findings are printed first, so stdout carries what there is (with `--json`, the array as usual); the counts go to stderr. Set the variable to `1` to exit `0` for a partial review. |
+| `3` | The review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, had its prompt cut by a local server, refused or not a review). A hunk cut off after some complete findings keeps them and counts as a partial review, not as one that did not run. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) and nothing else, so an empty array alone does not mean "clean": check the exit code. |
+| `4` | The review ran but more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` of the hunks were not reviewed because the reply was cut off (even after a retry), a local server cut the prompt (`detail: prompt_truncated`), refused, filtered, not a review, or the call failed. The default `0.0` means any hunk. The findings are printed first, so stdout carries what there is (with `--json`, the array as usual); the counts go to stderr. Set the variable to `1` to exit `0` for a partial review. |
 
 Exit code `2` is not used by `review` itself (it is the usage-error code), so
 `3` and `4` are unambiguous for CI wrappers. With `--post-comments`, nothing is posted
@@ -1559,6 +1666,14 @@ GITHUB_TOKEN=$TOKEN trelix review . --pr acme/backend#142 --post-comments
   and status lines such as `Reviewing N hunks across M files...` go to stderr. An error exit (`1`) writes
   nothing to stdout. `--pr` with `--post-comments` prints `Posted review with N inline comments.` to stdout
   after the array once the review is posted, so stdout is then more than the array.
+- With `TRELIX_LLM_BASE_URL` set (an OpenAI-compatible local server), a hunk is reported as `truncated`
+  with `detail: prompt_truncated` in the outcome file when the server's reported `prompt_tokens` is
+  under 0.85 x the cl100k_base count of what trelix sent: Ollama drops the head of a prompt longer than
+  its context length (the system prompt goes first) and answers HTTP 200 with a normal finish reason.
+  Nothing is kept from that reply and the hunk is not retried; a review where every hunk was cut this
+  way exits `3`. The check needs `usage` in the reply and the cl100k_base encoding on disk; when either
+  is missing it warns once and stays off. Only the review call is checked: `trelix ask` (a stream) and
+  the query planner's tool call are not.
 - Binary and oversized files from GitHub PRs are skipped automatically.
 - PRs with more than 3,000 changed files will trigger a truncation warning.
 

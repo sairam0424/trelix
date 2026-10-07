@@ -123,8 +123,11 @@ The retrieval enhancement modules live at `src/trelix/retrieval/` and are organi
 | `query_expansion.py` | HyDEExpander (synthetic snippet embedding), MultiQueryExpander (N-variant recall) |
 | `flare.py` | FLARELoop — confidence-gated re-retrieval, _contains_uncertainty phrase check |
 | `telemetry.py` | TelemetryWriter — crash-safe per-query latency/intent recorder |
+| `citations.py` | `[C#]` citation tags (CitationSource; the numbering itself lives in `ContextAssembler._cite_prefix`, called only from `_format_context`), abstention detection (is_abstention) and verify_citations — the model's markers checked against the retrieved sources and the files on disk, reading nothing from the model's text but a marker's digits |
 
-All three modules are crash-safe (return empty/original on any failure) and gated by config flags.
+`query_expansion.py`, `flare.py` and `telemetry.py` are crash-safe (return empty/original on any
+failure) and gated by config flags; `citations.py` is pure (answer text, sources and the filesystem
+in, frozen dataclasses out), and its tags are gated by `TRELIX_RETRIEVAL_CITATIONS`.
 
 **Opt-in config keys** (all default to off — zero impact when disabled):
 
@@ -467,7 +470,11 @@ Two things that are **not** version sites, and must not be bumped with them:
   does move: `trelix-mcp` and both adapters import `trelix.core.index_check`, which the core
   ships from the release that contains the read-surface fix, so that release's PR raises the
   three `trelix>=` floors to it (CI installs the core editable and cannot notice a missing
-  bump; an older core under a newer package fails on import). `trelix-mcp` also passes
+  bump; an older core under a newer package fails on import). `trelix-mcp` alone also imports
+  `trelix.core.confinement` (`resolve_allowed_roots`, `is_within_allowed_roots`), and its HTTP
+  transport will import `trelix.api.request_guard.is_health_probe`; neither name is in a
+  published core yet, so the next release's PR raises `trelix-mcp`'s `trelix>=` floor to that
+  release as well. `trelix-mcp` also passes
   `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
   `server.disable(names=, components=)`, so its `fastmcp` floor is `>=4.0.10`, the release
   those were run against (4.0.0 to 4.0.9 were not tested);
@@ -641,8 +648,9 @@ Each package has its own `pyproject.toml` and `tests/` directory. The `src/` lay
 ## Working on the Claude Code plugin
 
 `.claude-plugin/marketplace.json` (the marketplace) and `plugins/trelix/` (the plugin: `.mcp.json`,
-`plugin.json`, the `use-trelix-index` skill, and a README that lists every command the plugin
-runs) are read by Claude Code, not by this package. Rules:
+`plugin.json`, the `use-trelix-index` skill, the SessionStart hook (`hooks/hooks.json` and the
+stdlib-only `scripts/session_start.py`, which `make lint` and CI's ruff job cover), and a README
+that lists every command the plugin runs) are read by Claude Code, not by this package. Rules:
 
 - **Any change under `plugins/trelix/` bumps `plugin.json`'s `version`** (`<pin>`, or `<pin>.N`
   for a plugin-only change) **and the `_PLUGIN_TREE_SHA256` literal in
@@ -669,8 +677,10 @@ runs) are read by Claude Code, not by this package. Rules:
 - **Smoke-test from the checkout.** `claude plugin marketplace add /path/to/this/checkout` loads
   the plugin in place (edits take effect at the next session or after `/reload-plugins`, no
   version bump needed); then `claude plugin install trelix@trelix`, open a scratch project, and
-  confirm that `/mcp` shows `plugin:trelix:trelix` and that `/trelix:use-trelix-index` loads the
-  skill. Afterwards `claude plugin marketplace remove trelix` (it also uninstalls the plugin).
+  confirm that `/mcp` shows `plugin:trelix:trelix`, that `/trelix:use-trelix-index` loads the
+  skill, and that the session context carries a line starting `trelix:` (with `claude --debug`,
+  a `trelix session_start: skipped (<reason>)` line says why the hook printed nothing).
+  Afterwards `claude plugin marketplace remove trelix` (it also uninstalls the plugin).
 - The server-registration test in `tests/unit/test_claude_plugin_skill.py` needs `trelix_mcp`
   and `fastmcp` (`pip install -e packages/trelix-mcp`); without them it skips. CI's unit job has
   them.

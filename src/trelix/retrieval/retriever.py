@@ -14,8 +14,9 @@ Flow:
      direct hits ordered first, instead of returning a thin result as complete.
      The `breadth_floor` trace section records the decision on every such query.
 
-Debug tracing: every query writes a structured JSON file to .trelix/debug/
-relative to the project root configured in IndexConfig.repo_path.
+Debug tracing: every query writes a structured JSON file to a `debug/` directory beside the
+index (`IndexConfig.db_path_resolved.parent`), which is `.trelix/debug/` under
+`IndexConfig.repo_path` for the default `store.db_path`.
 Each file captures all pipeline stages: plan -> legs -> fusion -> expansion
 -> rerank -> assembly.
 To disable: comment out the self._trace(...) calls in this file.
@@ -295,8 +296,11 @@ class Retriever:
         except Exception as exc:
             logger.debug("DimensionGuard.check failed (non-fatal): %s", exc)
 
-        # Debug output dir: <repo_root>/.trelix/debug/
-        self._debug_dir = Path(config.repo_path) / ".trelix" / "debug"
+        # Debug output dir: beside the index, `<db_path's directory>/debug/`, which is
+        # `<repo_root>/.trelix/debug/` for the default `store.db_path`. Anchored on the index
+        # and not on the repository so that an index kept outside the source tree (a suite run
+        # measuring a pristine clone) writes nothing into the source tree.
+        self._debug_dir = config.db_path_resolved.parent / "debug"
 
         # Memoized SparseEmbedder — instantiated at most once per Retriever.
         # _run_subquery_legs() is called once per sub-query; without this slot the
@@ -340,9 +344,11 @@ class Retriever:
         Returns the explicit budget when context_token_budget is an int.
         When context_token_budget is None, auto-derives from model window:
           effective_budget = window_size * context_window_fraction
+        where the window is `llm.local_context_tokens` (TRELIX_LLM_LOCAL_CONTEXT_TOKENS,
+        the context length of a local server) when set, else resolve_window(model).
 
         Falls back to 12,000 when:
-        - Model name is not recognized by resolve_window()
+        - Model name is not recognized by resolve_window() and no local window is set
         - LLM config is invalid/missing
 
         Logged at INFO level so operators can see the resolved budget in logs.
@@ -362,7 +368,10 @@ class Retriever:
             from trelix.llm.context_windows import resolve_window
 
             model = self.config.llm.model
-            window = resolve_window(model)
+            local = self.config.llm.local_context_tokens
+            if local is not None:
+                logger.info("Context window %d from TRELIX_LLM_LOCAL_CONTEXT_TOKENS", local)
+            window = local if local is not None else resolve_window(model)
             if window is None:
                 logger.warning(
                     "Model %r not recognized by context_windows — falling back to 12,000 tokens",

@@ -22,8 +22,8 @@ Verify the binary is on your PATH:
 which trelix-mcp
 ```
 
-`trelix-mcp` accepts only `--help`, `--version` and `--tools core|full` (section 8) —
-running it with no arguments starts the stdio MCP server. `trelix-mcp --version` prints the
+`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full` and `--root PATH` (section 8)
+— running it with no arguments starts the stdio MCP server. `trelix-mcp --version` prints the
 installed version, and the package exposes it too:
 
 ```bash
@@ -166,6 +166,19 @@ Trelix-mcp exposes 15 MCP tools organized into four functional groups:
 4. **Multi-repo federation** (4 tools): `federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`
 5. **Persistent agent sessions** (3 tools): `ask_agent`, `agent_list_sessions`, `agent_clear_session`
 
+**Where a tool may look.** Started as `trelix-mcp --root PATH` (repeatable), or with
+`TRELIX_ALLOWED_REPO_ROOTS` (`os.pathsep`-separated, process environment only) exported, the
+server confines every `repo_path` argument, `federation_add_repo`'s `path` and every
+`trelix://repo/...` resource URI to those roots. A value that is blank, cannot be resolved (a NUL
+byte, a symlink loop) or resolves outside every root (`..`, a symlink pointing out, a sibling
+`<root>-evil`) is refused before the tool runs:
+`isError: true` with exactly `repo_path is not inside an allowed repository root` (`path is not
+inside an allowed repository root` for `federation_add_repo`), and the value is never echoed.
+`federation_search_all` searches only the registry entries inside the roots, and every one of its
+responses gains `repos_outside_roots`, how many it left out. Stdio with no root is unchanged:
+nothing is confined, as before. A blank `--root` value (an unset shell variable, for instance) is
+a startup error rather than a root.
+
 ### What `tools/list` tells a client
 
 Every tool carries the four MCP annotation hints, taken from one table in
@@ -204,9 +217,11 @@ need credentials the operator has set.
   every file. Three things write, and the same test file records each: with
   `TRELIX_TELEMETRY_ENABLED=true` each `search_code` adds a row to `query_telemetry`; the first
   open of an index written by an older trelix migrates that index; and every `search_code`
-  writes a small JSON trace of the query to `.trelix/debug/` (one new file per call, the same
-  trace `docs/OBSERVABILITY.md` describes; the directory has no ignore file of its own, it is
-  covered by `.trelix/.gitignore` one level up, which ignores everything under `.trelix/`), which
+  writes a small JSON trace of the query to a `debug/` directory beside the index (`.trelix/debug/`
+  for the default `db_path`; one new file per call, the same trace `docs/OBSERVABILITY.md`
+  describes; the directory has no ignore file of its own, it is covered by the `.gitignore` one
+  level up that trelix writes beside the database, `.trelix/.gitignore` by default, which ignores
+  everything under it), which
   leaves the database as it was. `get_symbol` and `blast_radius` write no file. A client that
   reads `readOnlyHint` as "does not touch the repository directory" is therefore wrong for
   `search_code`.
@@ -1335,9 +1350,10 @@ The knowledge graph must be built separately from the index. Call `build_knowled
 
 ### MCP server crashes silently in Cursor / Windsurf
 
-`trelix-mcp` accepts only `--help`, `--version` and `--tools core|full`, and has no log-file or log-level setting — it logs
-unconditionally to **stderr** at INFO via a hardcoded `logging.basicConfig`. To capture that
-stream, point the MCP host at a tiny wrapper that redirects stderr to a file:
+`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full` and `--root PATH`, and has no
+log-file or log-level setting — it logs unconditionally to **stderr** at INFO via a hardcoded
+`logging.basicConfig`. To capture that stream, point the MCP host at a tiny wrapper that redirects
+stderr to a file:
 
 ```bash
 cat > /usr/local/bin/trelix-mcp-logged <<'EOF'

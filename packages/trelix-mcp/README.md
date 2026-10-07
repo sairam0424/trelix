@@ -66,6 +66,19 @@ To list only the everyday search and indexing tools, add `--tools core` (the def
 claude mcp add trelix -- trelix-mcp --tools core
 ```
 
+To confine the server to one or more repository roots, add `--root PATH` (repeatable;
+`TRELIX_ALLOWED_REPO_ROOTS`, `os.pathsep`-separated and read from the process environment, adds
+more; a blank `--root` value is a startup error). Every `repo_path`, `federation_add_repo` `path`
+and `trelix://repo/...` URI must then lie inside a root, or the call answers an error:
+`repo_path is not inside an allowed repository root`, or
+`path is not inside an allowed repository root` for `federation_add_repo`. `federation_search_all`
+then searches only the registered repos inside the roots and reports the others as
+`repos_outside_roots`. Without the flag and the variable, nothing is confined.
+
+```bash
+claude mcp add trelix -- trelix-mcp --root /Users/you/myrepo
+```
+
 ### Cursor (`~/.cursor/mcp.json`)
 
 ```json

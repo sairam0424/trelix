@@ -1,11 +1,14 @@
-"""Doc pins for the local-server feature (PR 1 of roadmap item C-7).
+"""Doc pins for the local-server feature (PRs 1, 2 and 3 of roadmap item C-7).
 
 Every user-facing file that lists the LLM variables names `TRELIX_LLM_BASE_URL`, the two
 that explain it name the bearer and the token-limit field, and every file that promised zero
 LLM calls "with no chat credential" now names the variable as the second condition (a keyless
-local-server client is a usable client; the planner calls it). Literal (file, needle) pairs,
-the shape of test_llm_thinking_mode.py's Opus-boundary pins. MUTATION: delete any row here and
-the matching doc line; the row for that file fails.
+local-server client is a usable client; the planner calls it). The files that document the
+review statuses name the `prompt_truncated` detail. The same five variable lists name
+`TRELIX_LLM_LOCAL_CONTEXT_TOKENS`, and PROVIDERS.md says what to set it to (the server's own
+context length, Ollama's `OLLAMA_CONTEXT_LENGTH`). Literal (file, needle) pairs, the shape of
+test_llm_thinking_mode.py's Opus-boundary pins. MUTATION: delete any row here and the matching
+doc line; the row for that file fails.
 """
 
 from __future__ import annotations
@@ -33,6 +36,18 @@ _PINS = [
     ("docs/PROVIDERS.md", "trelix-local"),
     ("docs/PROVIDERS.md", "max_tokens"),
     ("docs/PROVIDERS.md", "mixtral-8x7b"),
+    # PR 2: the prompt-truncation guard's detail, wherever the review statuses are documented.
+    ("docs/CLI_REFERENCE.md", "prompt_truncated"),
+    ("docs/CONFIGURATION.md", "prompt_truncated"),
+    ("docs/PROVIDERS.md", "prompt_truncated"),
+    ("CHANGELOG.md", "prompt_truncated"),
+    # PR 3: the context length of the server behind the URL sizes the auto-derived budget.
+    (".env.example", "TRELIX_LLM_LOCAL_CONTEXT_TOKENS"),
+    ("docs/CONFIGURATION.md", "TRELIX_LLM_LOCAL_CONTEXT_TOKENS"),
+    ("docs/PROVIDERS.md", "TRELIX_LLM_LOCAL_CONTEXT_TOKENS"),
+    ("docs/CLI_REFERENCE.md", "TRELIX_LLM_LOCAL_CONTEXT_TOKENS"),
+    ("README.md", "TRELIX_LLM_LOCAL_CONTEXT_TOKENS"),
+    ("docs/PROVIDERS.md", "OLLAMA_CONTEXT_LENGTH"),
 ]
 
 

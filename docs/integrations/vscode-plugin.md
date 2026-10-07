@@ -28,8 +28,8 @@ which trelix-mcp
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 ```
 
-`trelix-mcp` accepts only `--help`, `--version` and `--tools core|full`; invoking it with
-no arguments starts the stdio MCP server immediately.
+`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full` and `--root PATH`; invoking
+it with no arguments starts the stdio MCP server immediately.
 
 The extension spawns it by name (`trelix-mcp`, no args) — it must be on
 `PATH` for whichever Python environment the VS Code process resolves.

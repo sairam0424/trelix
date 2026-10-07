@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from trelix.core.models import Chunk, IndexedFile
     from trelix.eval.harness import QueryRecord
     from trelix.eval.suite_prepare import PreparedSuite
+    from trelix.eval.suite_run import SuiteRun
     from trelix.indexing.embedding_cache import EmbeddingCache
     from trelix.indexing.indexer import Indexer
     from trelix.review.diff_parser import DiffHunk, DiffParser
@@ -3535,10 +3536,10 @@ def eval_compare(
     raise typer.Exit(verdict.exit_code)
 
 
-def _print_prepared_suite(prepared: PreparedSuite) -> None:
-    """Print what `eval-suite --prepare-only` verified, one line each."""
+def _prepared_lines(prepared: PreparedSuite) -> tuple[str, ...]:
+    """What `eval-suite` verified before anything was indexed, one line each."""
     spec = prepared.spec
-    for line in (
+    return (
         f"suite: {spec.name} (golden_version {spec.golden_version}, license {spec.license})",
         f"repository: {spec.repo_url}",
         f"sha: {spec.repo_sha}",
@@ -3546,21 +3547,73 @@ def _print_prepared_suite(prepared: PreparedSuite) -> None:
         f"{prepared.gold_files} gold files",
         f"plans: sha256 {spec.plans_sha256}, a recorded plan for every golden query",
         f"clone: {prepared.clone}",
-        "prepared: every check passed; nothing was indexed or run",
+    )
+
+
+def _print_prepared_suite(prepared: PreparedSuite) -> None:
+    """Print what `eval-suite --prepare-only` verified, one line each."""
+    lines = (*_prepared_lines(prepared), "prepared: every check passed; nothing was indexed or run")
+    for line in lines:
+        _print_verdict_line(console, line)
+
+
+def _print_suite_run(run: SuiteRun) -> None:
+    """Print what `eval-suite` verified, built and wrote, one line each.
+
+    The means are reported, never judged: only `eval-compare` says PASS or FAIL.
+    """
+    means = run.aggregate
+    for line in (
+        *_prepared_lines(run.prepared),
+        f"arm: {run.arm}",
+        f"run directory: {run.run_dir}",
+        f"index: built, embedding dimension {run.dimension}",
+        f"ndcg@10 {means['ndcg@10']:.4f}, recall@10 {means['recall@10']:.4f}, "
+        f"mrr {means['mrr']:.4f} over {int(means['n_queries'])} queries; "
+        f"rerank {run.rerank_summary}",
+        f"results: {run.out.absolute()}",
     ):
         _print_verdict_line(console, line)
 
 
-@app.command("eval-suite", hidden=True)
+def _refuse_suite(problems: Sequence[str]) -> NoReturn:
+    """One `refused: ...` line per reason on stderr, then exit 1."""
+    for problem in problems:
+        _print_verdict_line(err_console, f"refused: {problem}")
+    raise typer.Exit(1)
+
+
+@app.command("eval-suite")
 def eval_suite(
     suite: Annotated[str, typer.Argument(help="Path to the suite's suite.json.")],
+    arm: Annotated[
+        str | None,
+        typer.Option(
+            "--arm",
+            help=(
+                "Label of this run, [a-z0-9][a-z0-9_-]{0,62}, no default. One index is built "
+                "per arm and an arm's run directory is never reused; eval-compare binds its "
+                "comparison_id to two arms. Required unless --prepare-only."
+            ),
+        ),
+    ] = None,
+    out: Annotated[
+        str | None,
+        typer.Option(
+            "--out",
+            help=(
+                "Where to write results.json. Its directory must exist; this is checked "
+                "before anything is cloned. Required unless --prepare-only."
+            ),
+        ),
+    ] = None,
     cache_dir: Annotated[
         str | None,
         typer.Option(
             "--cache-dir",
             help=(
-                "Where suite clones are kept. Default: $XDG_CACHE_HOME/trelix/eval-suites, "
-                "or ~/.cache/trelix/eval-suites."
+                "Where suite clones and per-arm indexes are kept. Default: "
+                "$XDG_CACHE_HOME/trelix/eval-suites, or ~/.cache/trelix/eval-suites."
             ),
         ),
     ] = None,
@@ -3568,33 +3621,54 @@ def eval_suite(
         bool,
         typer.Option(
             "--prepare-only",
-            help="Verify the suite and its pinned clone, and run nothing. Required for now.",
+            help=(
+                "Verify the suite and its pinned clone, and run nothing. Refused together "
+                "with --arm or --out."
+            ),
         ),
     ] = False,
 ) -> None:
-    """Verify a suite: its files and hashes, its pinned clone, and its gold paths.
+    """Run one arm of a suite: index its pinned clone once, replay the frozen plans, write results.
 
-    Groundwork, hidden from --help until the run itself lands: only --prepare-only works.
-    Exits 0 when everything verified, and 1 with one `refused:` line per reason otherwise.
-    Nothing from the cloned repository is executed, imported or installed.
+    Exits 0 when results.json was written and no query raised. Exits 1 for a refusal (one
+    `refused:` line per reason on stderr), an index error or a frozen plan missing at run
+    time (no file is written in those cases, and the claimed run directory is left behind and
+    named), and for queries that raised after the file was written. Prints no PASS or FAIL:
+    `trelix eval-compare` judges two results files. Nothing from the cloned repository is
+    executed, imported or installed.
     """
     from trelix.eval.suite import SuiteError
     from trelix.eval.suite_prepare import prepare_suite
+    from trelix.eval.suite_run import run_suite_file
 
-    if not prepare_only:
-        _print_verdict_line(
-            err_console,
-            "refused: running a suite is not available in this release; "
-            "pass --prepare-only to verify the suite and its clone",
+    if prepare_only:
+        if arm is not None or out is not None:
+            _refuse_suite(
+                [
+                    "--prepare-only runs nothing and takes no --arm or --out: drop it to run "
+                    "the arm, or drop them to verify the suite"
+                ]
+            )
+        try:
+            prepared = prepare_suite(suite, cache_dir)
+        except SuiteError as exc:
+            _refuse_suite(exc.problems)
+        _print_prepared_suite(prepared)
+        return
+    if arm is None or out is None:
+        _refuse_suite(
+            [
+                "--arm and --out are required to run a suite; pass --prepare-only to verify "
+                "it without running"
+            ]
         )
-        raise typer.Exit(1)
     try:
-        prepared = prepare_suite(suite, cache_dir)
+        run = run_suite_file(suite, cache_dir, arm=arm, out=out)
     except SuiteError as exc:
-        for problem in exc.problems:
-            _print_verdict_line(err_console, f"refused: {problem}")
-        raise typer.Exit(1) from exc
-    _print_prepared_suite(prepared)
+        _refuse_suite(exc.problems)
+    _print_suite_run(run)
+    # After the file is written, as `trelix eval` does: the file names every failed query.
+    _exit_if_queries_failed(run.records)
 
 
 # ---------------------------------------------------------------------------
