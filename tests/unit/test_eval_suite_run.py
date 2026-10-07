@@ -8,9 +8,11 @@ and `EvalHarness` run in `test_eval_suite_run_indexer.py`.
 
 MUTATIONS THAT MUST MAKE THIS FILE FAIL
 ---------------------------------------
-1. the committed plans file passed to the planner instead of the run-directory copy, or the
-   index placed anywhere but `<run dir>/index.db`
-                                                  (test_the_harness_reads_the_run_directory_copy_...)
+1. the committed plans file passed to the planner, or the committed golden file passed to the
+   harness, instead of the run-directory copy, or the index placed anywhere but
+   `<run dir>/index.db`
+                                                  (test_the_harness_reads_the_run_directory_copy_...,
+                                                   test_the_queries_scored_are_the_hashed_copy_...)
 2. any ONE of the ten forced settings dropped from `run_config` (one parametrized case each)
                                                   (TestForcedSettings)
 3. `created_at` moved out of `run`                 (test_two_clocks_differ_only_in_run)
@@ -47,6 +49,7 @@ from tests.unit.eval_suite_harness import (
     Remote,
     clock,
     clone_local,
+    jsonl,
     load_local,
     make_remote,
     out_file,
@@ -278,6 +281,27 @@ class TestTheResultsFile:
             [],
         )
         assert [r.error for r in run.records] == [None, "boom"]
+
+    def test_the_queries_scored_are_the_hashed_copy_not_a_golden_file_rewritten_during_the_build(
+        self, tmp_path: Path, spec: SuiteSpec
+    ) -> None:
+        """`index_fn` runs after the copies are made and before the queries. A committed golden
+        file rewritten then (an editor save, a checkout in the suite directory during a long
+        build) was never hashed, so none of it may reach the records."""
+        hashed = spec.golden_file.read_bytes()
+        grown = hashed + jsonl([{"query": "one more", "relevant_files": ["README.md"]}])
+
+        def rewrite_the_committed_golden(config: IndexConfig) -> IndexOutcome:
+            spec.golden_file.write_bytes(grown)
+            return IndexOutcome(errors=0, dimension=8)
+
+        run = stub_run(tmp_path, spec, index_fn=rewrite_the_committed_golden)
+        assert spec.golden_file.read_bytes() == grown
+        assert (run.run_dir / "golden.jsonl").read_bytes() == hashed
+        doc = results_doc(run)
+        assert [r["id"] for r in doc["records"]] == ["q0001", "q0002"]
+        assert [r.error for r in run.records] == [None, None]
+        assert doc["aggregate"]["n_queries"] == 2.0
 
     def test_the_file_satisfies_the_reader_and_the_judge(
         self, tmp_path: Path, spec: SuiteSpec

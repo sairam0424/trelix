@@ -1398,7 +1398,7 @@ installed. The format of `suite.json`, the cache layout, every check and every r
 |--------|-------|------|---------|-------------|
 | `<suite.json>` | | argument | *(required)* | Path to the suite's `suite.json`; its golden and plans files sit beside it. |
 | `--arm` | | string | *(none)* | Label of this run, `[a-z0-9][a-z0-9_-]{0,62}`. Required unless `--prepare-only`; there is no default, so two runs cannot share a label by accident. `eval-compare` binds its `comparison_id` to two arms. |
-| `--out` | | string | *(none)* | Where to write `results.json`. Its directory must exist and is checked before anything is cloned. Required unless `--prepare-only`. |
+| `--out` | | string | *(none)* | Where to write `results.json`. Its directory must exist and be writable, and `--out` must not name a directory; all checked before anything is cloned. Required unless `--prepare-only`. |
 | `--cache-dir` | | string | `$XDG_CACHE_HOME/trelix/eval-suites`, else `~/.cache/trelix/eval-suites` | Where clones (`clones/<sha>/<name>/`) and per-arm run directories (`arms/<sha>/<name>/<arm>/`) are kept. Outside every repository, so no `trelix index` walks it. |
 | `--prepare-only` | | flag | off | Verify the suite and its pinned clone, print what was verified, run nothing. Refused together with `--arm` or `--out`: neither reading of the three is guessed. |
 

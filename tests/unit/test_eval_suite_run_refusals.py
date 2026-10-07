@@ -18,7 +18,8 @@ MUTATIONS THAT MUST MAKE THIS FILE FAIL
                                                    test_an_arm_that_is_not_a_label_...)
 5. the input bytes not re-hashed before the claim  (test_a_committed_file_that_changed_...)
 6. a refusal after the claim not ending with the run-directory line, or an `OSError` of the
-   input copies or an `OSError`/`ImportError` of the index build ending in a traceback
+   input copies or an `OSError`/`ImportError` of the index build ending in a traceback, or the
+   I/O error `write_results` returns for the results file ignored
                                                   (TestAfterTheClaim)
 7. one of the seven isolation variables omitted, or one of the five repository variables not
    removed, or the restore removed, or the restore skipped when the run raises
@@ -218,6 +219,25 @@ class TestAfterTheClaim:
         )
         assert built == []
         assert not (tmp_path / "out" / "results.json").exists()
+
+    def test_a_results_file_that_cannot_be_written_is_a_refusal_naming_the_file(
+        self, tmp_path: Path, spec: SuiteSpec, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`write_results` returns its I/O error instead of raising (a full disk, an `--out`
+        directory removed while the index was built); the run must not end as a success that
+        names a file which is not there."""
+        monkeypatch.setattr(
+            "trelix.eval.suite_run.write_results",
+            lambda path, doc: "[Errno 28] No space left on device",
+        )
+        out = tmp_path / "out" / "results.json"
+        with pytest.raises(SuiteError) as caught:
+            stub_run(tmp_path, spec)
+        assert caught.value.problems == (
+            f"cannot write {out}: [Errno 28] No space left on device",
+            _left_behind(tmp_path, spec),
+        )
+        assert not out.exists()
 
     def test_a_refusal_before_the_claim_has_no_run_directory_line(
         self, tmp_path: Path, spec: SuiteSpec

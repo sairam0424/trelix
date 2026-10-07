@@ -208,7 +208,8 @@ def run_config(clone: Path, run_dir: Path) -> IndexConfig:
 
 def strip_secret_fields(section: Mapping[str, Any]) -> dict[str, Any]:
     """`section` without every field whose name contains a word of `SECRET_WORDS`, except the
-    exact names in `KEPT_FIELDS`."""
+    exact names in `KEPT_FIELDS`. `lower()` is defensive: every pydantic field name here is
+    lowercase, so a case-sensitive match would behave the same today."""
     return {
         name: value
         for name, value in section.items()

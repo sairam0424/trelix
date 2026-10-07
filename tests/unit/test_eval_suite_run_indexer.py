@@ -1,10 +1,11 @@
 """`run_suite` with the real `Indexer`, `Retriever` and `EvalHarness` (over `FakeEmbedder`).
 
 The other `run_suite` tests (`test_eval_suite_run.py`, `test_eval_suite_run_refusals.py`)
-inject `index_fn` and a stub retriever. These two drive the real wiring of a configuration
+inject `index_fn` and a stub retriever. The tests here drive the real wiring of a configuration
 built by `run_config`, so it is exercised by something other than a stub: two independent
-builds of the same index agree record for record, and nothing from the clone runs, nothing is
-written into the clone, and a tracked symlink that leaves the clone is not indexed.
+builds of the same index agree record for record; nothing from the clone runs, nothing is
+written into the clone, and a tracked symlink that leaves the clone is not indexed; and the
+default `index_fn` (`index_repo`) reports what the Indexer built, not a constant.
 
 The real `Chunker` loads tiktoken's `cl100k_base` encoding, which tiktoken downloads unless it
 is cached: offline (the hermetic wrapper, pytest-socket) the cache must already hold it, under
@@ -18,6 +19,11 @@ MUTATIONS THAT MUST MAKE THIS FILE FAIL
    `walker.follow_symlinks` not forced, or `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` missing from
    the environment of the Indexer's own git call, or an exported `GIT_DIR` reaching it
                                                  (test_nothing_from_the_clone_runs_...)
+3. `index_repo` reporting a constant dimension instead of the Indexer's embedder's (8 is pinned
+   by test_nothing_from_the_clone_runs_..., 16 here)
+                                                 (test_the_dimension_is_the_indexers_embedders_...)
+4. `index_repo` not reading `stats["errors"]` from what `Indexer.index` returned
+                                                 (test_an_error_count_the_indexer_reports_...)
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ import os
 import runpy
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -41,9 +48,13 @@ from tests.unit.eval_suite_harness import (
     run_local,
     write_suite,
 )
+from tests.unit.eval_suite_harness import remote as remote
+from tests.unit.eval_suite_harness import spec as spec
 from trelix.core.config import IndexConfig
 from trelix.eval.harness import EvalHarness
 from trelix.eval.results import load_results
+from trelix.eval.suite import SuiteError, SuiteSpec
+from trelix.indexing.indexer import Indexer
 
 _NULL = os.devnull
 # The canary the symlinked file holds; the word a leaked chunk would contain.
@@ -157,3 +168,43 @@ class TestTheRealIndexer:
             assert "GIT_DIR" not in call.env
         assert os.environ["GIT_DIR"] == str(tmp_path / "elsewhere" / ".git")
         assert load_results(run.out).arm == "baseline"
+
+
+class TestWhatIndexRepoReads:
+    """`index_repo`, the default `index_fn`, reads two things off the real Indexer: the width of
+    its embedder and the error count of the build. Every other test here embeds in 8 dimensions
+    and builds without an error, so a constant in either place would pass them."""
+
+    def test_the_dimension_is_the_indexers_embedders_not_a_constant(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spec: SuiteSpec
+    ) -> None:
+        fake_embedders(monkeypatch, dimension=16)
+        run = run_local(spec, arm="wide", cache_root=tmp_path / "cache", out=out_file(tmp_path))
+        assert run.dimension == 16
+        assert load_results(run.out).embedder.dimension == 16
+        assert [r.error for r in run.records] == [None, None]
+
+    def test_an_error_count_the_indexer_reports_refuses_the_run_and_writes_no_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spec: SuiteSpec
+    ) -> None:
+        """The real build runs to the end (the index is there) and its `stats` come back with
+        `errors` raised to 2, as a parse or write failure would leave them."""
+        fake_embedders(monkeypatch)
+        real_index = Indexer.index
+
+        def two_errors(self: Indexer) -> dict[str, Any]:
+            return {**real_index(self), "errors": 2}
+
+        monkeypatch.setattr(Indexer, "index", two_errors)
+        clone = tmp_path / "cache" / "clones" / spec.repo_sha / "demo"
+        run_dir = tmp_path / "cache" / "arms" / spec.repo_sha / "demo" / "baseline"
+        with pytest.raises(SuiteError) as caught:
+            run_local(spec, arm="baseline", cache_root=tmp_path / "cache", out=out_file(tmp_path))
+        assert caught.value.problems == (
+            f"indexing {clone} reported 2 error(s): a run with a parse or write error is not a "
+            "measurement, so no results were written",
+            f"the run directory {run_dir} is left as it is; delete it before running this arm "
+            "again",
+        )
+        assert (run_dir / "index.db").is_file()
+        assert not (tmp_path / "out" / "results.json").exists()

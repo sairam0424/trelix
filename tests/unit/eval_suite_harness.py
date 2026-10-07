@@ -325,13 +325,17 @@ def clock(iso: str) -> Callable[[], datetime]:
     return lambda: datetime.fromisoformat(iso)
 
 
-def fake_embedders(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the real Indexer and the real Retriever embed with `FakeEmbedder(dimension=8)`.
+def fake_embedders(monkeypatch: pytest.MonkeyPatch, dimension: int = 8) -> None:
+    """Make the real Indexer and the real Retriever embed with `FakeEmbedder(dimension)`.
 
     Both modules import `make_embedder` by name, so both names are patched.
     """
-    monkeypatch.setattr("trelix.indexing.indexer.make_embedder", lambda cfg: FakeEmbedder(8))
-    monkeypatch.setattr("trelix.retrieval.retriever.make_embedder", lambda cfg: FakeEmbedder(8))
+    monkeypatch.setattr(
+        "trelix.indexing.indexer.make_embedder", lambda cfg: FakeEmbedder(dimension)
+    )
+    monkeypatch.setattr(
+        "trelix.retrieval.retriever.make_embedder", lambda cfg: FakeEmbedder(dimension)
+    )
 
 
 def run_local(spec: SuiteSpec, **kwargs: Any) -> SuiteRun:
