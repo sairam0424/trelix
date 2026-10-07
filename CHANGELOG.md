@@ -56,6 +56,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   tool goes back to a range or to no version.
 
 ### Fixed
+- **`trelix-mcp` keeps at most `TRELIX_MCP_RETRIEVER_CACHE_SIZE` (default 8) Retrievers; the least
+  recently used is dropped, not closed.** The cache had no bound, and each entry may hold an
+  embedding model (`local` provider). A value that is not an integer of at least 1 stops the
+  server at start-up with exit code 2, like the other `TRELIX_MCP_*` limits.
 - **`trelix-mcp` answers every invalid input with a tool error that names the argument.** Measured
   through an in-process client before the fix: a `repo_path` that did not exist, or held only
   whitespace, was not a tool result at all but a JSON-RPC "Invalid request parameters" error
@@ -345,6 +349,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
   server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
   agents: `docs/integrations/AGENTS_SNIPPET.md`.
+- **`TRELIX_OTEL_CAPTURE_CONTENT` (default `false`): trelix's own gate in front of OpenTelemetry's content
+  opt-in** (roadmap C-8, requirement R-C6-03, PR 2 of 4). Retrieval leg spans hand their `query_text` to
+  `opentelemetry-util-genai` only when this flag is on; where the text then goes is still decided by
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (default `NO_CONTENT`; read once when tracing
+  starts on `opentelemetry-util-genai` 1.2b0, re-read per span on 1.0b0 and 1.1b0): `SPAN_ONLY` puts it
+  on span attributes; `EVENT_ONLY`/`SPAN_AND_EVENT`, or
+  `OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT=true`, also emit one `gen_ai.client.inference.operation.details`
+  log record per chat call on the Logs signal (content-free under `NO_CONTENT`); trelix installs no
+  `LoggerProvider`, so these go nowhere unless the host configures one. With the trelix flag on and the
+  upstream mode `NO_CONTENT`, trelix logs one WARNING saying so (best effort: parallel legs on the
+  first query may repeat it), decided from the memoised
+  handler rather than a re-read of the environment. A host that opted another library into content
+  capture no longer receives trelix's query text (and, once chat spans ship, prompts and repository code)
+  without asking for it. A malformed value behaves like a malformed `TRELIX_OTEL_ENABLED`.
+  `docs/OBSERVABILITY.md` gains a "Content capture" section; `docs/CONFIGURATION.md` and `.env.example`
+  list both names.
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
   of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
   answer the question; this one tags the context and instructs the model, nothing reads the model's
@@ -379,6 +399,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     bootstrap p-value for the mean paired difference; the same resampled queries are applied to both
     runs), `mde` (`2.8 * sigma_d / sqrt(n)`, the minimum detectable effect at 80 percent power and 5
     percent two-sided error) and `holm` (Holm-Bonferroni step-down). See `eval/README.md`.
+- **Opt-in on-disk cache of index-time embeddings** (`TRELIX_EMBEDDING_CACHE_ENABLED`, default
+  `false`; nothing is written when off, and indexing is byte-identical to before). With it on,
+  `Indexer` wraps its embedder in `CachedIndexEmbedder` (`src/trelix/indexing/embedding_cache.py`):
+  every chunk text is looked up by its sha256 in one SQLite file per **embedder fingerprint**
+  (provider, model id, the width knobs that change a vector for the same model id, the declared
+  width) under `TRELIX_EMBEDDING_CACHE_DIR` (absolute path; default
+  `$XDG_CACHE_HOME/trelix/embeddings`, a relative `XDG_CACHE_HOME` being ignored as the XDG spec
+  requires, else `~/.cache/trelix/embeddings`), and only the
+  de-duplicated misses reach the provider. A fresh index of unchanged text makes no embedding
+  calls and stores the same float32 bytes (a real-`Indexer` test pins both). The index-run stats
+  dict (the CLI's `Done.` line, the MCP `index_codebase` result) and `index_file()`'s result gain
+  `chunks_from_cache`, present on every `ok` result and 0 when off, in both the batch and the
+  streaming pipeline; the REST `IndexResponse` is unchanged. The directory is created `0o700`
+  and each file created `0o600`. `TRELIX_EMBEDDING_CACHE_MAX_MB` (default `4096`, per file,
+  minimum 1) is a least-recently-used trim applied after each run, not a limit during one, and
+  a trim that fails (file locked or deleted) is logged, never fatal; the cap is measured against
+  the file's live pages, so a trim whose `VACUUM` another indexer's lock defeated does not evict
+  the same fraction again on the next run (at most a small residual from partially emptied pages,
+  then none; the rest is reclaimed space). Refused before any model is
+  loaded: `--use-batch-api`/`TRELIX_USE_BATCH_API` with the `openai` provider while the cache is
+  on, and `trelix index --resume-batch` with the cache on (the Batch API path never consults the
+  cache; the plan's miss-partition before `submit_batch` is replaced by this refusal), a relative
+  `TRELIX_EMBEDDING_CACHE_DIR`, and an unusable directory; a cache file of another width or
+  schema is named and refused. `embed_query` is not cached here (that is
+  `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`). The hosted GitHub App forwards every `TRELIX_*` host
+  variable into its `trelix index` child, so setting this on a multi-tenant host would share
+  one cache across tenants; SECURITY.md has the section. A `trelix cache` command group is not
+  part of this change.
 - **Golden file format v2 and `trelix eval-validate`** (second of three changes toward comparing
   retrieval runs honestly; no score is computed any differently).
   - A golden line may add `id`, `lang`, `kind` (`nl`, `keyword`, `commit` or `issue`), `source`,
@@ -598,6 +646,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   client, so with the variable set `search` and `query` plan through that server too (one call per
   distinct query); the zero-LLM-call recipe in the FAQ, README, getting-started, user and
   why-trelix guides and `SECURITY.md` now requires it unset as well as the chat credential.
+- **`trelix review` reports a hunk as `truncated` (`detail: prompt_truncated`) when a local server
+  cut the prompt.** Ollama drops the head of a prompt that exceeds its context length and answers
+  HTTP 200 with a normal finish reason (the system prompt is the first thing to go); the only trace
+  is a `prompt_tokens` smaller than the prompt. With `TRELIX_LLM_BASE_URL` set, a reported count
+  below 0.85 x the cl100k_base count of what was sent marks the hunk unreviewed, nothing is salvaged
+  from the reply and the hunk is not retried. Exit codes 3/4 and the outcome record are unchanged in
+  shape (the workflow and the GitHub App validate `status` only and never read `detail`). The check
+  needs `usage` in the reply and the cl100k_base encoding on disk; when either is missing it warns
+  once and stays out of the way. `trelix ask` (a stream) and the query planner's tool call are not
+  checked.
 
 ### Changed
 - **The retriever's per-query debug trace is written beside the index, not beside the source.**
@@ -627,6 +685,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   triggers its re-retrieval. GraphRAG map-reduce prompts carry the cite lines but not the
   abstention sentence, so a GraphRAG answer cannot abstain by protocol. With the flag off the
   prompts are unchanged; the line is recognised either way. No live model call was made.
+- **Retrieval `query_text` is now emitted only when `TRELIX_OTEL_CAPTURE_CONTENT=true` as well.** Before,
+  trelix handed the text to every leg span and the upstream `SPAN_ONLY` mode alone put
+  `gen_ai.retrieval.query.text` on it; hosts that relied on the upstream variable alone must set the
+  trelix flag too. (The other way round, the trelix flag without the upstream mode, logs one WARNING.)
 - **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
   `resolve_allowed_roots`, `is_within_allowed_roots`; the first now takes any number of explicit
   roots, otherwise same bodies) so `trelix-mcp` can apply

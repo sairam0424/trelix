@@ -340,6 +340,14 @@ TRELIX_LLM_MODEL=qwen2.5-coder:7b                # the server's own tag (the def
 - The output cap is sent as `max_tokens`, whatever the model is called. Ollama has no
   `max_completion_tokens` field and ran unbounded when that was the only limit sent, which also made
   `TRELIX_REVIEW_MAX_TOKENS` and the retry on a cut-off reply inert.
+- `trelix review` reports a hunk as `truncated` with `detail: prompt_truncated` when the server's
+  reported `prompt_tokens` is under 0.85 x the cl100k_base count of what trelix sent, keeps nothing
+  from that reply and does not retry it. Ollama drops the head of a prompt longer than its context
+  length (the system prompt goes first) and answers HTTP 200 with a normal finish reason; the smaller
+  count is the only trace. llama-server rejects an oversize prompt with HTTP 400 instead, which trelix
+  reports as `error` (`exception:BadRequestError`). The check needs `usage` in the reply and the
+  cl100k_base encoding on disk (one warning, then off, when either is missing), and it covers the
+  review call only: `trelix ask` (a stream) and the query planner's tool call are not checked.
 - A model tag under 20B parameters (`qwen2.5-coder:7b`), or one with no readable size (`glm-4.5-air`;
   a mixture tag such as `mixtral-8x7b` counts as unreadable), logs one warning each time a backend
   is built: a `review` on an indexed repository builds two (the query planner's and the
@@ -564,6 +572,9 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 |---|---|---|
 | `TRELIX_EMBEDDER_EMBED_MAX_TOKENS_PER_BATCH` | `100000` | Max tokens per embedding batch |
 | `TRELIX_EMBEDDER_TPM_LIMIT` | `0` | Tokens-per-minute rate limit (0 = unlimited) |
+| `TRELIX_EMBEDDING_CACHE_ENABLED` | `false` | On-disk cache of index-time chunk embeddings, one SQLite file per embedder fingerprint (provider, model id, width knobs). A fresh index of unchanged text makes no provider calls. Refused with `TRELIX_USE_BATCH_API` on `openai`. Not the query cache (`TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`). Single-operator machines only — see [CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time) |
+| `TRELIX_EMBEDDING_CACHE_DIR` | _(unset)_ | Cache directory, absolute path only. Unset: `$XDG_CACHE_HOME/trelix/embeddings`, else `~/.cache/trelix/embeddings`. Created `0o700`, files `0o600` |
+| `TRELIX_EMBEDDING_CACHE_MAX_MB` | `4096` | Per-file LRU trim applied after each index run (minimum 1); not a limit during a run |
 
 ### LLM — Provider-specific
 

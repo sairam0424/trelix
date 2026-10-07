@@ -833,6 +833,14 @@ class RetrievalConfig(BaseSettings):
         default=None,
         alias="OTEL_EXPORTER_OTLP_ENDPOINT",
     )
+    # Hand prompt, reply and query text to the GenAI instrumentation. Off by
+    # default; where the text then goes is decided by
+    # OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT (read once when tracing
+    # starts on util-genai 1.2b0; 1.0b0 and 1.1b0 re-read it per span).
+    otel_capture_content: bool = Field(
+        default=False,
+        alias="TRELIX_OTEL_CAPTURE_CONTENT",
+    )
 
     # FLARE-style confidence-gated re-retrieval
     flare_enabled: bool = Field(
@@ -1757,6 +1765,58 @@ class ImageConnectorConfig(BaseSettings):
 # ---------------------------------------------------------------------------
 
 
+class EmbeddingCacheConfig(BaseSettings):
+    """On-disk cache of index-time document embeddings. Off by default.
+
+    Distinct from ``TRELIX_RETRIEVAL_QUERY_CACHE_SIZE``, the in-memory LRU for
+    ``embed_query()``: this one persists the vectors of indexed chunk text across runs
+    (``src/trelix/indexing/embedding_cache.py``), so a fresh index of unchanged text
+    makes no embedding calls. ``dir`` must be absolute; unset means
+    ``$XDG_CACHE_HOME/trelix/embeddings`` else ``~/.cache/trelix/embeddings``, resolved
+    at use by ``resolve_cache_dir`` (``XDG_CACHE_HOME`` is read from ``os.environ``
+    there, never as a settings field). ``max_mb`` is a per-fingerprint-file trim
+    applied after each index run, not a hard limit during one.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_EMBEDDING_CACHE_",
+        env_file=OPERATOR_ENV_FILE,
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    enabled: bool = False
+    dir: Path | None = None
+    max_mb: int = Field(default=4096, ge=1)
+
+    @field_validator("enabled", "dir", "max_mb", mode="before")
+    @classmethod
+    def _blank_is_the_default(cls, value: object) -> object:
+        """A blank `TRELIX_EMBEDDING_CACHE_*=` is unset (an undefined CI variable).
+
+        Raises ``PydanticUseDefault`` as the review validators above do: returning
+        ``None`` here would fail the ``bool``/``int`` validation that follows.
+        """
+        if isinstance(value, str) and not value.strip():
+            raise PydanticUseDefault()
+        return value
+
+    @field_validator("dir", mode="after")
+    @classmethod
+    def _dir_must_be_absolute(cls, value: Path | None) -> Path | None:
+        """Refuse a relative cache directory: it would resolve against the process cwd,
+        which is routinely inside a repository trelix does not own."""
+        if value is None:
+            return None
+        expanded = value.expanduser()
+        if not expanded.is_absolute():
+            raise ValueError(
+                f"TRELIX_EMBEDDING_CACHE_DIR must be an absolute path (got {str(value)!r})"
+            )
+        return expanded
+
+
 class IndexConfig(BaseSettings):
     """
     Top-level config. Instantiate once and pass through the whole pipeline.
@@ -1788,6 +1848,7 @@ class IndexConfig(BaseSettings):
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     git_linker: GitLinkerConfig = Field(default_factory=GitLinkerConfig)
     image: ImageConnectorConfig = Field(default_factory=ImageConnectorConfig)
+    embedding_cache: EmbeddingCacheConfig = Field(default_factory=EmbeddingCacheConfig)
 
     # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
     # Requires LLM API access. Off by default — zero cost when disabled.

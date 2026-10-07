@@ -77,6 +77,36 @@ anywhere. See [Per-Project Configuration](#per-project-configuration).
 There is **no embedding concurrency setting.** Indexing throughput against a remote provider is
 tuned via the three batching variables above, not by a worker/concurrency count.
 
+### Embedding cache (index time)
+
+Off by default. When on, anything that constructs an `Indexer` (`trelix index`, `watch`,
+`update-index`, the REST `POST /index`, the MCP `index_codebase` tool) looks every chunk's text
+up by its sha256 in an on-disk cache before calling the embedding provider, and only the misses
+are embedded. A fresh index of unchanged text makes no provider calls and stores byte-identical
+vectors. Distinct from `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`, the in-memory LRU for `embed_query()`
+at search time.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_EMBEDDING_CACHE_ENABLED` | `false` | Turn the cache on. Refused together with `TRELIX_USE_BATCH_API`/`--use-batch-api` on the `openai` provider, and by `trelix index --resume-batch` (the Batch API path never consults the cache); both exit 1 before any model is loaded |
+| `TRELIX_EMBEDDING_CACHE_DIR` | _(unset)_ | Directory for the cache files. **Must be absolute** (`~` is expanded); a relative value is a configuration error, because it would resolve against whatever repository is being indexed. Unset means `$XDG_CACHE_HOME/trelix/embeddings` (a relative `XDG_CACHE_HOME` is ignored, as the XDG spec requires), else `~/.cache/trelix/embeddings` |
+| `TRELIX_EMBEDDING_CACHE_MAX_MB` | `4096` | Size trim per cache file (one file per embedder fingerprint), minimum `1`. Applied after each index run: the least recently used rows go until the file fits. Not a limit during a run — one run can write past it |
+
+One SQLite file per **embedder fingerprint**: provider, model id, the configuration knobs that
+change a vector for the same model id (`TRELIX_EMBEDDER_OPENAI_DIMENSIONS`,
+`TRELIX_EMBEDDER_AZURE_DIMENSIONS` and `AZURE_ENDPOINT`, `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS`,
+the Titan dimensions and normalize flags) and the declared width. Changing the model is a
+different file, never a mixed one, and a file whose recorded width disagrees with the embedder
+actually built is refused by name. The directory is created `0o700` — and set to `0o700` on
+every run, including a pre-existing directory you point `TRELIX_EMBEDDING_CACHE_DIR` at, so
+give the cache a directory of its own — and each file created `0o600` (POSIX; Windows applies
+neither). Two indexers may share a file; first opens of a new file are serialised, and a trim
+that finds the file locked or deleted is skipped for that run. The run reports
+`chunks_from_cache` beside `chunks_embedded`.
+**Single-operator machines only:** the hosted GitHub App forwards every `TRELIX_*` host variable
+into its `trelix index` child, so setting this on a multi-tenant host shares one cache across
+every tenant it indexes — see [SECURITY.md](../SECURITY.md#embedding-cache-on-disk-trelix_embedding_cache_enabled).
+
 ### Retrieval
 
 | Variable | Default | Description |
@@ -114,8 +144,8 @@ tuned via the three batching variables above, not by a worker/concurrency count.
 | `TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_SYMBOLS` | `10` | See above. Chosen against one repository's golden set: the floor restored nDCG@10 to 0.6189/0.6217 from 0.6039/0.5791, at the cost of top-rank precision on exact-filename queries (Recall@10 stays 1.0000, nDCG 1.0000 -> 0.8253). |
 | `TRELIX_TELEMETRY_ENABLED` | `false` | Record every `retrieve()` call to the `query_telemetry` table in the index DB. Zero overhead when disabled. This setting lives on the top-level index config, not on the retrieval config — so it is `TRELIX_TELEMETRY_ENABLED`, **not** `TRELIX_RETRIEVAL_TELEMETRY`, which is not read. For OpenTelemetry spans see `TRELIX_OTEL_ENABLED` under [Observability](#observability-opentelemetry) — a separate, independent switch |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM-powered file summaries at index time (requires a configured LLM provider) |
-| `TRELIX_REVIEW_MAX_TOKENS` | `4096` | Output-token limit for the model call that reviews one hunk in `trelix review` (range 256–16384). A review is a JSON array, so a limit that is too low cuts it off mid-object. When a reply is cut off, trelix retries once at four times this limit (capped at 16384, so a limit of 16384 is not retried) and otherwise reports the hunk as truncated, which counts as not reviewed. The ceiling is 16384 because the Anthropic SDK refuses a non-streaming request above 21333 tokens and some models refuse less. On models that think, reasoning tokens count toward the limit. This setting lives on the top-level index config, so it is `TRELIX_REVIEW_MAX_TOKENS`, not `TRELIX_LLM_...`. |
-| `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` | `0.0` | Share of hunks, from `0.0` to `1.0`, that `trelix review` may leave unreviewed (cut off, refused, filtered, not a review, or failed) before it exits `4` after printing its findings. The default `0.0` means any unreviewed hunk; `1` restores exit `0` for a partial review. A review where nothing usable came out still exits `3`. A blank value is read as unset. This setting lives on the top-level index config, so it is `TRELIX_REVIEW_...`, not `TRELIX_LLM_...`. |
+| `TRELIX_REVIEW_MAX_TOKENS` | `4096` | Output-token limit for the model call that reviews one hunk in `trelix review` (range 256–16384). A review is a JSON array, so a limit that is too low cuts it off mid-object. When a reply is cut off, trelix retries once at four times this limit (capped at 16384, so a limit of 16384 is not retried) and otherwise reports the hunk as truncated, which counts as not reviewed. With `TRELIX_LLM_BASE_URL` set, a hunk is also truncated (detail `prompt_truncated`) when the server's reported `prompt_tokens` is under 0.85 x the cl100k_base count of what trelix sent, the sign that it cut the prompt; that hunk is not retried and nothing is kept from its reply. The ceiling is 16384 because the Anthropic SDK refuses a non-streaming request above 21333 tokens and some models refuse less. On models that think, reasoning tokens count toward the limit. This setting lives on the top-level index config, so it is `TRELIX_REVIEW_MAX_TOKENS`, not `TRELIX_LLM_...`. |
+| `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` | `0.0` | Share of hunks, from `0.0` to `1.0`, that `trelix review` may leave unreviewed (cut off, its prompt cut by a local server (`prompt_truncated`), refused, filtered, not a review, or failed) before it exits `4` after printing its findings. The default `0.0` means any unreviewed hunk; `1` restores exit `0` for a partial review. A review where nothing usable came out still exits `3`. A blank value is read as unset. This setting lives on the top-level index config, so it is `TRELIX_REVIEW_...`, not `TRELIX_LLM_...`. |
 | `TRELIX_REVIEW_OUTCOME_FILE` | _(none)_ | Path where `trelix review` writes a JSON record (`schema_version`, `hunks_total`, `hunks_reviewed`, `hunks_unreviewed`, `exit_code`, `hunks` for the first 100 unreviewed as `file`/`line`/`status`/`detail`, `hunks_omitted`). Created with mode 0600 and moved into place atomically; the parent directory must exist; a failure to write it only warns. `status` and `detail` are a fixed vocabulary plus a character-limited provider stop token or exception class name and never carry model prose; `file` is text from the diff, so escape it when you display it. The file is written before comments are posted, and not at all when the command stops before reviewing (an error, or no changes to review), so remove a reused path first. Unset or blank: no file. |
 
 ### Model-Aware Context Budget
@@ -392,6 +422,7 @@ replace `TRELIX_API_AUTH_TOKEN`; see [SECURITY.md](../SECURITY.md#rest-api--host
 | `TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS` | `3600` | Time-to-live (seconds) for an inactive resource subscription before it is evicted from the `SubscriptionRegistry`. Expired subscriptions are swept lazily on the next registry access. |
 | `TRELIX_MCP_MAX_K` | `50` (min: `1`) | Largest page a list tool returns: `k` on `search_code`, `graph_search_mcp` and `federation_search_all`, and `limit` on `agent_list_sessions`, is clamped to `1..TRELIX_MCP_MAX_K`, and `page_size` in the response says what was used. (`blast_radius`'s own `limit` clamps to `1..500`.) Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
 | `TRELIX_MCP_MAX_RESULT_CHARS` | `15000` (min: `0`) | Budget for the text of a list result, in characters. The budget counts both copies a client is sent (the text block, with each quote escaped, and `structuredContent`), so the whole response is at most twice the budget (30,000 characters by default) and its text under the budget. Over it, the tail of the list is dropped and the response says so (`truncated`, `omitted`, and for a bare array a second text block and `_meta.trelix`); `next_cursor` continues from the first dropped result. One result is always kept. `0` turns the cut off. Read on every call; blank means the default; a negative or non-integer value is a start-up error. See [MCP_GUIDE.md](MCP_GUIDE.md#output-size-and-limits). |
+| `TRELIX_MCP_RETRIEVER_CACHE_SIZE` | `8` (min: `1`) | Most Retrievers `trelix-mcp` keeps across tool calls, one per repository (`search_code` and `graph_search_mcp` reuse them, and each may hold an embedding model with the `local` provider). Past the bound the least recently used one is dropped, not closed (a call in another worker thread may still hold it); a later call for that repository builds it again. Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
 
 ### Observability (OpenTelemetry)
 
@@ -402,6 +433,7 @@ Requires `pip install trelix[otel]`. See [OBSERVABILITY.md](OBSERVABILITY.md) fo
 | `TRELIX_OTEL_ENABLED` | `false` | Emit one OpenTelemetry span per retrieval leg (vector/BM25/grep/sparse/sub-chunk/file-summary) plus pipeline-stage spans (planner/fusion/expansion/rerank/pagerank/assembly). Zero import cost and zero behavior change when disabled. |
 | `OTEL_SERVICE_NAME` | `trelix` | Service name attached to the installed `TracerProvider`'s resource attributes. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(none)_ | OTLP collector endpoint. If unset, spans are still created but have nowhere to export to unless a host application configures its own exporter/processor before trelix runs. |
+| `TRELIX_OTEL_CAPTURE_CONTENT` | `false` | Hand retrieval query text (and prompts and replies, once LLM chat spans exist) to the GenAI instrumentation. Off by default; the text includes repository code. Where it then goes is decided by OpenTelemetry's own `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (not `TRELIX_`-prefixed; default `NO_CONTENT`; read once when tracing starts on `opentelemetry-util-genai` 1.2b0, re-read per span on 1.0b0 and 1.1b0): `SPAN_ONLY` puts the text on the retrieval (and chat) span attributes, `EVENT_ONLY` puts prompts and replies in a `gen_ai.client.inference.operation.details` record on the OpenTelemetry Logs signal (only when a `LoggerProvider` is configured; retrieval spans emit no such record), `SPAN_AND_EVENT` does both, `NO_CONTENT` discards it and trelix logs one WARNING. A pydantic boolean like `TRELIX_OTEL_ENABLED`: `true/1/yes/on`, `false/0/no/off`; a blank value or `maybe` is a `Configuration error` (exit 1) where the CLI catches it; the other two paths are in [OBSERVABILITY.md § Content capture](OBSERVABILITY.md#content-capture). |
 
 ---
 
@@ -554,6 +586,15 @@ TRELIX_STORE_BACKEND=sqlite
 # TRELIX_STORE_BM25_READ_POOL_SIZE=4
 
 # ---------------------------------------------------------------------------
+# Embedding cache (index time) — off by default; single-operator machines only
+# ---------------------------------------------------------------------------
+# TRELIX_EMBEDDING_CACHE_ENABLED=false
+# Absolute path only. Unset: $XDG_CACHE_HOME/trelix/embeddings, else ~/.cache/trelix/embeddings
+# TRELIX_EMBEDDING_CACHE_DIR=/home/me/.cache/trelix/embeddings
+# Per-file LRU trim after each run, in MB (minimum 1); not a limit during a run
+# TRELIX_EMBEDDING_CACHE_MAX_MB=4096
+
+# ---------------------------------------------------------------------------
 # Federation
 # ---------------------------------------------------------------------------
 
@@ -624,6 +665,7 @@ TRELIX_STORE_BACKEND=sqlite
 # TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 # TRELIX_MCP_MAX_K=50
 # TRELIX_MCP_MAX_RESULT_CHARS=15000
+# TRELIX_MCP_RETRIEVER_CACHE_SIZE=8
 ```
 
 ---

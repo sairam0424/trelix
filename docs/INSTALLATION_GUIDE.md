@@ -26,7 +26,7 @@ one-liner to Docker, standalone binaries, and virtual-environment setups.
 |-------------|-------|
 | **Python 3.12, 3.13, or 3.14** | No known upper bound |
 | **pip** or **uv** | pip ships with Python; uv is optional but significantly faster |
-| **~500 MB free disk** | The local embedder model is downloaded on first use and cached by `sentence-transformers`/HuggingFace, i.e. under `$HF_HOME` (default `~/.cache/huggingface/hub/`). trelix passes no custom cache directory and has no `TRELIX_CACHE_DIR` setting. |
+| **~500 MB free disk** | The local embedder model is downloaded on first use and cached by `sentence-transformers`/HuggingFace, i.e. under `$HF_HOME` (default `~/.cache/huggingface/hub/`). trelix passes no custom cache directory and has no `TRELIX_CACHE_DIR` setting. The opt-in index-time embedding cache is a separate thing with its own `TRELIX_EMBEDDING_CACHE_DIR` (default `~/.cache/trelix/embeddings`); see [CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time). |
 | `OPENAI_API_KEY` | Optional — enables OpenAI embeddings (higher quality, requires internet) |
 | `AZURE_API_KEY` + `AZURE_ENDPOINT` | Optional — enables Azure OpenAI embeddings |
 | `VOYAGE_API_KEY` | Optional — enables Voyage AI embeddings |
@@ -537,7 +537,7 @@ and then uses the default. Use the replacement instead:
 | `COHERE_RERANK_MODEL` | `COHERE_MODEL_RERANK` |
 | `TRELIX_CHUNK_OVERLAP` | nothing — chunking follows AST boundaries; there is no token-overlap setting |
 | `TRELIX_HYBRID_ALPHA` | nothing — legs are fused by Reciprocal Rank Fusion, not a dense/sparse blend weight. The nearest knob is `TRELIX_RETRIEVAL_RRF_K`. |
-| `TRELIX_CACHE_DIR` | nothing — model caches follow the underlying libraries (e.g. `HF_HOME`); the index lives at `<repo>/.trelix/index.db` |
+| `TRELIX_CACHE_DIR` | nothing for model caches — they follow the underlying libraries (e.g. `HF_HOME`); the index lives at `<repo>/.trelix/index.db`. The opt-in embedding cache has its own `TRELIX_EMBEDDING_CACHE_DIR` (absolute path; default `~/.cache/trelix/embeddings`) |
 | `TRELIX_LOG_LEVEL` | nothing — use `trelix index --verbose` / `-v` |
 | `TRELIX_WATCH_DEBOUNCE_MS` | nothing — **there is no debounce flag or environment variable.** `trelix watch` uses `FileWatcher(debounce_ms=500)` and `trelix watch-all` uses `MultiRepoWatcher(debounce_ms=1600)`, both hardcoded at the call site. Change it only from Python by constructing the watcher yourself. |
 

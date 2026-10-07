@@ -80,6 +80,9 @@ SLOW_FILES = frozenset(
         "unit/test_dotenv_anchoring.py",
         "unit/test_dry_run.py",
         "unit/test_embedder.py",
+        # Measured 24.65s for 15 tests on this tree (load 25-35): eight real Indexer runs
+        # over a tree-sitter-parsed tmp repo, plus two CliRunner invocations.
+        "unit/test_embedding_cache_indexer.py",
         "unit/test_eval_harness.py",
         # The four `trelix eval-suite` files that make real git clones of a repository built in
         # a temp directory (the CLI file is listed above with the other test_cli_* files).

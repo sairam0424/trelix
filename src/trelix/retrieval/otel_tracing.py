@@ -29,7 +29,7 @@ from __future__ import annotations
 import functools
 import logging
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from opentelemetry.util.genai.handler import TelemetryHandler
@@ -38,11 +38,12 @@ logger = logging.getLogger("trelix.retrieval.otel")
 
 _handler: TelemetryHandler | None = None
 _handler_service_name: str | None = None
+_capture_inert_warned = False
 
 _meter: Any = None
 _meter_service_name: str | None = None
 _embedding_counters: dict[str, Any] | None = None
-_env_otel_settings: tuple[bool, str, str | None] | None = None
+_env_otel_settings: _OtelSettings | None = None
 _metrics_unavailable_logged = False
 
 
@@ -105,6 +106,43 @@ def _handler_for(cfg: Any) -> TelemetryHandler | None:
     )
 
 
+class _OtelSettings(NamedTuple):
+    enabled: bool
+    service_name: str
+    otlp_endpoint: str | None
+    capture_content: bool
+
+
+def capture_content_enabled(cfg: Any = None) -> bool:
+    """Trelix's own content gate (TRELIX_OTEL_CAPTURE_CONTENT); never imports opentelemetry.
+
+    The library then applies OpenTelemetry's OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT.
+    """
+    return _otel_settings(cfg).capture_content
+
+
+def _warn_if_capture_is_inert(handler: Any) -> None:
+    """Warn once (best effort; unlocked check-then-set) when the flag is on but text is dropped.
+
+    Asks the MEMOISED handler (its mode is fixed when it is built), not the live environment,
+    so a value exported later does not silence it. On util-genai 1.2b0 that is also what the
+    spans carry; 1.0b0 and 1.1b0 re-read the variable per span (docs/OBSERVABILITY.md).
+    """
+    global _capture_inert_warned
+    try:
+        if _capture_inert_warned or handler.should_capture_content():
+            return
+    except Exception as exc:
+        logger.debug("Could not read the content-capture mode: %s", exc)
+        return
+    _capture_inert_warned = True
+    logger.warning(
+        "TRELIX_OTEL_CAPTURE_CONTENT is true but OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+        " is NO_CONTENT (unset or invalid) — no prompt, reply or query text will be recorded."
+        " Set it to SPAN_ONLY, EVENT_ONLY or SPAN_AND_EVENT."
+    )
+
+
 def with_current_context[T](fn: Callable[..., T]) -> Callable[..., T]:
     """
     Wrap *fn* so it runs under the OTel context captured at wrap time.
@@ -142,6 +180,7 @@ class retrieval_leg_span:
     sub-chunk/file-summary) in a `gen_ai.*` retrieval span via
     `TelemetryHandler.retrieval()`. No-op (never raises, never imports
     opentelemetry) when *cfg* has otel_enabled=False or init fails.
+    *query_text* is handed to the span only when capture_content_enabled(cfg).
     """
 
     def __init__(
@@ -161,8 +200,9 @@ class retrieval_leg_span:
             if handler is not None:
                 try:
                     self._invocation = handler.retrieval(data_source_id=leg)
-                    if query_text is not None:
+                    if query_text is not None and capture_content_enabled(cfg):
                         self._invocation.query_text = query_text
+                        _warn_if_capture_is_inert(handler)
                     if top_k is not None:
                         self._invocation.top_k = float(top_k)
                 except Exception as exc:
@@ -250,9 +290,8 @@ class pipeline_stage_span:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _otel_settings(cfg: Any) -> tuple[bool, str, str | None]:
-    """(enabled, service_name, otlp_endpoint) — from *cfg*, or from the
-    environment when *cfg* is None.
+def _otel_settings(cfg: Any) -> _OtelSettings:
+    """The otel_* settings — from *cfg*, or from the environment when *cfg* is None.
 
     Every span helper above is handed a RetrievalConfig by its caller. The
     embedder cannot be: EmbedderConfig carries no otel_* fields, and all four
@@ -264,10 +303,11 @@ def _otel_settings(cfg: Any) -> tuple[bool, str, str | None]:
     field, same precedence — once per process (~15 ms, measured).
     """
     if cfg is not None:
-        return (
+        return _OtelSettings(
             bool(getattr(cfg, "otel_enabled", False)),
             getattr(cfg, "otel_service_name", "trelix"),
             getattr(cfg, "otel_exporter_endpoint", None),
+            bool(getattr(cfg, "otel_capture_content", False)),
         )
     global _env_otel_settings
     if _env_otel_settings is None:
@@ -275,14 +315,15 @@ def _otel_settings(cfg: Any) -> tuple[bool, str, str | None]:
             from trelix.core.config import RetrievalConfig
 
             resolved = RetrievalConfig()
-            _env_otel_settings = (
+            _env_otel_settings = _OtelSettings(
                 bool(resolved.otel_enabled),
                 resolved.otel_service_name,
                 resolved.otel_exporter_endpoint,
+                bool(resolved.otel_capture_content),
             )
         except Exception as exc:
             logger.debug("Could not resolve OTel settings from the environment: %s", exc)
-            _env_otel_settings = (False, "trelix", None)
+            _env_otel_settings = _OtelSettings(False, "trelix", None, False)
     return _env_otel_settings
 
 
@@ -291,7 +332,7 @@ def metrics_enabled(cfg: Any = None) -> bool:
 
     Counterpart to is_enabled() for call sites that hold no config object.
     """
-    return _otel_settings(cfg)[0]
+    return _otel_settings(cfg).enabled
 
 
 def _metrics_endpoint(traces_endpoint: str | None) -> str | None:
@@ -374,9 +415,9 @@ def _embedding_counters_for(cfg: Any) -> dict[str, Any] | None:
     global _embedding_counters, _metrics_unavailable_logged
     if _embedding_counters is not None:
         return _embedding_counters
-    _, service_name, otlp_endpoint = _otel_settings(cfg)
+    settings = _otel_settings(cfg)
     try:
-        meter = _get_meter(service_name, otlp_endpoint)
+        meter = _get_meter(settings.service_name, settings.otlp_endpoint)
         _embedding_counters = {
             "requests": meter.create_counter(
                 "trelix.embedder.requests",
