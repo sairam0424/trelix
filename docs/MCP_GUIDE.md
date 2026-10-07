@@ -37,7 +37,23 @@ python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 
 ## 3. Setup in Claude Code
 
-Register trelix as a persistent MCP server with one command:
+**Option A, the plugin (recommended).** Installs the server (a pinned, published `trelix-mcp`
+release launched with `uvx`, no `pip install` needed) and a skill, `/trelix:use-trelix-index`,
+that tells Claude when to search with trelix and when to fall back to grep:
+
+```bash
+claude plugin marketplace add sairam0424/trelix
+claude plugin install trelix@trelix
+```
+
+The server registers as `plugin:trelix:trelix` and its tools as `mcp__plugin_trelix_trelix__<tool>`.
+The first start downloads the pinned release (about a minute); to warm the cache beforehand, run
+the launch command from `plugins/trelix/.mcp.json` once with `--version`. Prerequisites,
+embeddings, every command the plugin runs, update and uninstall:
+[integrations/claude-code-plugin.md](integrations/claude-code-plugin.md).
+
+**Option B, the server only.** Register the installed `trelix-mcp` as a persistent MCP server with
+one command:
 
 ```bash
 claude mcp add trelix -- trelix-mcp
@@ -51,6 +67,8 @@ claude mcp list
 ```
 
 The server starts automatically whenever Claude Code launches a session. No further configuration is needed.
+Both options can coexist: the two servers' tools carry distinct prefixes (`mcp__trelix__*` and
+`mcp__plugin_trelix_trelix__*`).
 
 ---
 
@@ -225,6 +243,11 @@ claude mcp add trelix -- trelix-mcp --tools core
 `ask_agent`, in that order; the other eight are hidden, not removed, and a call to one is
 answered as an unknown tool. (`repo_map` and `exact_search` do not exist in this server, so
 `core` does not list them.) Any other value is a usage error: exit code 2 and no server.
+
+No published release up to 3.4.3 has `--tools`. Releases 3.2.2 through 3.4.3 accept only `--help`
+and `--version` and exit 2 on `--tools`; releases before 3.2.2 ignore argv altogether (see the
+3.2.2 CHANGELOG entry). The Claude Code plugin (section 3, Option A) therefore launches its pinned
+server without the flag, and passes `--tools core` once its pin reaches a release that has it.
 
 ### Output size and limits
 
@@ -1265,6 +1288,22 @@ claude mcp add trelix -- trelix-mcp   # re-add
 ```
 
 Restart Claude Code after re-registering.
+
+### The plugin's server is not listed
+
+The plugin's server is `plugin:trelix:trelix`, not `trelix`, and is managed by the plugin, not by
+`claude mcp add`/`remove`:
+
+```bash
+claude plugin list                 # trelix@trelix must show as enabled
+claude plugin marketplace update trelix && claude plugin update trelix@trelix   # refresh
+```
+
+On the first session after installing, the cold start downloads the pinned `trelix-mcp` through
+`uvx` and can take a minute, so the server may show as connecting or failed until that finishes.
+Warm the cache once with the launch command from `plugins/trelix/.mcp.json` plus `--version`
+(`uvx --from trelix-mcp==<pin> trelix-mcp --version`), then start a new session or run
+`/reload-plugins`. `uv` must be on your `PATH`.
 
 ### `index_codebase` fails or returns 0 files
 
