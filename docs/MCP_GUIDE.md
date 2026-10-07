@@ -22,8 +22,8 @@ Verify the binary is on your PATH:
 which trelix-mcp
 ```
 
-`trelix-mcp` accepts only `--help`, `--version` and `--tools core|full` (section 8) —
-running it with no arguments starts the stdio MCP server. `trelix-mcp --version` prints the
+`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full` and `--root PATH` (section 8)
+— running it with no arguments starts the stdio MCP server. `trelix-mcp --version` prints the
 installed version, and the package exposes it too:
 
 ```bash
@@ -165,6 +165,19 @@ Trelix-mcp exposes 15 MCP tools organized into four functional groups:
 3. **Resource subscriptions** (2 tools): `subscribe_resource`, `unsubscribe_resource`
 4. **Multi-repo federation** (4 tools): `federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`
 5. **Persistent agent sessions** (3 tools): `ask_agent`, `agent_list_sessions`, `agent_clear_session`
+
+**Where a tool may look.** Started as `trelix-mcp --root PATH` (repeatable), or with
+`TRELIX_ALLOWED_REPO_ROOTS` (`os.pathsep`-separated, process environment only) exported, the
+server confines every `repo_path` argument, `federation_add_repo`'s `path` and every
+`trelix://repo/...` resource URI to those roots. A value that is blank, cannot be resolved (a NUL
+byte, a symlink loop) or resolves outside every root (`..`, a symlink pointing out, a sibling
+`<root>-evil`) is refused before the tool runs:
+`isError: true` with exactly `repo_path is not inside an allowed repository root` (`path is not
+inside an allowed repository root` for `federation_add_repo`), and the value is never echoed.
+`federation_search_all` searches only the registry entries inside the roots, and every one of its
+responses gains `repos_outside_roots`, how many it left out. Stdio with no root is unchanged:
+nothing is confined, as before. A blank `--root` value (an unset shell variable, for instance) is
+a startup error rather than a root.
 
 ### What `tools/list` tells a client
 
@@ -1335,9 +1348,10 @@ The knowledge graph must be built separately from the index. Call `build_knowled
 
 ### MCP server crashes silently in Cursor / Windsurf
 
-`trelix-mcp` accepts only `--help`, `--version` and `--tools core|full`, and has no log-file or log-level setting — it logs
-unconditionally to **stderr** at INFO via a hardcoded `logging.basicConfig`. To capture that
-stream, point the MCP host at a tiny wrapper that redirects stderr to a file:
+`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full` and `--root PATH`, and has no
+log-file or log-level setting — it logs unconditionally to **stderr** at INFO via a hardcoded
+`logging.basicConfig`. To capture that stream, point the MCP host at a tiny wrapper that redirects
+stderr to a file:
 
 ```bash
 cat > /usr/local/bin/trelix-mcp-logged <<'EOF'

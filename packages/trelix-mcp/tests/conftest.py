@@ -48,6 +48,20 @@ def _reset_retriever_cache():
 
 
 @pytest.fixture(autouse=True)
+def _restore_confinement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Undo what main() or a test does to the singleton server's confinement.
+
+    `_install_confinement` sets `_allowed_roots` and appends a RepoConfinementMiddleware to
+    `mcp.middleware`. The test gets a copy of the middleware list, so what it appends never reaches
+    the next test, and `_allowed_roots` goes back to its value. An operator's exported
+    TRELIX_ALLOWED_REPO_ROOTS must not confine a test either.
+    """
+    monkeypatch.setattr(srv.mcp, "middleware", list(srv.mcp.middleware))
+    monkeypatch.setattr(srv, "_allowed_roots", srv._allowed_roots)
+    monkeypatch.delenv("TRELIX_ALLOWED_REPO_ROOTS", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clean_output_limit_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """An operator's TRELIX_MCP_MAX_K, TRELIX_MCP_MAX_RESULT_CHARS or
     TRELIX_MCP_RETRIEVER_CACHE_SIZE must not reach a test."""
