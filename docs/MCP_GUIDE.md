@@ -37,7 +37,23 @@ python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 
 ## 3. Setup in Claude Code
 
-Register trelix as a persistent MCP server with one command:
+**Option A, the plugin (recommended).** Installs the server (a pinned, published `trelix-mcp`
+release launched with `uvx`, no `pip install` needed) and a skill, `/trelix:use-trelix-index`,
+that tells Claude when to search with trelix and when to fall back to grep:
+
+```bash
+claude plugin marketplace add sairam0424/trelix
+claude plugin install trelix@trelix
+```
+
+The server registers as `plugin:trelix:trelix` and its tools as `mcp__plugin_trelix_trelix__<tool>`.
+The first start downloads the pinned release (about a minute); to warm the cache beforehand, run
+the launch command from `plugins/trelix/.mcp.json` once with `--version`. Prerequisites,
+embeddings, every command the plugin runs, update and uninstall:
+[integrations/claude-code-plugin.md](integrations/claude-code-plugin.md).
+
+**Option B, the server only.** Register the installed `trelix-mcp` as a persistent MCP server with
+one command:
 
 ```bash
 claude mcp add trelix -- trelix-mcp
@@ -51,6 +67,8 @@ claude mcp list
 ```
 
 The server starts automatically whenever Claude Code launches a session. No further configuration is needed.
+Both options can coexist: the two servers' tools carry distinct prefixes (`mcp__trelix__*` and
+`mcp__plugin_trelix_trelix__*`).
 
 ---
 
@@ -187,7 +205,8 @@ need credentials the operator has set.
   `TRELIX_TELEMETRY_ENABLED=true` each `search_code` adds a row to `query_telemetry`; the first
   open of an index written by an older trelix migrates that index; and every `search_code`
   writes a small JSON trace of the query to `.trelix/debug/` (one new file per call, the same
-  trace `docs/OBSERVABILITY.md` describes, in a directory with its own `.gitignore`), which
+  trace `docs/OBSERVABILITY.md` describes; the directory has no ignore file of its own, it is
+  covered by `.trelix/.gitignore` one level up, which ignores everything under `.trelix/`), which
   leaves the database as it was. `get_symbol` and `blast_radius` write no file. A client that
   reads `readOnlyHint` as "does not touch the repository directory" is therefore wrong for
   `search_code`.
@@ -225,6 +244,11 @@ claude mcp add trelix -- trelix-mcp --tools core
 answered as an unknown tool. (`repo_map` and `exact_search` do not exist in this server, so
 `core` does not list them.) Any other value is a usage error: exit code 2 and no server.
 
+No published release up to 3.4.3 has `--tools`. Releases 3.2.2 through 3.4.3 accept only `--help`
+and `--version` and exit 2 on `--tools`; releases before 3.2.2 ignore argv altogether (see the
+3.2.2 CHANGELOG entry). The Claude Code plugin (section 3, Option A) therefore launches its pinned
+server without the flag, and passes `--tools core` once its pin reaches a release that has it.
+
 ### Output size and limits
 
 A tool result costs a client's context twice: FastMCP sends a dict result as a text block and again as `structuredContent`, and the text block holds the JSON as a string, so every quote in it is escaped: the wire is a little more than double the text. Measured through an in-process `fastmcp.Client` with 100,000-character bodies, before these limits: `search_code` with `k=10` was about 9,700 characters of text and 20,000 on the wire, and with `k=100` about 97,000 and 197,000 (over Claude Code's 25,000-token cap for one tool result). `graph_search_mcp` had no upper bound on `k`, and `blast_radius` costs about 127 characters per dependent file with short paths (more with long ones) and had no bound either.
@@ -233,19 +257,42 @@ A tool result costs a client's context twice: FastMCP sends a dict result as a t
 |---------|---------|--------------|
 | `TRELIX_MCP_MAX_K` | `50` | `k` (and `limit` on `agent_list_sessions`) is clamped to 1..this value, and `page_size` in the response says what was used. Blank means the default. A value that is not an integer of at least 1 stops `trelix-mcp` at start-up with exit code 2 |
 | `TRELIX_MCP_MAX_RESULT_CHARS` | `15000` | The budget for the text of a list result (`search_code`, `federation_search_all`, `graph_search_mcp`, `blast_radius`, `agent_list_sessions`); the tail is dropped to fit it. The budget counts both copies a client is sent (the text block, with each quote escaped, and `structuredContent`), so the whole response is at most twice the budget (30,000 characters by default) and its text under the budget. That makes it a limit on what is sent and not on the text alone: at the default the text can be about 14,800 characters when it holds no quotes or backslashes and about 10,000 when it is mostly quotes. `0` turns the cut off. Blank means the default; a negative or non-integer value stops the server at start-up |
+| `TRELIX_MCP_RETRIEVER_CACHE_SIZE` | `8` | Most Retrievers the server keeps across calls, one per repository (`search_code` and `graph_search_mcp` reuse them, and each may hold an embedding model with the `local` provider). Past the bound the least recently used one is dropped, not closed, and a later call for that repository builds it again. Blank means the default. A value that is not an integer of at least 1 stops `trelix-mcp` at start-up with exit code 2 and makes a tool call return an error |
 | `detail="concise"` | `"detailed"` | On `search_code`, `graph_search_mcp` and `federation_search_all`: drops each result's `body` and adds a one-line `signature` (its first line, at most 200 characters; the first line of the body when the signature is blank) |
 
 What a client sees when results are left out:
 
 - **Cursor-paged results** (`search_code`, `federation_search_all`): `truncated` is `true`, `omitted` counts the dropped results, and `next_cursor` points at the first dropped result, so the next page repeats nothing and skips nothing. The text block is the response, so the keys `results`, `next_cursor` and `total_available` are where they always were.
-- **Bare arrays** (`blast_radius`, `graph_search_mcp`): the first text block is still the JSON array, a second text block says what was left out, and `_meta.trelix` is `{"total_available": M, "omitted": K}`. A result that fits is unchanged: one text block, no `_meta.trelix`. `graph_search_mcp` has no cursor, and a larger `k` cannot help once the character budget is what cut it, so its note points at `detail="concise"`.
+- **Bare arrays** (`blast_radius`, `graph_search_mcp`): the first text block is still the JSON array, a second text block says what was left out, and `_meta.trelix` is `{"total_available": M, "omitted": K}`. A result that fits is unchanged: one text block, no `_meta.trelix`. `graph_search_mcp` has no cursor, and a larger `k` cannot help once the character budget is what cut it, so its note points at `detail="concise"`. `blast_radius`'s note ends with what can still be raised, decided from what cut the list so that a raise it names always shows more: `TRELIX_MCP_MAX_RESULT_CHARS` when the budget cut it (and `limit` next, when `limit` is under 500 and would cut too), `limit` when the limit alone cut it, or, at `limit=500` when the limit alone cut it, that nothing can be raised and the remaining dependents cannot be fetched with this tool.
 - `agent_list_sessions`: the oldest sessions are left out and `truncated` and `omitted` say so (it has no cursor). A session's `query` (its most recent prompt, which has no bound of its own) is cut to its first 300 characters and that session gets `query_truncated: true`, so one long prompt cannot push a response past the ceilings.
-- `blast_radius` has no offset: `limit=500` with `TRELIX_MCP_MAX_RESULT_CHARS=0` returns the first 500 dependents, and the rest cannot be fetched.
+- `blast_radius` has no offset: `limit=500` returns at most the first 500 dependents whatever the budget, and the rest cannot be fetched; its note says so once the limit is what cut the list.
 - One result is always kept, even under a tiny budget, so paging always advances; a single result longer than the budget is returned whole.
 - A negative `cursor` is an error result (`isError: true`) saying to use 0 or the previous `next_cursor`.
-- A cut result is sent within the 30,000-character ceiling however many quotes it holds (a test uses bodies full of quotes, 72-character paths and 200-character queries, at default arguments and at the maximum, and another a 100,000-character most recent prompt). An empty bare array (`blast_radius` for a symbol with no dependents, `graph_search_mcp` with no hits) has no text block at all, only `structuredContent` of `{"result": []}`.
+- A cut result is sent within the 30,000-character ceiling however many quotes it holds (a test uses bodies full of quotes, 72-character paths and 200-character queries, at default arguments and at the maximum, and another a 100,000-character most recent prompt). An empty bare array (`blast_radius` for a symbol with no dependents or one the index does not know, `graph_search_mcp` with no hits) is sent as a `[]` text block with `structuredContent` of `{"result": []}`, and `get_symbol` for an unknown symbol as a `null` text block with `{"result": null}`. FastMCP alone sends neither text block, only the structured content, so a client that reads only the first text block had nothing to parse (the VS Code extension defaults to `null` and `[]` for that case); every result now has a text block that parses to its structured content.
 
 `build_knowledge_graph` and `federation_list_repos` are not cut: the first already caps its own community list (`min_community_size`, `max_communities`) and the second lists a registry that `TRELIX_FEDERATION_MAX_REPOS` caps when repos are added.
+
+### Errors
+
+An invalid input is answered with a tool error: `isError: true`, one text block holding the message, no `structuredContent`, and the session carries on (the VS Code extension shows the text; a model reads it and corrects the call). The message names the argument, shows what was given (cut to 200 characters) and says what would be valid. It is never a Python traceback, and the only path in it is the one the caller passed. The two subscription tools, `subscribe_resource` and `unsubscribe_resource`, accept any string and are outside this table.
+
+| Input | Text |
+|-------|------|
+| `repo_path` (or `federation_add_repo`'s `path`) empty or only whitespace | `repo_path must not be empty or whitespace (got '  '); pass the absolute path of the repository root.` |
+| `repo_path` that does not exist | `repo_path does not exist: '/x/y'; pass the absolute path of the repository root.` |
+| `repo_path` that is a file | `repo_path is not a directory: '/x/y/a.py'; pass the repository root, not a file in it.` |
+| `repo_path` with no index (every tool but `index_codebase`, which creates it) | `No index found at /x/y/.trelix/index.db. Run trelix index /x/y first.` (unchanged) |
+| `query` (`search_code`, `graph_search_mcp`, `federation_search_all`, `ask_agent`), `qualified_name`, `symbol_name`, `alias` (`federation_add_repo`, `federation_remove_repo`) empty or only whitespace | `query must not be empty or whitespace (got ''); pass the text to search for.`, and the same shape for the others |
+| `session_id` given but blank (`ask_agent`, `agent_clear_session`) | `session_id must not be empty or whitespace (got ''); pass the session_id a previous answer returned, or omit it for a new session.` (`ask_agent`); `session_id must not be empty or whitespace (got ''); pass the session_id to delete (see agent_list_sessions).` (`agent_clear_session`) |
+| `config_path` given but blank (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) | `config_path must not be empty or whitespace (got ''); pass a path inside ~/.config/trelix or <cwd>/.trelix, or omit it for the default registry.` |
+| `federation_add_repo` `path` not absolute | `path must be an absolute path (got 'services/auth'); pass the absolute path of the repository root.` |
+| `federation_add_repo` `weight` 0 or less, or not finite | `weight must be a positive number (got -1.5); 1.0 is the default, and a higher value ranks that repo's results higher.` |
+| negative `cursor`, negative `max_body_chars` | `cursor must be 0 or greater, got -1. Use 0 for the first page, then pass the next_cursor value from the previous response.`, `max_body_chars must be 0 (no limit) or greater, got -1. Use a positive number to cut the body.` (unchanged) |
+| an argument of the wrong type (`k="abc"`, `cursor=1.5`) or outside its choices (`detail="verbose"`, an unknown `provider`) | rejected by FastMCP before the tool runs, also as `isError: true`; the text is pydantic's and names the argument and the valid values (`Input should be a valid integer`, `Input should be 'concise' or 'detailed'`) |
+
+Not errors, on purpose: a relative `repo_path` is not rejected but resolved against the server's working directory, which the caller does not control, so pass an absolute path (`federation_add_repo`'s `path` must be absolute because a registry entry outlives the working directory); `k` and `limit` outside 1..`TRELIX_MCP_MAX_K` are clamped and the envelope tools (`search_code`, `federation_search_all`, `agent_list_sessions`) report the value used as `page_size`, while `blast_radius`'s `limit` is clamped to 1..500 and the clamped value shows only in its truncation note; an unknown `session_id` is not an error either (`agent_clear_session` answers `cleared: false`; `ask_agent` starts a session under that id); `federation_remove_repo` of an alias that is not registered is a no-op (`removed: false`); `get_symbol` of an unknown symbol is `null` and `blast_radius` of one is `[]`; and the federation tools keep their `error` key, not `isError`, for a duplicate alias, a full registry, a non-blank `config_path` outside the allowed roots (section 9) and a registry in which no queried repo is indexed (a client contract; moving those to `isError` is an open owner decision).
+
+Before these checks, a `repo_path` that did not exist (or held only whitespace) was not a tool result at all but a JSON-RPC "Invalid request parameters" error: `IndexConfig` rejects the path with a pydantic `ValidationError`, which FastMCP forwards as a protocol error instead of masking it into a result, so the VS Code extension saw an exception naming no argument. A blank `repo_path` meant the server's working directory: the no-index message named that directory and `index_codebase` indexed it. A file was told to run `trelix index <file>`. A blank `query` was searched (and `ask_agent` persisted a session for it), and `federation_add_repo` registered a blank alias, a blank, relative, missing or file path, and a weight of 0 or less. A blank `config_path` on the four federation tools resolved to the server's working directory (`Path("").resolve()`) and was refused with a 200 `error` dict that named the allowed roots and that directory, none of which the caller had passed.
 
 ### Core Search & Indexing
 
@@ -424,7 +471,7 @@ Answered from SQLite, so it needs no embedding model and costs 56-117 ms. Before
 ]
 ```
 
-Each dependent costs about 130 characters, so the list is bounded by `limit` and by `TRELIX_MCP_MAX_RESULT_CHARS`. When dependents are left out, the first text block is still the JSON array, a second text block says `Truncated: N of M dependents returned, K omitted. ...`, and `_meta.trelix` is `{"total_available": M, "omitted": K}`. A result that fits carries one text block and no `_meta.trelix`.
+Each dependent costs about 130 characters, so the list is bounded by `limit` and by `TRELIX_MCP_MAX_RESULT_CHARS`. When dependents are left out, the first text block is still the JSON array, a second text block says `Truncated: N of M dependents returned, K omitted.` and ends with what can still be raised (`TRELIX_MCP_MAX_RESULT_CHARS` when the budget cut the list, `limit` when the limit did, or, at `limit=500` when the limit did, that nothing can), and `_meta.trelix` is `{"total_available": M, "omitted": K}`. A result that fits carries one text block and no `_meta.trelix`; a symbol with no dependents, or one the index does not know, gives `[]` as the text block and `{"result": []}` as the structured content. A blank `symbol_name`, or a `repo_path` that is not an indexed directory, is an error result (see [Errors](#errors)).
 
 **Workflow pattern:**
 ```
@@ -582,7 +629,7 @@ graph_search_mcp(query, repo_path, k=10, detail="detailed") → list of results
 ]
 ```
 
-Like `blast_radius`, a list cut to `TRELIX_MCP_MAX_RESULT_CHARS` keeps the array in the first text block and adds a note block and `_meta.trelix` (see [Output size and limits](#output-size-and-limits)).
+Like `blast_radius`, a list cut to `TRELIX_MCP_MAX_RESULT_CHARS` keeps the array in the first text block and adds a note block and `_meta.trelix` (see [Output size and limits](#output-size-and-limits)). With no hits the text block is `[]`; a blank `query` is an error result (see [Errors](#errors)).
 
 ---
 
@@ -689,13 +736,14 @@ federation_remove_repo(alias, config_path=None) → {removed, alias, error}
 #### `federation_search_all`
 
 ```
-federation_search_all(query, k=10, cursor=0, config_path=None, detail="detailed") → {results, next_cursor, total_available, page_size, truncated, omitted, repos_searched, repos_skipped, error}
+federation_search_all(query, k=10, cursor=0, config_path=None, detail="detailed") → {results, next_cursor, total_available, page_size, truncated, omitted, repos_searched, repos_skipped, repos_unindexed, error}
 ```
 
 **What it does:** Searches across ALL registered repos simultaneously using Reciprocal Rank Fusion to merge results, weighted by each repo's registered `weight`.
 
 **Important:**
-- Requires repos to already be registered via `federation_add_repo` AND already indexed. A registered repo with no index is skipped (not opened, not counted in `repos_searched`); if none of the queried repos is indexed, `error` carries the `No index found at ...` message
+- Requires repos to already be registered via `federation_add_repo` AND already indexed. A registered repo with no index is skipped (not opened, not counted in `repos_searched`) and `repos_unindexed` names its alias; if none of the queried repos is indexed, `error` carries the `No index found at ...` message and the response keeps its shorter shape
+- A blank `query` or a negative `cursor` is an error result (see [Errors](#errors))
 - Results are deduplicated by `(file_path, symbol_id)`
 - Only the first `TRELIX_FEDERATION_MAX_REPOS` registered repos (default 50) are actually queried — `repos_skipped` reports the omitted count
 - Pagination uses a stable fixed-width fetch (100 results per repo) sliced by `cursor`/`k`, so page contents don't shift between calls
@@ -735,11 +783,12 @@ federation_search_all(query, k=10, cursor=0, config_path=None, detail="detailed"
   "omitted": 0,
   "repos_searched": 2,
   "repos_skipped": 0,
+  "repos_unindexed": [],
   "error": null
 }
 ```
 
-The error and empty-registry responses keep the shorter shape they always had (no `page_size`, `truncated` or `omitted`).
+`repos_unindexed` lists the aliases of the queried repos that were skipped for having no index (`[]` when none was); `repos_skipped` counts those beyond the `TRELIX_FEDERATION_MAX_REPOS` cap. The error and empty-registry responses keep the shorter shape they always had (no `page_size`, `truncated`, `omitted` or `repos_unindexed`).
 
 **New in v2.8.0.**
 
@@ -879,7 +928,7 @@ All four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `
 1. `~/.config/trelix/` (the default federation config directory)
 2. `<mcp-server-cwd>/.trelix/` (a repo-local override when the MCP server process is launched from within a repo)
 
-Any `config_path` that resolves outside both roots will be rejected with a `ConfigPathNotAllowedError` returned as `{"error": str}` in the tool response. This prevents an MCP client (or a prompt-injected agent) from pointing registry I/O at an arbitrary filesystem path.
+Any `config_path` that resolves outside both roots will be rejected with a `ConfigPathNotAllowedError` returned as `{"error": str}` in the tool response. This prevents an MCP client (or a prompt-injected agent) from pointing registry I/O at an arbitrary filesystem path. A blank `config_path` is a tool error (`isError: true`) instead, like every other blank argument (section 8, [Errors](#errors)): omit the argument for the default registry.
 
 **Why this matters:** Before v2.8.1, a caller-supplied `config_path` was passed straight into file I/O operations with no validation. This fix uses `Path.is_relative_to()` (not a naive string prefix check) to ensure the resolved path lives under an allowlisted root.
 
@@ -1240,6 +1289,22 @@ claude mcp add trelix -- trelix-mcp   # re-add
 
 Restart Claude Code after re-registering.
 
+### The plugin's server is not listed
+
+The plugin's server is `plugin:trelix:trelix`, not `trelix`, and is managed by the plugin, not by
+`claude mcp add`/`remove`:
+
+```bash
+claude plugin list                 # trelix@trelix must show as enabled
+claude plugin marketplace update trelix && claude plugin update trelix@trelix   # refresh
+```
+
+On the first session after installing, the cold start downloads the pinned `trelix-mcp` through
+`uvx` and can take a minute, so the server may show as connecting or failed until that finishes.
+Warm the cache once with the launch command from `plugins/trelix/.mcp.json` plus `--version`
+(`uvx --from trelix-mcp==<pin> trelix-mcp --version`), then start a new session or run
+`/reload-plugins`. `uv` must be on your `PATH`.
+
 ### `index_codebase` fails or returns 0 files
 
 - Confirm `repo_path` is an **absolute** path (not `~/...` — expand the tilde).
@@ -1255,6 +1320,10 @@ TRELIX_WALKER_MAX_FILE_SIZE_BYTES=200000 TRELIX_EMBEDDER_BATCH_SIZE=16 trelix-mc
 ### `search_code` returns an error: `No index found at ...`
 
 The repository has no index. Run `index_codebase` (or `trelix index <repo>`) and check that it returned `files_indexed > 0` before querying. Every tool that reads an index (`search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`, `graph_search_mcp`, `ask_agent`, `agent_list_sessions`, `agent_clear_session`) answers this way, as a normal tool error (`isError: true`) that leaves the session running, and none of them creates `.trelix/` on the way. Earlier releases returned an empty result and left an empty `index.db` behind, so a repository that was never indexed looked indexed.
+
+### A tool returns an error naming an argument
+
+The call had an argument the tool cannot use: the text names it, shows what was given and says what is valid (`repo_path is not a directory: ...`, `query must not be empty or whitespace ...`; the table is under [Errors](#errors) in section 8). Correct the argument and call again; nothing was created or changed.
 
 ### `search_code` returns empty results
 

@@ -12,6 +12,10 @@ bound it here, all reading the environment on each call:
   response stays within twice the budget (30,000 characters by default), not just its text.
 * `detail="concise"` swaps each result's `body` for a one-line `signature`.
 
+`TRELIX_MCP_RETRIEVER_CACHE_SIZE` (default 8, at least 1) bounds memory rather than output: it is
+the most Retrievers server.py keeps across calls (see `_get_retriever` there). It lives here
+because it is read and validated with the two limits above, at start-up and on each call.
+
 Kept out of server.py on purpose: server.py is already very large and its tools only call in
 here. Every helper returns today's shapes (an envelope dict or a bare array) plus additive keys.
 """
@@ -30,8 +34,10 @@ from mcp.types import TextContent
 
 MAX_K_ENV = "TRELIX_MCP_MAX_K"
 MAX_RESULT_CHARS_ENV = "TRELIX_MCP_MAX_RESULT_CHARS"
+RETRIEVER_CACHE_SIZE_ENV = "TRELIX_MCP_RETRIEVER_CACHE_SIZE"
 DEFAULT_MAX_K = 50
 DEFAULT_MAX_RESULT_CHARS = 15_000
+DEFAULT_RETRIEVER_CACHE_SIZE = 8
 DEFAULT_MAX_BODY_CHARS = 20_000
 DEFAULT_BLAST_LIMIT = 100
 MAX_BLAST_LIMIT = 500
@@ -56,6 +62,7 @@ class BudgetConfigError(ValueError):
 class Limits:
     max_k: int
     max_result_chars: int
+    retriever_cache_size: int
 
 
 def _read_int(environ: Mapping[str, str], name: str, default: int, minimum: int) -> int:
@@ -78,6 +85,9 @@ def limits_from_env(environ: Mapping[str, str] | None = None) -> Limits:
     return Limits(
         max_k=_read_int(env, MAX_K_ENV, DEFAULT_MAX_K, 1),
         max_result_chars=_read_int(env, MAX_RESULT_CHARS_ENV, DEFAULT_MAX_RESULT_CHARS, 0),
+        retriever_cache_size=_read_int(
+            env, RETRIEVER_CACHE_SIZE_ENV, DEFAULT_RETRIEVER_CACHE_SIZE, minimum=1
+        ),
     )
 
 
@@ -204,25 +214,31 @@ def bare_array_result(
     total_available: int,
     max_chars: int,
     noun: str,
-    remedy: str,
+    remedy: str | Callable[[int], str],
 ) -> list[dict[str, Any]]:
     """A bare-array result, cut to the budget. Untouched (a plain list) when nothing is omitted.
 
     When rows are omitted, `content[0]` is still a JSON array (a client that reads only the
     first text block keeps working), `content[1]` is a note that ends with `remedy` (what the
-    caller can change to see more), and `_meta.trelix` carries `total_available` and `omitted`,
-    so a cut can never go unnoticed.
+    caller can change to see more; a callable is given the kept count, so the advice can follow
+    from what cut the list), and `_meta.trelix` carries `total_available` and `omitted`, so a cut
+    can never go unnoticed. An empty list is sent through `empty_bare_array`, because FastMCP
+    would send it with no text block at all. A callable remedy may not grow by more than a row as
+    the kept count falls, or the fit's binary search (`_largest_fit`) is no longer exact.
 
     The declared type is the list the tool's output schema is built from: FastMCP builds that
     schema from the return annotation and passes a `ToolResult` through unchanged, while a
     `list | ToolResult` annotation would drop the schema (and structuredContent) for every call.
     """
     items = list(rows)
+    if not items:
+        return empty_bare_array()
 
     def note(kept: int) -> str:
+        advice = remedy(kept) if callable(remedy) else remedy
         return (
             f"Truncated: {kept} of {total_available} {noun} returned, "
-            f"{total_available - kept} omitted. {remedy}"
+            f"{total_available - kept} omitted. {advice}"
         )
 
     def size_of(kept: int) -> int:
@@ -244,6 +260,71 @@ def bare_array_result(
         },
     )
     return cast("list[dict[str, Any]]", result)
+
+
+def _with_text_block(value: Any) -> ToolResult:
+    """`value` as FastMCP would send it, plus the text block FastMCP leaves out.
+
+    FastMCP sends a dict or a non-empty list as a text block and again as `structuredContent`,
+    but `None` and `[]` travel as `structuredContent` alone: `_convert_to_content` returns no
+    block for `None`, and for `[]` it takes its "every item is a content block" branch, which is
+    vacuously true. A client that reads only the first text block then has nothing to parse (the
+    VS Code extension defaults to `null` and `[]` for that case). So the two empty results are
+    built here, with the text FastMCP sends for every other value, and they follow the same
+    contract: the text parses to the structured content.
+    """
+    return ToolResult(
+        content=[TextContent(type="text", text=_text(value))],
+        structured_content={"result": value},
+        meta={"fastmcp": {"wrap_result": True}},
+    )
+
+
+def empty_bare_array() -> list[dict[str, Any]]:
+    """An empty bare-array result whose text block is `[]` (see `_with_text_block`)."""
+    return cast("list[dict[str, Any]]", _with_text_block([]))
+
+
+def null_result() -> dict[str, Any] | None:
+    """A `null` result whose text block is `null` (see `_with_text_block`)."""
+    return cast("dict[str, Any] | None", _with_text_block(None))
+
+
+def blast_radius_remedy(kept: int, *, limit: int, total: int) -> str:
+    """What a `blast_radius` caller can still raise to see more dependents, if anything.
+
+    `kept` of `total` dependents were returned under the clamped `limit` (so `kept < total`).
+    Decided from what cut the list, not from the two bounds alone, so a raise it names always
+    shows more: the note used to end "raise either to see more" when only one bound had cut, and
+    to name TRELIX_MCP_MAX_RESULT_CHARS at `limit=500` when the limit alone had cut.
+    """
+    budget_cut = kept < min(limit, total)
+    limit_cut = limit < total
+    if budget_cut and limit_cut and limit < MAX_BLAST_LIMIT:
+        return (
+            f"The list is bounded by {MAX_RESULT_CHARS_ENV} and then by the limit argument (at "
+            f"most {MAX_BLAST_LIMIT}); raise {MAX_RESULT_CHARS_ENV}, then limit, to see more."
+        )
+    if budget_cut and limit_cut:
+        return (
+            f"The list is bounded by {MAX_RESULT_CHARS_ENV}; limit is already at its maximum of "
+            f"{MAX_BLAST_LIMIT}, so raise {MAX_RESULT_CHARS_ENV} to see more."
+        )
+    if budget_cut:
+        return (
+            f"The list is bounded by {MAX_RESULT_CHARS_ENV}; limit did not cut it, so raise "
+            f"{MAX_RESULT_CHARS_ENV} to see more."
+        )
+    if limit < MAX_BLAST_LIMIT:
+        return (
+            f"The list is bounded by the limit argument (at most {MAX_BLAST_LIMIT}); "
+            f"{MAX_RESULT_CHARS_ENV} did not cut it, so raise limit to see more."
+        )
+    return (
+        f"limit is already at its maximum of {MAX_BLAST_LIMIT} and {MAX_RESULT_CHARS_ENV} did not "
+        "cut the list, so nothing can be raised: the remaining dependents cannot be fetched with "
+        "this tool."
+    )
 
 
 def check_body_limit(max_chars: int) -> None:

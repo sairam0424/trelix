@@ -12,6 +12,7 @@ logging.basicConfig(
 
 import signal  # noqa: E402
 import threading  # noqa: E402
+from collections import OrderedDict  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
@@ -36,6 +37,13 @@ from trelix.indexing.indexer import Indexer  # noqa: E402
 from trelix.retrieval.retriever import Retriever  # noqa: E402
 from trelix.store.db import Database  # noqa: E402
 from trelix_mcp import __version__  # noqa: E402
+from trelix_mcp.arguments import (  # noqa: E402
+    check_absolute_repo_dir,
+    check_positive_weight,
+    check_repo_dir,
+    check_session_id,
+    check_text,
+)
 from trelix_mcp.budget import (  # noqa: E402
     DEFAULT_BLAST_LIMIT,
     DEFAULT_MAX_BODY_CHARS,
@@ -45,14 +53,17 @@ from trelix_mcp.budget import (  # noqa: E402
     Detail,
     Limits,
     bare_array_result,
+    blast_radius_remedy,
     body_or_signature,
     cap_session_query,
     check_body_limit,
     check_cursor,
     clamp_page_size,
+    empty_bare_array,
     fit_page,
     fit_rows,
     limits_from_env,
+    null_result,
     truncate_body,
 )
 from trelix_mcp.subscriptions import SubscriptionLimitExceeded, SubscriptionRegistry  # noqa: E402
@@ -85,7 +96,11 @@ _log = logging.getLogger("trelix_mcp")
 # path so relative/absolute spellings of the same repo share one entry.
 # Invalidated by index_codebase (see there) -- a re-index can switch
 # embedder providers, which changes what Retriever.__init__ needs to build.
-_retriever_cache: dict[str, Retriever] = {}
+# Bounded: an LRU of TRELIX_MCP_RETRIEVER_CACHE_SIZE entries (default 8), since
+# each one may hold an embedding model and a client can name any number of
+# distinct repositories. Insertion order is recency: a hit moves its entry to
+# the end, and _get_retriever drops entries from the front past the bound.
+_retriever_cache: OrderedDict[str, Retriever] = OrderedDict()
 _retriever_cache_lock = threading.Lock()
 
 
@@ -105,6 +120,22 @@ def _require_index(config: IndexConfig) -> None:
         raise ToolError(str(exc)) from exc
 
 
+def _indexed_config(repo_path: str) -> IndexConfig:
+    """The IndexConfig of an indexed repository directory, or the tool error saying what is wrong.
+
+    `check_repo_dir` answers a blank path, a path that does not exist and a file before
+    `IndexConfig` sees the value. Its own validator raises a pydantic `ValidationError`, which
+    FastMCP forwards as a JSON-RPC "Invalid request parameters" error instead of a tool result (a
+    client such as the VS Code extension then sees an exception that names no argument), a blank
+    path resolves to the server's working directory, so the no-index message named that directory,
+    and a file was told to run `trelix index <file>`.
+    """
+    check_repo_dir(repo_path)
+    config = IndexConfig(repo_path=repo_path)
+    _require_index(config)
+    return config
+
+
 def _limits() -> Limits:
     """The output limits in force for this call (see budget.py), as a tool error if unusable."""
     try:
@@ -114,16 +145,29 @@ def _limits() -> Limits:
 
 
 def _get_retriever(repo_path: str) -> Retriever:
-    """Return a cached Retriever for repo_path, constructing one if needed."""
+    """Return a cached Retriever for repo_path, constructing one if needed.
+
+    The directory check comes before the cache lookup: a blank repo_path resolves to the server's
+    working directory, which may well be a cached repo. The cache keeps the
+    TRELIX_MCP_RETRIEVER_CACHE_SIZE most recently used entries (a hit counts as a use).
+    """
+    check_repo_dir(repo_path)
     key = str(Path(repo_path).resolve())
     with _retriever_cache_lock:
         cached = _retriever_cache.get(key)
         if cached is not None:
+            _retriever_cache.move_to_end(key)
             return cached
+        size = _limits().retriever_cache_size
         config = IndexConfig(repo_path=repo_path)
         _require_index(config)
         retriever = Retriever(config)
         _retriever_cache[key] = retriever
+        # Evicted, not closed: a tool call in another worker thread may still hold the entry
+        # (tools run in FastMCP's thread pool), and index_codebase already pops without closing.
+        # Its SQLite connection closes with the last reference.
+        while len(_retriever_cache) > size:
+            _retriever_cache.popitem(last=False)
         return retriever
 
 
@@ -393,6 +437,7 @@ def search_code(
     """
     limits = _limits()
     check_cursor(cursor)
+    check_text(query, "query", "the text to search for")
     k = clamp_page_size(k, limits.max_k)
     _log.info("search_code query=%r repo=%s k=%d cursor=%d", query, repo_path, k, cursor)
     from trelix.retrieval.planner.models import plan_from_intent_hint
@@ -451,6 +496,7 @@ def index_codebase(
     Progress notifications are sent if the MCP client supports them.
     """
     _log.info("index_codebase repo=%s provider=%s", repo_path, provider)
+    check_repo_dir(repo_path)
 
     # Omit the kwarg when unset so pydantic-settings falls through to
     # TRELIX_EMBEDDER_PROVIDER — passing provider="local" unconditionally
@@ -517,15 +563,17 @@ def get_symbol(
     """
     _log.info("get_symbol qualified_name=%r repo_path=%r", qualified_name, repo_path)
     check_body_limit(max_body_chars)
-    config = IndexConfig(repo_path=repo_path)
-    _require_index(config)
+    check_text(
+        qualified_name, "qualified_name", "the symbol's qualified name, e.g. MyClass.my_method"
+    )
+    config = _indexed_config(repo_path)
     db = Database(config.db_path_absolute)
     try:
         found = _find_symbol(db, qualified_name)
     finally:
         db.close()
     if found is None:
-        return None
+        return null_result()
     symbol, file = found
     body, body_truncated = truncate_body(symbol.body, max_body_chars)
     return {
@@ -587,8 +635,8 @@ def blast_radius(
     max_chars = _limits().max_result_chars
     limit = max(1, min(limit, MAX_BLAST_LIMIT))
     _log.info("blast_radius symbol_name=%r repo_path=%r limit=%d", symbol_name, repo_path, limit)
-    config = IndexConfig(repo_path=repo_path)
-    _require_index(config)
+    check_text(symbol_name, "symbol_name", "the name or qualified name of the symbol to analyse")
+    config = _indexed_config(repo_path)
     db = Database(config.db_path_absolute)
     try:
         # A bare name can match several symbols (same method name in different
@@ -597,7 +645,7 @@ def blast_radius(
         targets = db.get_symbol_by_name(symbol_name)
         target_ids = {s.id for s in targets if s.id is not None}
         if not target_ids:
-            return []
+            return empty_bare_array()
 
         caller_ids: set[int] = set()
         for target_id in target_ids:
@@ -647,10 +695,7 @@ def blast_radius(
             total_available=len(output),
             max_chars=max_chars,
             noun="dependents",
-            remedy=(
-                f"The list is bounded by the limit argument (at most {MAX_BLAST_LIMIT}) and by "
-                f"{MAX_RESULT_CHARS_ENV}; raise either to see more."
-            ),
+            remedy=lambda kept: blast_radius_remedy(kept, limit=limit, total=len(output)),
         )
     finally:
         db.close()
@@ -706,12 +751,10 @@ def build_knowledge_graph(
     GET /graph/communities call GraphBuilder(config).build() on every request — a full
     Louvain pass, a PageRank rebuild and two metadata saves — and that is untouched here.
     """
-    from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
 
     _log.info("build_knowledge_graph repo=%s concepts=%s", repo_path, extract_concepts)
-    config = IndexConfig(repo_path=repo_path)
-    _require_index(config)
+    config = _indexed_config(repo_path)
     result = GraphBuilder(config).build(extract_concepts=extract_concepts)
 
     summary = list(result.community_summary or [])
@@ -770,25 +813,26 @@ def graph_search_mcp(
       results are left out, the result carries a second text block saying so and
       `_meta.trelix` has total_available and omitted.
     """
-    from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
     from trelix.graph.search import graph_search
 
     limits = _limits()
     k = clamp_page_size(k, limits.max_k)
+    check_text(query, "query", "the text to search for")
     _log.info("graph_search_mcp query=%r repo=%s k=%d", query, repo_path, k)
-    config = IndexConfig(repo_path=repo_path)
 
-    # First find seed symbols via standard retrieval (_get_retriever refuses an unindexed
-    # repo, so GraphBuilder below is never reached for one)
-    ctx = _get_retriever(repo_path).retrieve(query)
+    # First find seed symbols via standard retrieval. _get_retriever refuses a repo_path that is
+    # not a directory or has no index, so GraphBuilder below never sees one.
+    retriever = _get_retriever(repo_path)
+    ctx = retriever.retrieve(query)
     seed_ids = [r.chunk.symbol_id for r in ctx.results[:5]]
 
     if not seed_ids:
-        return []
+        return empty_bare_array()
 
-    # Then expand via graph — reuse the DB already opened by GraphBuilder/CodeGraph
-    build_result = GraphBuilder(config).build(extract_concepts=False)
+    # Then expand via graph, on the retriever's own (checked) config — reuse the DB already
+    # opened by GraphBuilder/CodeGraph
+    build_result = GraphBuilder(retriever.config).build(extract_concepts=False)
     db = build_result.code_graph._db
     graph_results = graph_search(db, build_result.code_graph, seed_ids, depth=2, max_results=k)
 
@@ -847,9 +891,17 @@ def _confine_federation_config_path(config_path: str | None) -> str | None:
 
     Returns None unchanged (the RepoRegistry default). Raises
     ConfigPathNotAllowedError if config_path resolves outside both roots.
+    A blank config_path is a ToolError like every other blank argument:
+    Path("").resolve() is the process cwd, and the refusal would otherwise
+    name that directory and the allowed roots, none of which the caller passed.
     """
     if config_path is None:
         return None
+    check_text(
+        config_path,
+        "config_path",
+        "a path inside ~/.config/trelix or <cwd>/.trelix, or omit it for the default registry",
+    )
 
     from trelix.federation.registry import _DEFAULT_CONFIG
 
@@ -918,6 +970,9 @@ def federation_add_repo(
         {"added": bool, "alias": str, "path": str, "error": str|None}
     """
     _log.info("federation_add_repo alias=%r path=%r weight=%s", alias, path, weight)
+    check_text(alias, "alias", "a short unique name for the repo, e.g. auth-service")
+    check_absolute_repo_dir(path, "path")
+    check_positive_weight(weight)
     try:
         confined_path = _confine_federation_config_path(config_path)
     except ConfigPathNotAllowedError as exc:
@@ -945,6 +1000,7 @@ def federation_remove_repo(alias: str, config_path: str | None = None) -> dict[s
         {"removed": bool, "alias": str, "error": str|None}
     """
     _log.info("federation_remove_repo alias=%r", alias)
+    check_text(alias, "alias", "the alias to unregister (see federation_list_repos)")
     try:
         confined_path = _confine_federation_config_path(config_path)
     except ConfigPathNotAllowedError as exc:
@@ -970,7 +1026,8 @@ def federation_search_all(
     - Requires repos to already be registered via federation_add_repo AND
       already indexed (run index_codebase on each repo path beforehand). A
       registered repo with no index is skipped, not searched, and not counted
-      in repos_searched; if none of the queried repos is indexed, error says so.
+      in repos_searched; repos_unindexed names its alias, and if none of the
+      queried repos is indexed, error says so.
     - Results are merged via Reciprocal Rank Fusion weighted by each repo's
       registered weight, then deduplicated.
     - Only the first TRELIX_FEDERATION_MAX_REPOS registered repos (default
@@ -994,12 +1051,14 @@ def federation_search_all(
     Returns:
         {"results": [...], "next_cursor": int|None, "total_available": int,
          "page_size": int, "truncated": bool, "omitted": int,
-         "repos_searched": int, "repos_skipped": int, "error": str|None}
+         "repos_searched": int, "repos_skipped": int,
+         "repos_unindexed": [alias, ...], "error": str|None}
         The error and empty-registry responses keep their shorter shape (no
-        page_size, truncated or omitted).
+        page_size, truncated, omitted or repos_unindexed).
     """
     limits = _limits()
     check_cursor(cursor)
+    check_text(query, "query", "the text to search for")
     k = clamp_page_size(k, limits.max_k)
     _log.info("federation_search_all query=%r k=%d cursor=%d", query, k, cursor)
     try:
@@ -1067,7 +1126,12 @@ def federation_search_all(
         page_size=k,
         total=len(all_results),
         max_chars=limits.max_result_chars,
-        extra={"repos_searched": repos_searched, "repos_skipped": repos_skipped, "error": None},
+        extra={
+            "repos_searched": repos_searched,
+            "repos_skipped": repos_skipped,
+            "repos_unindexed": [entry.alias for entry, _ in unindexed],
+            "error": None,
+        },
     )
 
 
@@ -1139,6 +1203,11 @@ def ask_agent(
         an InputRequiredToolResult when the agent needs a clarifying answer
         before it can continue.
     """
+    check_text(query, "query", "the question to answer")
+    if session_id is not None:
+        check_session_id(
+            session_id, "the session_id a previous answer returned, or omit it for a new session"
+        )
     request_state = ctx.request_state if ctx is not None else None
     resolved_session_id = request_state or session_id
     client_answer = _extract_elicit_answer(ctx)
@@ -1156,8 +1225,7 @@ def ask_agent(
     _log.info(
         "ask_agent query=%r repo=%s session_id=%r", effective_query, repo_path, resolved_session_id
     )
-    config = IndexConfig(repo_path=repo_path)
-    _require_index(config)
+    config = _indexed_config(repo_path)
     config.retrieval.agentic_enabled = True
     loop = AgentLoop(config)
     result = loop.run(effective_query, session_id=resolved_session_id)
@@ -1216,8 +1284,7 @@ def agent_list_sessions(repo_path: str, limit: int = 50) -> dict[str, Any]:
     limits = _limits()
     limit = clamp_page_size(limit, limits.max_k)
     _log.info("agent_list_sessions repo=%s limit=%d", repo_path, limit)
-    config = IndexConfig(repo_path=repo_path)
-    _require_index(config)
+    config = _indexed_config(repo_path)
     db = Database(config.db_path_absolute)
     try:
         max_age = config.retrieval.agent_session_max_age_seconds
@@ -1251,8 +1318,8 @@ def agent_clear_session(repo_path: str, session_id: str) -> dict[str, Any]:
         {"cleared": bool, "session_id": str}
     """
     _log.info("agent_clear_session repo=%s session_id=%r", repo_path, session_id)
-    config = IndexConfig(repo_path=repo_path)
-    _require_index(config)
+    check_session_id(session_id, "the session_id to delete (see agent_list_sessions)")
+    config = _indexed_config(repo_path)
     db = Database(config.db_path_absolute)
     try:
         existed = db.delete_agent_session(session_id)

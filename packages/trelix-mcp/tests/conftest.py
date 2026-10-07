@@ -49,9 +49,11 @@ def _reset_retriever_cache():
 
 @pytest.fixture(autouse=True)
 def _clean_output_limit_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An operator's TRELIX_MCP_MAX_K / TRELIX_MCP_MAX_RESULT_CHARS must not reach a test."""
+    """An operator's TRELIX_MCP_MAX_K, TRELIX_MCP_MAX_RESULT_CHARS or
+    TRELIX_MCP_RETRIEVER_CACHE_SIZE must not reach a test."""
     monkeypatch.delenv("TRELIX_MCP_MAX_K", raising=False)
     monkeypatch.delenv("TRELIX_MCP_MAX_RESULT_CHARS", raising=False)
+    monkeypatch.delenv("TRELIX_MCP_RETRIEVER_CACHE_SIZE", raising=False)
 
 
 @pytest.fixture
@@ -69,8 +71,6 @@ def backends(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
     monkeypatch.setattr("trelix.graph.search.graph_search", graph_search)
     monkeypatch.setattr("trelix.graph.builder.GraphBuilder", MagicMock())
-    # graph_search_mcp builds its own IndexConfig, and the tests' repo path is not a directory.
-    monkeypatch.setattr("trelix.core.config.IndexConfig", MagicMock())
     registry = MagicMock()
     registry.load.return_value.list.return_value = [SimpleNamespace(alias="repo-a")]
     monkeypatch.setattr(srv, "RepoRegistry", registry)
@@ -86,13 +86,14 @@ def backends(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 def sessions(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """Serve `sessions.items` from agent_list_sessions.
 
-    Replaces the server's IndexConfig and Database, so a test that also needs a real index
-    (blast_radius, get_symbol) must not use it.
+    Replaces the server's repo_path check, IndexConfig and Database (the tests' repo path is not
+    a directory), so a test that also needs a real index (blast_radius, get_symbol) must not use it.
     """
     state = SimpleNamespace(items=[], database=MagicMock())
     state.database.list_agent_sessions.side_effect = lambda limit: state.items[:limit]
     config = MagicMock()
     config.return_value.retrieval.agent_session_max_age_seconds = 604_800.0
+    monkeypatch.setattr(srv, "check_repo_dir", lambda repo_path, name="repo_path": None)
     monkeypatch.setattr(srv, "IndexConfig", config)
     monkeypatch.setattr(srv, "Database", MagicMock(return_value=state.database))
     return state
@@ -118,3 +119,9 @@ def long_path_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def small_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A real index: `target.run` with 3 dependents."""
     return seed(tmp_path_factory.mktemp("small"), 3)
+
+
+@pytest.fixture(scope="module")
+def lonely_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A real index: `target.run` is known but has no dependents at all."""
+    return seed(tmp_path_factory.mktemp("lonely"), 0)

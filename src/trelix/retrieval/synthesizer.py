@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 # Module-level import so tests can patch "trelix.retrieval.synthesizer.build_chat_client"
 from trelix.llm.factory import build_chat_client  # noqa: E402
+from trelix.retrieval.citations import NO_RESULTS_MESSAGE, AbstainReason, is_abstention
 
 logger = logging.getLogger("trelix.retrieval.synthesizer")
 
@@ -83,6 +84,17 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are an expert software engineer answering questions about a codebase. "
     "Base your answer strictly on the provided code context. "
     "Be precise, cite the relevant file and function names, and avoid speculation."
+)
+
+# Appended to the system prompt only when the context carries citation tags
+# (RetrievedContext.citation_sources is non-empty, i.e. TRELIX_RETRIEVAL_CITATIONS is on).
+# The last sentence is the abstention protocol; is_abstention() recognises the reply it asks for.
+_CITATION_INSTRUCTION = (
+    "\n\nEvery block of the code context starts with a tag such as [C3]. After each sentence "
+    "that relies on a block, write that block's tag, for example "
+    "`validate_token checks the signature [C3].` Cite only tags that appear in the context. "
+    "If the context does not contain what the question needs, reply with exactly one line "
+    "starting with INSUFFICIENT_EVIDENCE: followed by what is missing, and nothing else."
 )
 
 _USER_TEMPLATE = """\
@@ -176,6 +188,9 @@ class Synthesizer:
         self._retrieval_config = retrieval_config
         # Why the last synthesize()/stream() call produced no answer; None when it did.
         self.last_error: str | None = None
+        # Why the last synthesize()/stream() call abstained instead of answering; None when
+        # it answered (or failed: an abstention is not an error, so the two never both hold).
+        self.last_abstain_reason: AbstainReason | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -203,6 +218,7 @@ class Synthesizer:
         """
         cfg = config or self._config
         self.last_error = None
+        self.last_abstain_reason = None
 
         if self._client is None:
             self.last_error = NOT_CONFIGURED_MESSAGE
@@ -214,9 +230,9 @@ class Synthesizer:
             return ""
 
         if not context.results:
-            msg = "[trelix] No relevant code found — cannot synthesize an answer."
-            print(msg, flush=True)
-            return msg
+            self.last_abstain_reason = "no_results"
+            print(NO_RESULTS_MESSAGE, flush=True)
+            return NO_RESULTS_MESSAGE
 
         # Delegate to GraphRAG map-reduce for large contexts.
         try:
@@ -234,6 +250,7 @@ class Synthesizer:
                     # Map-reduce swallows every LLM error and returns "", so an empty
                     # result is the only failure signal it gives.
                     self.last_error = GRAPH_RAG_EMPTY_MESSAGE
+                self._record_abstention(answer)
                 return answer
         except Exception as exc:  # noqa: BLE001
             logger.warning("GraphRAG check/dispatch failed, falling back to standard: %s", exc)
@@ -251,6 +268,7 @@ class Synthesizer:
             # stream=True, an HTML error page behind a 200, or a model that said nothing.
             logger.warning("Synthesis returned an empty answer")
             self.last_error = EMPTY_ANSWER_MESSAGE
+        self._record_abstention(answer)
         return answer
 
     def stream(
@@ -266,13 +284,30 @@ class Synthesizer:
         failure is recorded in ``last_error`` *before* that token is yielded.
         A stream that ends with no non-whitespace text is a failure too: it is recorded
         in ``last_error`` when the stream ends, with no banner token after it.
+        An empty retrieval yields ``NO_RESULTS_MESSAGE`` alone, without calling the model,
+        and records ``last_abstain_reason == "no_results"`` (a missing LLM key is reported
+        first, as ``synthesize()`` does: that stream is the backend's placeholder with
+        ``last_error`` set, whatever retrieval found); an answer that opens with
+        ``INSUFFICIENT_EVIDENCE:`` streams as any answer does and records
+        ``"insufficient_evidence"`` when the stream ends (a stream closed early records nothing).
 
         Usage::
             for token in synth.stream(context, config):
                 print(token, end="", flush=True)
         """
+        self.last_abstain_reason = None
+        self.last_error = None if self.is_configured else NOT_CONFIGURED_MESSAGE
+        if self.is_configured and not context.results:
+            # Nothing to ground an answer in: "No relevant code found." as the whole code
+            # context only invites the model to answer from its own knowledge. The key is
+            # checked first, as in synthesize(): a missing one is a failure to report, not
+            # something the notice should hide until a question retrieves code.
+            self.last_abstain_reason = "no_results"
+            yield NO_RESULTS_MESSAGE
+            return
+
         intent = getattr(context, "intent", None) or "feature_flow"
-        system_prompt = _INTENT_PROMPTS.get(intent, _DEFAULT_SYSTEM_PROMPT)
+        system_prompt = self._system_prompt(intent, cited=bool(context.citation_sources))
 
         user_message = _USER_TEMPLATE.format(
             context_text=context.context_text,
@@ -280,8 +315,8 @@ class Synthesizer:
         )
         max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
 
-        self.last_error = None if self.is_configured else NOT_CONFIGURED_MESSAGE
         has_answer = False
+        collected: list[str] = []
         try:
             from trelix.llm.client import ChatMessage
 
@@ -293,6 +328,7 @@ class Synthesizer:
                 thinking=self._llm_config.thinking_enabled,
             ):
                 has_answer = has_answer or bool(token.strip())
+                collected.append(token)
                 yield token
         except Exception as exc:
             logger.warning("Streaming synthesis failed: %s", exc)
@@ -304,13 +340,29 @@ class Synthesizer:
                 # and the caller reads last_error once the stream has ended.
                 logger.warning("Streaming synthesis returned an empty answer")
                 self.last_error = EMPTY_ANSWER_MESSAGE
+            # On the whole answer, once it is complete: a marker split across tokens is
+            # still found, and a reader that closed the stream early never reaches here.
+            if self.last_error is None:
+                self._record_abstention("".join(collected))
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _system_prompt(self, intent: str) -> str:
-        return _INTENT_PROMPTS.get(intent, _DEFAULT_SYSTEM_PROMPT)
+    def _record_abstention(self, answer: str) -> None:
+        """Note an ``INSUFFICIENT_EVIDENCE:`` answer; it is an answer, so ``last_error`` stays."""
+        if is_abstention(answer):
+            self.last_abstain_reason = "insufficient_evidence"
+
+    def _system_prompt(self, intent: str, *, cited: bool) -> str:
+        """The per-intent system prompt, plus the citation instruction for a tagged context.
+
+        The intent fallback is the caller's: ``stream()`` passes ``"feature_flow"`` for a
+        missing intent and ``_stream_response()`` passes ``context.intent`` as is, so an
+        empty intent still resolves to the same base prompt it did before tags existed.
+        """
+        prompt = _INTENT_PROMPTS.get(intent, _DEFAULT_SYSTEM_PROMPT)
+        return f"{prompt}{_CITATION_INSTRUCTION}" if cited else prompt
 
     def _stream_response(self, context: RetrievedContext, config: EmbedderConfig) -> str:
         """
@@ -327,6 +379,7 @@ class Synthesizer:
             query=context.query,
         )
         max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
+        system_prompt = self._system_prompt(context.intent, cited=bool(context.citation_sources))
         collected: list[str] = []
 
         # Detect if a raw client was injected directly (e.g. by tests) by checking
@@ -341,7 +394,7 @@ class Synthesizer:
         if isinstance(self._llm_client, TrelixChatClient) and not _use_raw:
             for chunk in self._llm_client.stream(
                 messages=[ChatMessage(role="user", content=user_message)],
-                system=self._system_prompt(context.intent),
+                system=system_prompt,
                 max_tokens=max_tokens,
                 temperature=0.2,
                 thinking=self._llm_config.thinking_enabled,
@@ -360,7 +413,7 @@ class Synthesizer:
             stream = self._client.chat.completions.create(  # type: ignore[union-attr]
                 model=model,
                 messages=[
-                    {"role": "system", "content": self._system_prompt(context.intent)},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
                 max_completion_tokens=max_tokens,

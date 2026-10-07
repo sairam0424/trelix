@@ -320,6 +320,37 @@ OPENAI_API_KEY=sk-...
 TRELIX_LLM_MODEL=gpt-4o   # optional, gpt-4o is the default
 ```
 
+#### openai with a local OpenAI-compatible server
+
+`TRELIX_LLM_BASE_URL` points the same backend at Ollama, llama-server or any other server that
+speaks the OpenAI chat-completions API:
+
+```env
+TRELIX_LLM_PROVIDER=openai
+TRELIX_LLM_BASE_URL=http://127.0.0.1:11434/v1   # Ollama's default; llama-server: the --host/--port you started it with, plus /v1
+TRELIX_LLM_MODEL=qwen2.5-coder:7b                # the server's own tag (the default gpt-4o is a 404 on Ollama)
+# OPENAI_API_KEY is optional here. Without it trelix sends the fixed bearer `trelix-local`, which
+# Ollama ignores; set it when the server wants a key (llama-server --api-key, a gateway).
+```
+
+- The URL must be `http://` or `https://` with a host and a valid port, must not carry a user name
+  or password, and must not contain whitespace or control characters (a trailing newline left by a
+  secret store counts); the error names the variable and never the value. A blank value is the same
+  as unset. Keep the `/v1`: Ollama serves the OpenAI API under it.
+- The output cap is sent as `max_tokens`, whatever the model is called. Ollama has no
+  `max_completion_tokens` field and ran unbounded when that was the only limit sent, which also made
+  `TRELIX_REVIEW_MAX_TOKENS` and the retry on a cut-off reply inert.
+- A model tag under 20B parameters (`qwen2.5-coder:7b`), or one with no readable size (`glm-4.5-air`;
+  a mixture tag such as `mixtral-8x7b` counts as unreadable), logs one warning each time a backend
+  is built: a `review` on an indexed repository builds two (the query planner's and the
+  reviewer's), so the line appears twice. The command still runs.
+- Only the `openai` backend reads it. With any other `TRELIX_LLM_PROVIDER`, including `azure`, the
+  value is ignored with one warning per LLM client built.
+- The openai SDK's own `OPENAI_BASE_URL` keeps working exactly as before when `TRELIX_LLM_BASE_URL`
+  is unset; set this variable instead of that one to get the behaviour above.
+- Plaintext `http://` to a host that is not loopback sends your code over the network unencrypted;
+  prefer a loopback address or `https://`.
+
 ### azure
 
 ```env
@@ -541,6 +572,7 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 
 | Variable | Default | Description |
 |---|---|---|
+| `TRELIX_LLM_BASE_URL` | — | OpenAI-compatible server for the `openai` backend (Ollama, llama-server, a gateway); `OPENAI_API_KEY` is optional with it set and the output cap goes out as `max_tokens`. See [openai with a local OpenAI-compatible server](#openai-with-a-local-openai-compatible-server) |
 | `ANTHROPIC_API_KEY` | — (required for anthropic) | Anthropic API key |
 | `TRELIX_LLM_THINKING_ENABLED` | `false` | Claude extended thinking on the synthesizer's calls (`anthropic` and `bedrock`). Other backends accept and ignore it |
 | `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | `thinking.budget_tokens` sent to the Anthropic Messages API (Bedrock: `reasoning_config`). Bills as output tokens. Ignored for adaptive-only models (Claude 5 and newer, Opus 4.7 and newer) |

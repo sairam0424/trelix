@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig, IndexConfig
     from trelix.core.models import IndexedFile
     from trelix.eval.harness import QueryRecord
+    from trelix.eval.suite_prepare import PreparedSuite
     from trelix.indexing.indexer import Indexer
     from trelix.review.diff_parser import DiffHunk, DiffParser
     from trelix.review.reviewer import ReviewOutcome
@@ -3473,6 +3474,68 @@ def eval_compare(
     raise typer.Exit(verdict.exit_code)
 
 
+def _print_prepared_suite(prepared: PreparedSuite) -> None:
+    """Print what `eval-suite --prepare-only` verified, one line each."""
+    spec = prepared.spec
+    for line in (
+        f"suite: {spec.name} (golden_version {spec.golden_version}, license {spec.license})",
+        f"repository: {spec.repo_url}",
+        f"sha: {spec.repo_sha}",
+        f"golden: sha256 {spec.golden_sha256}, {prepared.queries} queries, "
+        f"{prepared.gold_files} gold files",
+        f"plans: sha256 {spec.plans_sha256}, a recorded plan for every golden query",
+        f"clone: {prepared.clone}",
+        "prepared: every check passed; nothing was indexed or run",
+    ):
+        _print_verdict_line(console, line)
+
+
+@app.command("eval-suite", hidden=True)
+def eval_suite(
+    suite: Annotated[str, typer.Argument(help="Path to the suite's suite.json.")],
+    cache_dir: Annotated[
+        str | None,
+        typer.Option(
+            "--cache-dir",
+            help=(
+                "Where suite clones are kept. Default: $XDG_CACHE_HOME/trelix/eval-suites, "
+                "or ~/.cache/trelix/eval-suites."
+            ),
+        ),
+    ] = None,
+    prepare_only: Annotated[
+        bool,
+        typer.Option(
+            "--prepare-only",
+            help="Verify the suite and its pinned clone, and run nothing. Required for now.",
+        ),
+    ] = False,
+) -> None:
+    """Verify a suite: its files and hashes, its pinned clone, and its gold paths.
+
+    Groundwork, hidden from --help until the run itself lands: only --prepare-only works.
+    Exits 0 when everything verified, and 1 with one `refused:` line per reason otherwise.
+    Nothing from the cloned repository is executed, imported or installed.
+    """
+    from trelix.eval.suite import SuiteError
+    from trelix.eval.suite_prepare import prepare_suite
+
+    if not prepare_only:
+        _print_verdict_line(
+            err_console,
+            "refused: running a suite is not available in this release; "
+            "pass --prepare-only to verify the suite and its clone",
+        )
+        raise typer.Exit(1)
+    try:
+        prepared = prepare_suite(suite, cache_dir)
+    except SuiteError as exc:
+        for problem in exc.problems:
+            _print_verdict_line(err_console, f"refused: {problem}")
+        raise typer.Exit(1) from exc
+    _print_prepared_suite(prepared)
+
+
 # ---------------------------------------------------------------------------
 # taint
 # ---------------------------------------------------------------------------
@@ -3689,11 +3752,27 @@ def review(
     """Review a git diff using trelix retrieval-augmented analysis."""
     _setup_logging(False)
 
+    from pydantic import ValidationError as _PydanticValidationError
+
     from trelix.core.config import IndexConfig
     from trelix.review.diff_parser import DiffParser
     from trelix.review.reviewer import DiffReviewer
 
-    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    # The same pair of handlers the other commands use. Without them an invalid
+    # TRELIX_LLM_BASE_URL (a ValidationError) or a bad TRELIX_RETRIEVAL_*_WEIGHT_* (a plain
+    # ValueError from RetrievalConfig) reached the user as Typer's traceback, locals included.
+    try:
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except _PydanticValidationError as exc:
+        first_err = exc.errors()[0]
+        msg = first_err.get("msg", str(exc))
+        field = " -> ".join(str(x) for x in first_err.get("loc", []))
+        detail = f"{field}: {msg}" if field else msg
+        _print_error("Configuration error", detail)
+        raise typer.Exit(1) from exc
+    except (ValueError, FileNotFoundError) as exc:
+        _print_error("Error", exc)
+        raise typer.Exit(1) from exc
 
     # ------------------------------------------------------------------
     # GitHub PR path

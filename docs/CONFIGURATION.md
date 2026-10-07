@@ -130,6 +130,7 @@ every tenant it indexes — see [SECURITY.md](../SECURITY.md#embedding-cache-on-
 | `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | **Inert.** `RetrievalConfig.xtr_candidate_tokens` is declared and range-validated but read nowhere in `src/`, deliberately: the `xtr` provider is degenerate (one synthetic query token, so every output score is bit-identical to its input) and a real candidate-token budget needs the ColBERT-style multi-vector token index trelix does not build. The knob is kept for that future embedder; the provider logs this on every call |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE re-retrieval. Not the paper's token-log-probability method: after a synthesis completes, the answer is scanned for a fixed list of uncertainty phrases (`"i don't know"`, `"cannot find"`, …) and, on a hit, the query is enriched and re-synthesized. There is no probability threshold setting |
 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Maximum FLARE iterations per query (min: 1, max: 3) |
+| `TRELIX_RETRIEVAL_CITATIONS` | `false` | Tag every block of the assembled context with `[C1]`, `[C2]`, … (in rendered order, one tag per symbol; a compressed body carries its tag on every kept-span header) and append an instruction to the synthesis system prompt to write the block's tag after each sentence that relies on it. The tag number is the only thing the model is asked to write about a source; `RetrievedContext.citation_sources` records what each tag refers to. `false` leaves the assembled context, the synthesis prompts and every command's output unchanged. Read by every Retriever, so it also tags the per-hunk context `trelix review` retrieves (the review prompt gives the tags no instruction) and the context REST `/ask` synthesizes from; `trelix ask --provider local` prints the tags with the context. |
 | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE (Hypothetical Document Embeddings) fallback when standard retrieval returns weak results |
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable the file-summary retrieval leg — retrieves against LLM-generated file summaries in addition to raw chunks |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Enable PageRank-based symbol boosting — surfaces frequently referenced symbols higher in results |
@@ -200,6 +201,7 @@ Unknown or absent intents fall back to `TRELIX_RETRIEVAL_COMPRESSION_RATIO` (`0.
 |---|---|---|
 | `TRELIX_LLM_PROVIDER` | `openai` | LLM provider used for answer synthesis. One of: `openai`, `azure`, `anthropic`, `bedrock`, `vertex`, `litellm` — see [PROVIDERS.md](PROVIDERS.md#llm-providers-for-trelix-ask) |
 | `TRELIX_LLM_MODEL` | `gpt-4o` | Chat model for synthesis. Used verbatim by the `openai`, `anthropic`, and `vertex` backends, and it is the model name the auto-derived context budget resolves its window from — see [Model-Aware Context Budget](#model-aware-context-budget). |
+| `TRELIX_LLM_BASE_URL` | _(unset)_ | Base URL of an OpenAI-compatible server for the `openai` backend: Ollama (`http://127.0.0.1:11434/v1`), llama-server, a gateway. Must be `http://` or `https://` with a host, must not carry a user name or password and must not contain whitespace or control characters such as a trailing newline (the error names the variable, never the value); a blank value is unset. With it set, `OPENAI_API_KEY` is optional — without one trelix sends the fixed bearer `trelix-local`, which Ollama ignores — the output cap is sent as `max_tokens` (Ollama has no `max_completion_tokens` field), and a model tag under 20B parameters, or with no readable size, logs one warning each time a backend is built (a `review` on an indexed repository builds two). Any other `TRELIX_LLM_PROVIDER` ignores it with one warning per LLM client built. The openai SDK's own `OPENAI_BASE_URL` keeps working as before when this is unset. See [PROVIDERS.md](PROVIDERS.md#openai-with-a-local-openai-compatible-server). |
 | `AZURE_CHAT_MODEL` | `gpt-4o` | Azure chat deployment name — what the `azure` backend actually calls, instead of `TRELIX_LLM_MODEL` |
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key — required when `TRELIX_LLM_PROVIDER=anthropic` |
 | `TRELIX_LLM_THINKING_ENABLED` | `false` | Opt the answer synthesizer into Claude extended thinking. Only has an effect when `TRELIX_LLM_PROVIDER` is `anthropic` or `bedrock` (a Claude model on Bedrock) — every other backend accepts the flag and ignores it. On adaptive-only models (Claude 5 and newer; see below) the model decides whether to think, so a response may carry no thinking block. See [Extended Thinking (Anthropic)](#extended-thinking-anthropic). |
@@ -420,6 +422,7 @@ replace `TRELIX_API_AUTH_TOKEN`; see [SECURITY.md](../SECURITY.md#rest-api--host
 | `TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS` | `3600` | Time-to-live (seconds) for an inactive resource subscription before it is evicted from the `SubscriptionRegistry`. Expired subscriptions are swept lazily on the next registry access. |
 | `TRELIX_MCP_MAX_K` | `50` (min: `1`) | Largest page a list tool returns: `k` on `search_code`, `graph_search_mcp` and `federation_search_all`, and `limit` on `agent_list_sessions`, is clamped to `1..TRELIX_MCP_MAX_K`, and `page_size` in the response says what was used. (`blast_radius`'s own `limit` clamps to `1..500`.) Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
 | `TRELIX_MCP_MAX_RESULT_CHARS` | `15000` (min: `0`) | Budget for the text of a list result, in characters. The budget counts both copies a client is sent (the text block, with each quote escaped, and `structuredContent`), so the whole response is at most twice the budget (30,000 characters by default) and its text under the budget. Over it, the tail of the list is dropped and the response says so (`truncated`, `omitted`, and for a bare array a second text block and `_meta.trelix`); `next_cursor` continues from the first dropped result. One result is always kept. `0` turns the cut off. Read on every call; blank means the default; a negative or non-integer value is a start-up error. See [MCP_GUIDE.md](MCP_GUIDE.md#output-size-and-limits). |
+| `TRELIX_MCP_RETRIEVER_CACHE_SIZE` | `8` (min: `1`) | Most Retrievers `trelix-mcp` keeps across tool calls, one per repository (`search_code` and `graph_search_mcp` reuse them, and each may hold an embedding model with the `local` provider). Past the bound the least recently used one is dropped, not closed (a call in another worker thread may still hold it); a later call for that repository builds it again. Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
 
 ### Observability (OpenTelemetry)
 
@@ -430,6 +433,7 @@ Requires `pip install trelix[otel]`. See [OBSERVABILITY.md](OBSERVABILITY.md) fo
 | `TRELIX_OTEL_ENABLED` | `false` | Emit one OpenTelemetry span per retrieval leg (vector/BM25/grep/sparse/sub-chunk/file-summary) plus pipeline-stage spans (planner/fusion/expansion/rerank/pagerank/assembly). Zero import cost and zero behavior change when disabled. |
 | `OTEL_SERVICE_NAME` | `trelix` | Service name attached to the installed `TracerProvider`'s resource attributes. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(none)_ | OTLP collector endpoint. If unset, spans are still created but have nowhere to export to unless a host application configures its own exporter/processor before trelix runs. |
+| `TRELIX_OTEL_CAPTURE_CONTENT` | `false` | Hand retrieval query text (and prompts and replies, once LLM chat spans exist) to the GenAI instrumentation. Off by default; the text includes repository code. Where it then goes is decided by OpenTelemetry's own `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (not `TRELIX_`-prefixed; default `NO_CONTENT`; read once when tracing starts on `opentelemetry-util-genai` 1.2b0, re-read per span on 1.0b0 and 1.1b0): `SPAN_ONLY` puts the text on the retrieval (and chat) span attributes, `EVENT_ONLY` puts prompts and replies in a `gen_ai.client.inference.operation.details` record on the OpenTelemetry Logs signal (only when a `LoggerProvider` is configured; retrieval spans emit no such record), `SPAN_AND_EVENT` does both, `NO_CONTENT` discards it and trelix logs one WARNING. A pydantic boolean like `TRELIX_OTEL_ENABLED`: `true/1/yes/on`, `false/0/no/off`; a blank value or `maybe` is a `Configuration error` (exit 1) where the CLI catches it; the other two paths are in [OBSERVABILITY.md § Content capture](OBSERVABILITY.md#content-capture). |
 
 ---
 
@@ -483,6 +487,10 @@ TRELIX_INDEXER_STREAMING=false
 TRELIX_RETRIEVAL_FLARE=false
 TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=1
 
+# Citation tags: prefix every context block with [C1], [C2], ... and ask the
+# synthesis model to cite them. Off: context and prompts unchanged.
+TRELIX_RETRIEVAL_CITATIONS=false
+
 # HyDE fallback
 TRELIX_RETRIEVAL_HYDE_FALLBACK=false
 
@@ -534,6 +542,10 @@ TRELIX_LLM_PROVIDER=openai
 # window from, for every provider.
 TRELIX_LLM_MODEL=gpt-4o
 # OPENAI_API_KEY=sk-...  (shared with embedder if both use OpenAI)
+
+# OpenAI-compatible local server (Ollama, llama-server) for the openai backend;
+# OPENAI_API_KEY is optional with it set
+# TRELIX_LLM_BASE_URL=http://127.0.0.1:11434/v1
 
 # Azure chat — the azure backend calls this deployment, not TRELIX_LLM_MODEL
 # AZURE_CHAT_MODEL=gpt-4o
@@ -653,6 +665,7 @@ TRELIX_STORE_BACKEND=sqlite
 # TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 # TRELIX_MCP_MAX_K=50
 # TRELIX_MCP_MAX_RESULT_CHARS=15000
+# TRELIX_MCP_RETRIEVER_CACHE_SIZE=8
 ```
 
 ---

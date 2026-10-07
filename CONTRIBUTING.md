@@ -605,6 +605,19 @@ the publish: its output must name the version you just released, in both
 `servers[0].server.version` and `servers[0].server.packages[0].version`. An old version
 there means the publish did not land.
 
+#### Move the Claude Code plugin pin (its own PR, never the release PR)
+
+Once PyPI shows the new `trelix-mcp`, open `chore/claude-plugin-pin-X.Y.Z` into `develop`: set
+the pin in `plugins/trelix/.mcp.json`, `plugin.json`'s `version`, the pinned command and the
+release named in `plugins/trelix/README.md` and `SKILL.md`, the literals in
+`tests/unit/test_claude_plugin_manifest.py` (the expected `.mcp.json` object, the `version`
+literal, the README command row and pin, the tree hash), and in
+`tests/unit/test_claude_plugin_skill.py` the `DEVELOP_ONLY_PARAMETERS` and `DEVELOP_ONLY_FLAG`
+guards (that PR deletes both) and the release its messages name. Put the output of `uvx --from trelix-mcp==X.Y.Z trelix-mcp --version`
+in the PR body: the tests check that the version has a CHANGELOG section and is not newer than
+the stamp, not that PyPI has it. The plugin is fetched from the default branch, so the new pin
+is installable once `develop` is promoted to `main`.
+
 ---
 
 ## Working on Sub-packages
@@ -624,3 +637,40 @@ python -m pytest packages/trelix-llama-index/tests/ --override-ini="testpaths=pa
 ```
 
 Each package has its own `pyproject.toml` and `tests/` directory. The `src/` layout mirrors the main package.
+
+## Working on the Claude Code plugin
+
+`.claude-plugin/marketplace.json` (the marketplace) and `plugins/trelix/` (the plugin: `.mcp.json`,
+`plugin.json`, the `use-trelix-index` skill, and a README that lists every command the plugin
+runs) are read by Claude Code, not by this package. Rules:
+
+- **Any change under `plugins/trelix/` bumps `plugin.json`'s `version`** (`<pin>`, or `<pin>.N`
+  for a plugin-only change) **and the `_PLUGIN_TREE_SHA256` literal in
+  `tests/unit/test_claude_plugin_manifest.py`.** Claude Code keeps users on the cached copy until
+  the version string changes, so an unbumped edit reaches nobody. The hash test fails until the
+  literal is updated; its failure message tells you to bump `version` at the same time, because
+  no test can see whether you did.
+- **The pin in `.mcp.json` is the newest published `trelix-mcp`, never the version in this tree.**
+  It moves in its own PR after PyPI shows the release (see the release checklist above), never in
+  a release PR. Tests fail when it is newer than the trelix-mcp stamp or names a version without a
+  `## [X.Y.Z]` CHANGELOG section.
+- **The skill describes the pinned release, not `develop`.** A tool or parameter that only
+  `develop` has stays out of `SKILL.md` until the pin reaches a release that has it;
+  `tests/unit/test_claude_plugin_skill.py` pins the tool names and the develop-only parameters.
+- **Validate before committing** (a manual step: CI runs the offline tests, not the validator,
+  which would need an npm install of Claude Code):
+
+  ```bash
+  claude plugin validate --strict .
+  claude plugin validate --strict plugins/trelix
+  ```
+
+  Both must end with `✔ Validation passed`.
+- **Smoke-test from the checkout.** `claude plugin marketplace add /path/to/this/checkout` loads
+  the plugin in place (edits take effect at the next session or after `/reload-plugins`, no
+  version bump needed); then `claude plugin install trelix@trelix`, open a scratch project, and
+  confirm that `/mcp` shows `plugin:trelix:trelix` and that `/trelix:use-trelix-index` loads the
+  skill. Afterwards `claude plugin marketplace remove trelix` (it also uninstalls the plugin).
+- The server-registration test in `tests/unit/test_claude_plugin_skill.py` needs `trelix_mcp`
+  and `fastmcp` (`pip install -e packages/trelix-mcp`); without them it skips. CI's unit job has
+  them.
