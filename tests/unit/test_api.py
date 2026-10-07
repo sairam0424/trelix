@@ -132,6 +132,36 @@ class TestTrelixAPI:
             assert resp.status_code == 200
             assert "text/event-stream" in resp.headers["content-type"]
 
+    def test_ask_on_an_empty_retrieval_streams_the_notice_without_an_llm_call(
+        self, tmp_path: Path
+    ) -> None:
+        """Consumer pin for the real Synthesizer behind GET /ask: nothing retrieved means the
+        notice is the only data frame before `[DONE]`, and the chat client is never called
+        (it used to be called with `No relevant code found.` as the whole code context).
+        MUTATION: remove the `stream()` empty-results guard -> the client is called once and
+        the body carries its tokens."""
+        from trelix.core.models import RetrievedContext
+
+        chat_client = MagicMock()
+        chat_client.stream.return_value = iter(["an ", "ungrounded answer"])
+        no_results = RetrievedContext(
+            query="hello", results=[], context_text="No relevant code found.", total_tokens=0
+        )
+
+        with (
+            patch("trelix.api.app.Retriever") as MockRetriever,
+            patch("trelix.retrieval.synthesizer.build_chat_client", return_value=chat_client),
+        ):
+            MockRetriever.return_value.retrieve.return_value = no_results
+            resp = TestClient(create_app()).get(f"/ask?query=hello&repo={tmp_path}")
+
+        assert resp.status_code == 200
+        assert resp.text == (
+            "data: [trelix] No relevant code found — cannot synthesize an answer.\n\n"
+            "data: [DONE]\n\n"
+        )
+        assert chat_client.stream.call_count == 0
+
 
 @pytest.mark.usefixtures("allow_repo_root")
 class TestSearchPagination:

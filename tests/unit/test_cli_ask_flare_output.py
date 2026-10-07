@@ -58,8 +58,10 @@ def test_ask_flare_branch_prints_the_answer_exactly_once(tmp_path: Path) -> None
         patch("trelix.retrieval.flare.FLARELoop", return_value=fake_loop),
     ):
         # `ask` exits 1 when the synthesizer reports a failure; a bare MagicMock
-        # attribute would read as one.
+        # attribute would read as one. The abstention reason is mirrored for the same
+        # reason: a real Synthesizer that answered leaves both None.
         MockSynthesizer.return_value.last_error = None
+        MockSynthesizer.return_value.last_abstain_reason = None
         MockRetriever.return_value.retrieve.return_value = _context()
         result = runner.invoke(
             app,

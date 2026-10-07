@@ -466,6 +466,23 @@ class TestSynthesizerRecordsAnEmptyAnswer:
         assert "No relevant code found" in answer
         assert synth.last_error is None
 
+    def test_an_empty_retrieval_is_not_an_llm_failure_for_stream_either(self) -> None:
+        """The `stream()` twin: the notice is the whole stream, and it is not an empty answer
+        (the client is never called, so there is no LLM answer to be empty)."""
+        synth = self._synth(_ScriptedChatClient(()))
+        no_results = RetrievedContext(
+            query="how does add work",
+            results=[],
+            context_text="",
+            total_tokens=0,
+            elapsed_seconds=0.01,
+        )
+
+        tokens = list(synth.stream(no_results, RetrievalConfig()))
+
+        assert len(tokens) == 1 and "No relevant code found" in tokens[0]
+        assert synth.last_error is None
+
 
 class TestRestAskWithAnEmptyAnswer:
     def test_the_sse_stream_still_ends_with_done_and_does_not_crash(

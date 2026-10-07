@@ -655,6 +655,12 @@ several suite directories).
 Input to `trelix eval-synthesis`, which scores answer faithfulness and completeness
 GroUSE-style rather than measuring retrieval.
 
+With `TRELIX_RETRIEVAL_CITATIONS=true` the synthesis prompt also asks the model to abstain with one
+line starting `INSUFFICIENT_EVIDENCE:` when the retrieved context does not answer the question.
+GraphRAG answers (large contexts under the `openai` or `azure` embedder, reached through
+`synthesize()` only) get the `[C#]` cite lines but not the abstention sentence, so they cannot
+abstain by protocol: an abstention count over such a run is structurally lower.
+
 ## Related tooling
 
 `scripts/measure_index_hygiene.py` answers a different question from `trelix eval`: not
