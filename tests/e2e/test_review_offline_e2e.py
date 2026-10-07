@@ -15,7 +15,7 @@ an index `DiffReviewer._get_retriever` returns None and no `Retriever` (hence no
 and no planner `tool_call`) is ever built.
 
 `requires_network` is a directory label applied by `tests/e2e/conftest.py`; this test needs no
-network and no model. tiktoken's `cl100k_base` is loaded at collection (module level, before
+model and no network beyond tiktoken's one-time `cl100k_base` download at collection. tiktoken's `cl100k_base` is loaded at collection (module level, before
 pytest-socket's per-test ban) so the on-disk cache the child process reads is warm; the child
 inherits `TIKTOKEN_CACHE_DIR`, `DATA_GYM_CACHE_DIR` and `TMPDIR`, none of which is a `TRELIX_*`
 or provider name, so it never downloads.
@@ -146,8 +146,8 @@ def _run_review(
 @pytest.mark.timeout(120)
 class TestReviewAgainstTheFakeServer:
     def test_exit_4_with_the_one_finding_on_stdout(self, tmp_path: Path) -> None:
-        """MUTATION: return `{"max_completion_tokens": value}` for a local server (the bodies
-        then carry no `max_tokens`, the next test); this one pins the exit and the array."""
+        """MUTATION: `_local_server = False` in `OpenAIBackend.__init__` (no client, exit 3,
+        no requests); this one pins the exit code and the stdout array."""
         with FakeOpenAIServer(_script()) as server:
             proc, _ = _run_review(tmp_path, server)
 

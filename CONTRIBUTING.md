@@ -74,7 +74,7 @@ and quietly ran the entire suite including the live Azure/Bedrock tests.
 `tests/e2e/` is the real-subprocess suite (the installed `trelix` and `trelix-mcp` console
 scripts, fresh venvs from freshly-built wheels, real sockets). `tests/e2e/conftest.py` tags
 every test there `e2e`, `enable_socket` and `requires_network` by directory, so the suite is
-outside `make test`/`make test-fast` twice over (the directory and the socket ban) and runs
+outside `make test`/`make test-fast` (those name `tests/unit/` only) and runs
 with `make test-e2e`, in CI's `e2e` job and in the release smoke job against the built wheels.
 `tests/e2e/test_review_offline_e2e.py` is the real-socket example that needs no model and no
 network: `trelix review` runs against `tests/e2e/fake_openai_server.py`, a stdlib
