@@ -417,3 +417,26 @@ def test_notes_record_load_and_inflation(
     assert notes["inflated"] is expected_inflated
     assert notes["comment"] == "shared machine"
     assert notes["workdir_free_bytes"] == 1_000_000_000_000
+
+
+# ---------------------------------------------------------------------------
+# The committed report(s) under docs/reports/
+# ---------------------------------------------------------------------------
+
+
+def test_committed_report_matches_the_schema() -> None:
+    """Mutations: a committed report edited by hand (a key dropped, sqlite_vec changed, a
+    `-shared` label on a report whose notes.inflated is false, or the reverse); the report
+    deleted (the non-vacuity assertion is why this test lands with the report).
+
+    No Python-version assertion: the owner's later report may come from another interpreter."""
+    files = sorted((_ROOT / "docs" / "reports").glob("vector-search-bench-*.json"))
+    assert files
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        report = json.loads(text)
+        _assert_report_shape(report, text)
+        assert report["platform"]["sqlite_vec"] == "0.1.9"
+        assert report["platform"]["vec_version"] == "v0.1.9"
+        assert len(report["results"]) in (6, 9)
+        assert ("-shared" in path.stem) == report["notes"]["inflated"]
