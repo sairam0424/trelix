@@ -392,6 +392,7 @@ replace `TRELIX_API_AUTH_TOKEN`; see [SECURITY.md](../SECURITY.md#rest-api--host
 | `TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS` | `3600` | Time-to-live (seconds) for an inactive resource subscription before it is evicted from the `SubscriptionRegistry`. Expired subscriptions are swept lazily on the next registry access. |
 | `TRELIX_MCP_MAX_K` | `50` (min: `1`) | Largest page a list tool returns: `k` on `search_code`, `graph_search_mcp` and `federation_search_all`, and `limit` on `agent_list_sessions`, is clamped to `1..TRELIX_MCP_MAX_K`, and `page_size` in the response says what was used. (`blast_radius`'s own `limit` clamps to `1..500`.) Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
 | `TRELIX_MCP_MAX_RESULT_CHARS` | `15000` (min: `0`) | Budget for the text of a list result, in characters. The budget counts both copies a client is sent (the text block, with each quote escaped, and `structuredContent`), so the whole response is at most twice the budget (30,000 characters by default) and its text under the budget. Over it, the tail of the list is dropped and the response says so (`truncated`, `omitted`, and for a bare array a second text block and `_meta.trelix`); `next_cursor` continues from the first dropped result. One result is always kept. `0` turns the cut off. Read on every call; blank means the default; a negative or non-integer value is a start-up error. See [MCP_GUIDE.md](MCP_GUIDE.md#output-size-and-limits). |
+| `TRELIX_MCP_RETRIEVER_CACHE_SIZE` | `8` (min: `1`) | Most Retrievers `trelix-mcp` keeps across tool calls, one per repository (`search_code` and `graph_search_mcp` reuse them, and each may hold an embedding model with the `local` provider). Past the bound the least recently used one is dropped, not closed (a call in another worker thread may still hold it); a later call for that repository builds it again. Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
 
 ### Observability (OpenTelemetry)
 
@@ -624,6 +625,7 @@ TRELIX_STORE_BACKEND=sqlite
 # TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 # TRELIX_MCP_MAX_K=50
 # TRELIX_MCP_MAX_RESULT_CHARS=15000
+# TRELIX_MCP_RETRIEVER_CACHE_SIZE=8
 ```
 
 ---

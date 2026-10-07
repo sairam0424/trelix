@@ -56,6 +56,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   tool goes back to a range or to no version.
 
 ### Fixed
+- **`trelix-mcp` keeps at most `TRELIX_MCP_RETRIEVER_CACHE_SIZE` (default 8) Retrievers; the least
+  recently used is dropped, not closed.** The cache had no bound, and each entry may hold an
+  embedding model (`local` provider). A value that is not an integer of at least 1 stops the
+  server at start-up with exit code 2, like the other `TRELIX_MCP_*` limits.
 - **`trelix-mcp` answers every invalid input with a tool error that names the argument.** Measured
   through an in-process client before the fix: a `repo_path` that did not exist, or held only
   whitespace, was not a tool result at all but a JSON-RPC "Invalid request parameters" error
