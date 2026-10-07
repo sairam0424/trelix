@@ -599,6 +599,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   client, so with the variable set `search` and `query` plan through that server too (one call per
   distinct query); the zero-LLM-call recipe in the FAQ, README, getting-started, user and
   why-trelix guides and `SECURITY.md` now requires it unset as well as the chat credential.
+- **`TRELIX_LLM_LOCAL_CONTEXT_TOKENS`** tells the model-aware context budget
+  (`TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null`) the context length of the server behind
+  `TRELIX_LLM_BASE_URL`, instead of falling back to 12,000 for a tag `context_windows` does not
+  know. Optional, `1024` to `2000000`, blank is unset; the budget is then
+  `int(TRELIX_LLM_LOCAL_CONTEXT_TOKENS × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`, and an
+  explicit integer budget still wins. Setting it without `TRELIX_LLM_BASE_URL` is a configuration
+  error that names both variables and never the value.
 
 ### Changed
 - **`trelix ask` and `GET /ask` no longer call the LLM when retrieval found nothing, and an answer

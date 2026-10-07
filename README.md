@@ -348,6 +348,7 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 | `TRELIX_LLM_PROVIDER` | `openai` | `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` |
 | `TRELIX_LLM_MODEL` | `gpt-4o` | Chat model override |
 | `TRELIX_LLM_BASE_URL` | — | OpenAI-compatible local server (Ollama, llama-server) for the `openai` backend; `OPENAI_API_KEY` optional with it set |
+| `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` | — | Context length of that server; sizes the auto-derived context budget (`TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null`) for a local model tag |
 | `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` | `us.anthropic.claude-sonnet-4-6` | Bedrock primary model |
 | `TRELIX_LLM_BEDROCK_FALLBACK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock fallback on ValidationException |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (`trelix[anthropic]`) |
