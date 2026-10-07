@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import struct
 import tempfile
 import threading
@@ -290,11 +291,18 @@ class EmbeddingCache:
         that is not a schema-1 trelix cache raises the same ``EmbeddingCacheError`` as
         :meth:`open`, and so does one the process cannot read (a file or directory owned
         by another user: SECURITY.md's shared-host case), so the preview never tracebacks.
+        Absence is decided with an explicit ``stat()``: ``Path.is_file()`` swallows a
+        ``PermissionError`` from Python 3.13 on and would turn an unreadable directory into
+        "no cache" instead of the error above (a directory at the path is "no cache").
         """
         import urllib.request
 
         try:
-            if not path.is_file():
+            try:
+                mode = path.stat().st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                return None
+            if not stat.S_ISREG(mode):
                 return None
             uri = f"file:{urllib.request.pathname2url(str(path))}?mode=ro"
             conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
