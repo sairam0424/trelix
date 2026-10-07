@@ -847,7 +847,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   metrics endpoint mapping, the `MeterProvider` builder and the embedding counter definitions now
   live in `trelix.retrieval.otel_metrics` and are re-exported, so `otel_tracing.py` stays under the
   500-line limit with the `is_enabled_from_env()` and `handler_from_env()` helpers the LLM factory
-  uses. No behaviour change; the OTel test files are unchanged.
+  uses. No behaviour change; the metrics tests (`tests/unit/test_otel_metrics*.py`) were not touched
+  by the move.
 
 ## [3.4.3] — 2026-10-04
 
