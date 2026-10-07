@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_core import PydanticUseDefault
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -1319,6 +1319,10 @@ _BASE_URL_USERINFO_ERROR = "TRELIX_LLM_BASE_URL must not carry a user name or pa
 _BASE_URL_WHITESPACE_ERROR = (
     "TRELIX_LLM_BASE_URL must not contain whitespace or non-printable characters"
 )
+_LOCAL_CONTEXT_TOKENS_ERROR = (
+    "TRELIX_LLM_LOCAL_CONTEXT_TOKENS needs TRELIX_LLM_BASE_URL: "
+    "it describes the server behind that URL"
+)
 
 
 class LLMConfig(BaseSettings):
@@ -1352,9 +1356,9 @@ class LLMConfig(BaseSettings):
     # Blank is unset; the SDK's own OPENAI_BASE_URL is left alone when this is unset.
     base_url: str | None = None
 
-    @field_validator("base_url", mode="before")
+    @field_validator("base_url", "local_context_tokens", mode="before")
     @classmethod
-    def _blank_base_url_is_unset(cls, value: object) -> object:
+    def _blank_is_unset(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             raise PydanticUseDefault()
         return value
@@ -1391,6 +1395,21 @@ class LLMConfig(BaseSettings):
         if "@" in parts.netloc:
             raise ValueError(_BASE_URL_USERINFO_ERROR)
         return value
+
+    # Context length, in tokens, of the server behind TRELIX_LLM_BASE_URL (env
+    # TRELIX_LLM_LOCAL_CONTEXT_TOKENS). `context_windows` knows no local model tags, so with
+    # TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null the retrieval budget would fall back to 12,000;
+    # with this set it is int(local_context_tokens * context_window_fraction). Blank is unset.
+    local_context_tokens: int | None = Field(default=None, ge=1024, le=2_000_000)
+
+    @model_validator(mode="after")
+    def _local_context_tokens_describe_the_local_server(self) -> LLMConfig:
+        """The value is meaningless without the URL it describes; refuse it rather than let a
+        stale variable size the budget of a hosted model. The message names the variables and
+        never the value."""
+        if self.local_context_tokens is not None and self.base_url is None:
+            raise ValueError(_LOCAL_CONTEXT_TOKENS_ERROR)
+        return self
 
     # ── Azure OpenAI ─────────────────────────────────────────────────────────
     azure_api_key: str | None = Field(default=None, alias="AZURE_API_KEY")
@@ -1765,6 +1784,58 @@ class ImageConnectorConfig(BaseSettings):
 # ---------------------------------------------------------------------------
 
 
+class EmbeddingCacheConfig(BaseSettings):
+    """On-disk cache of index-time document embeddings. Off by default.
+
+    Distinct from ``TRELIX_RETRIEVAL_QUERY_CACHE_SIZE``, the in-memory LRU for
+    ``embed_query()``: this one persists the vectors of indexed chunk text across runs
+    (``src/trelix/indexing/embedding_cache.py``), so a fresh index of unchanged text
+    makes no embedding calls. ``dir`` must be absolute; unset means
+    ``$XDG_CACHE_HOME/trelix/embeddings`` else ``~/.cache/trelix/embeddings``, resolved
+    at use by ``resolve_cache_dir`` (``XDG_CACHE_HOME`` is read from ``os.environ``
+    there, never as a settings field). ``max_mb`` is a per-fingerprint-file trim
+    applied after each index run, not a hard limit during one.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_EMBEDDING_CACHE_",
+        env_file=OPERATOR_ENV_FILE,
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    enabled: bool = False
+    dir: Path | None = None
+    max_mb: int = Field(default=4096, ge=1)
+
+    @field_validator("enabled", "dir", "max_mb", mode="before")
+    @classmethod
+    def _blank_is_the_default(cls, value: object) -> object:
+        """A blank `TRELIX_EMBEDDING_CACHE_*=` is unset (an undefined CI variable).
+
+        Raises ``PydanticUseDefault`` as the review validators above do: returning
+        ``None`` here would fail the ``bool``/``int`` validation that follows.
+        """
+        if isinstance(value, str) and not value.strip():
+            raise PydanticUseDefault()
+        return value
+
+    @field_validator("dir", mode="after")
+    @classmethod
+    def _dir_must_be_absolute(cls, value: Path | None) -> Path | None:
+        """Refuse a relative cache directory: it would resolve against the process cwd,
+        which is routinely inside a repository trelix does not own."""
+        if value is None:
+            return None
+        expanded = value.expanduser()
+        if not expanded.is_absolute():
+            raise ValueError(
+                f"TRELIX_EMBEDDING_CACHE_DIR must be an absolute path (got {str(value)!r})"
+            )
+        return expanded
+
+
 class IndexConfig(BaseSettings):
     """
     Top-level config. Instantiate once and pass through the whole pipeline.
@@ -1796,6 +1867,7 @@ class IndexConfig(BaseSettings):
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     git_linker: GitLinkerConfig = Field(default_factory=GitLinkerConfig)
     image: ImageConnectorConfig = Field(default_factory=ImageConnectorConfig)
+    embedding_cache: EmbeddingCacheConfig = Field(default_factory=EmbeddingCacheConfig)
 
     # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
     # Requires LLM API access. Off by default — zero cost when disabled.

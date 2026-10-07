@@ -112,6 +112,19 @@ class TestLlmChatSpansSection:
             otel_extra = tomllib.load(fh)["project"]["optional-dependencies"]["otel"]
         assert "opentelemetry-util-genai>=1.2b0" in otel_extra
 
+    def test_the_below_floor_bullet_names_every_probed_degradation(self) -> None:
+        """An install below the floor is not detected, so the doc says what an operator on 1.0b0
+        or 1.1b0 would misread; each item was probed on the installed library (the fourth is
+        1.0b0-only: its error step calls `.__qualname__` on the class-name string trelix passes)."""
+        bullet = _bullet("- **Without the library, one WARNING.**")
+        for degradation in (
+            "a `stream()` span parents the consumer's spans",
+            "the cache-write count is missing",
+            "content capture is silently dropped",
+            "on 1.0b0 a failed call's span also ends `UNSET` without `error.type`",
+        ):
+            assert degradation in bullet, degradation
+
     def test_the_unavailable_warning_is_quoted_verbatim(self) -> None:
         """Same literal the factory path logs (pinned against the code in
         test_otel_llm_wrapper.py), with `<reason>` where the cause goes."""

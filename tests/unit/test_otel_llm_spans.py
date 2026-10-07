@@ -28,6 +28,7 @@ from tests.unit.otel_llm_fakes import (
     FakeBackend,
     canaries_absent,
     cfg,
+    exporting_spans,
     reply,
     require_util_genai_at_the_floor,
     span_text,
@@ -53,7 +54,11 @@ def _traced(backend: TrelixChatClient, config: Any) -> Any:
 
 
 def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if r.levelno >= logging.WARNING]
+    """trelix's WARNING records only: another library's (an SDK span processor another module left
+    attached) must not count against the warn-once and no-warning pins here."""
+    return [
+        r for r in caplog.records if r.levelno >= logging.WARNING and r.name.startswith("trelix")
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -69,8 +74,6 @@ def _test_tracer_provider():
     from opentelemetry import trace
     from opentelemetry.sdk.resources import SERVICE_NAME, Resource
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
     provider = trace.get_tracer_provider()
     if not isinstance(provider, TracerProvider):
@@ -83,13 +86,8 @@ def _test_tracer_provider():
                 f"{type(installed).__name__}, which cannot export spans"
             )
 
-    exporter = InMemorySpanExporter()
-    processor = SimpleSpanProcessor(exporter)
-    provider.add_span_processor(processor)
-    try:
+    with exporting_spans(provider) as exporter:
         yield exporter
-    finally:
-        processor.shutdown()
 
 
 @pytest.fixture()

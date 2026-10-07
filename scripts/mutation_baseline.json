@@ -111,6 +111,12 @@
       },
       "total_mutants": 187
     },
+    "indexing.embedding_cache": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/embedding_cache.py"
+      ]
+    },
     "indexing.parser.c": {
       "measured": false,
       "patterns": [
@@ -334,6 +340,27 @@
       },
       "total_mutants": 111
     },
+    "retrieval.citations": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 114
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-10-07T04:21:08+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/retrieval/citations.py"
+      ],
+      "source_sha256": {
+        "src/trelix/retrieval/citations.py": "9d58560ec8f349f0cd28e1a989dab1fed9ba140e13c620520e74ea91084cc7f2"
+      },
+      "total_mutants": 114
+    },
     "retrieval.fusion": {
       "ceilings": {
         "no_tests": 0,
@@ -432,8 +459,12 @@
       "CHANGELOG.md",
       "config",
       "CONTRIBUTING.md",
+      "docker-compose.yml",
+      "Dockerfile",
       "docs",
+      "eval",
       "helm",
+      "infra",
       "LICENSE",
       "Makefile",
       "packages",

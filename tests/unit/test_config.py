@@ -362,6 +362,97 @@ class TestIndexConfig:
         assert cfg.telemetry_enabled is True
 
 
+class TestEmbeddingCacheConfig:
+    """TRELIX_EMBEDDING_CACHE_* (the on-disk index-time cache, off by default).
+
+    Defaults are read from `model_fields[...].default`, not from an instance: the unit
+    conftest pins `TRELIX_EMBEDDING_CACHE_ENABLED=false` in the environment, so an
+    instance would show the pin, not the code default.
+
+    MUTATIONS: `enabled` default True; `max_mb` default 2048; `ge=1` -> `ge=0`; the
+    absolute-path validator removed; the blank-is-default validator removed; the
+    `embedding_cache` field dropped from IndexConfig.
+    """
+
+    def test_code_defaults_are_off_unset_dir_and_4096_mb(self) -> None:
+        from trelix.core.config import EmbeddingCacheConfig
+
+        fields = EmbeddingCacheConfig.model_fields
+        assert fields["enabled"].default is False
+        assert fields["dir"].default is None
+        assert fields["max_mb"].default == 4096
+
+    def test_env_enables_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trelix.core.config import EmbeddingCacheConfig
+
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_ENABLED", "true")
+        assert EmbeddingCacheConfig().enabled is True
+
+    @pytest.mark.parametrize("raw", ["0", "-5", "abc"])
+    def test_max_mb_below_one_or_non_integer_is_a_startup_error(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str
+    ) -> None:
+        from trelix.core.config import EmbeddingCacheConfig
+
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_MAX_MB", raw)
+        with pytest.raises(ValidationError):
+            EmbeddingCacheConfig()
+
+    def test_max_mb_of_one_is_the_floor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trelix.core.config import EmbeddingCacheConfig
+
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_MAX_MB", "1")
+        assert EmbeddingCacheConfig().max_mb == 1
+
+    def test_relative_dir_is_refused_with_the_variable_named(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trelix.core.config import EmbeddingCacheConfig
+
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", "rel/path")
+        with pytest.raises(ValidationError) as excinfo:
+            EmbeddingCacheConfig()
+        assert "TRELIX_EMBEDDING_CACHE_DIR must be an absolute path" in str(excinfo.value)
+        assert "rel/path" in str(excinfo.value)
+
+    def test_absolute_dir_is_kept_and_tilde_expands_to_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from trelix.core.config import EmbeddingCacheConfig
+
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(tmp_path / "abs"))
+        assert EmbeddingCacheConfig().dir == tmp_path / "abs"
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", "~/x")
+        assert EmbeddingCacheConfig().dir == Path.home() / "x"
+
+    def test_blank_values_are_the_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An undefined CI variable (`${{ vars.X }}`) reaches the process as "", which must
+        read as unset rather than fail bool/int/path validation in every command."""
+        from trelix.core.config import EmbeddingCacheConfig
+
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_ENABLED", "")
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", "  ")
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_MAX_MB", "")
+        cfg = EmbeddingCacheConfig()
+        assert cfg.enabled is False
+        assert cfg.dir is None
+        assert cfg.max_mb == 4096
+
+    def test_index_config_carries_it_and_reads_the_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from trelix.core.config import EmbeddingCacheConfig
+
+        assert isinstance(
+            IndexConfig(repo_path=str(tmp_path)).embedding_cache, EmbeddingCacheConfig
+        )
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_ENABLED", "true")
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_MAX_MB", "7")
+        cfg = IndexConfig(repo_path=str(tmp_path))
+        assert cfg.embedding_cache.enabled is True
+        assert cfg.embedding_cache.max_mb == 7
+
+
 class TestImageConnectorConfig:
     """ImageConnectorConfig — see tests/unit/test_connector_image.py for
     ImageConnector's own behavioral coverage; this class only covers the

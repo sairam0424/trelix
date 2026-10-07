@@ -63,6 +63,9 @@ BEAST_MODE_DEFAULTS: Mapping[str, str] = MappingProxyType(
         "TRELIX_TELEMETRY_ENABLED": "false",
         "TRELIX_OTEL_ENABLED": "false",
         "TRELIX_OTEL_CAPTURE_CONTENT": "false",
+        # On-disk index-time embedding cache: a developer who enabled it locally must
+        # not have every indexer test read and write ~/.cache/trelix/embeddings.
+        "TRELIX_EMBEDDING_CACHE_ENABLED": "false",
     }
 )
 
@@ -115,6 +118,8 @@ EMPTY_STRING_BY_DEFAULT: tuple[str, ...] = (
     # LLMConfig reads a blank value as unset, so this pin cannot break config construction;
     # without it an operator's local-server URL would redirect every "hosted openai" test.
     "TRELIX_LLM_BASE_URL",
+    # Same rule; without it an operator's local context length would resize every budget test.
+    "TRELIX_LLM_LOCAL_CONTEXT_TOKENS",
 )
 # Int-typed connector fields (project_id: int | None) can't take the ""
 # override above — pydantic would fail to parse "" as an int the same way

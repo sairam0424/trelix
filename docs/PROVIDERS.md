@@ -340,12 +340,29 @@ TRELIX_LLM_MODEL=qwen2.5-coder:7b                # the server's own tag (the def
 - The output cap is sent as `max_tokens`, whatever the model is called. Ollama has no
   `max_completion_tokens` field and ran unbounded when that was the only limit sent, which also made
   `TRELIX_REVIEW_MAX_TOKENS` and the retry on a cut-off reply inert.
+- `trelix review` reports a hunk as `truncated` with `detail: prompt_truncated` when the server's
+  reported `prompt_tokens` is under 0.85 x the cl100k_base count of what trelix sent, keeps nothing
+  from that reply and does not retry it. Ollama drops the head of a prompt longer than its context
+  length (the system prompt goes first) and answers HTTP 200 with a normal finish reason; the smaller
+  count is the only trace. llama-server rejects an oversize prompt with HTTP 400 instead, which trelix
+  reports as `error` (`exception:BadRequestError`). The check needs `usage` in the reply and the
+  cl100k_base encoding on disk (one warning, then off, when either is missing), and it covers the
+  review call only: `trelix ask` (a stream) and the query planner's tool call are not checked.
 - A model tag under 20B parameters (`qwen2.5-coder:7b`), or one with no readable size (`glm-4.5-air`;
   a mixture tag such as `mixtral-8x7b` counts as unreadable), logs one warning each time a backend
   is built: a `review` on an indexed repository builds two (the query planner's and the
   reviewer's), so the line appears twice. The command still runs.
 - Only the `openai` backend reads it. With any other `TRELIX_LLM_PROVIDER`, including `azure`, the
   value is ignored with one warning per LLM client built.
+- `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` tells the model-aware context budget
+  (`TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null`) the server's context length, which the
+  `context_windows` table cannot know for a local tag (it would fall back to 12,000): set it to the
+  length the server runs with, e.g. Ollama's `OLLAMA_CONTEXT_LENGTH`, and the budget becomes
+  `int(length × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`. `1024` to `2000000`; it needs
+  `TRELIX_LLM_BASE_URL`.
+  Set it in the same place as `TRELIX_LLM_BASE_URL` (both exported, or both in the operator env
+  file): the two are validated together, and a component that reads only the process environment
+  must see both or neither.
 - The openai SDK's own `OPENAI_BASE_URL` keeps working exactly as before when `TRELIX_LLM_BASE_URL`
   is unset; set this variable instead of that one to get the behaviour above.
 - Plaintext `http://` to a host that is not loopback sends your code over the network unencrypted;
@@ -471,7 +488,7 @@ Setting `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` derives the context-assembl
 | `anthropic.claude-3-5-sonnet-20240620-v1:0` | unrecognised |
 | `bedrock/claude-3-5-sonnet` | unrecognised |
 
-An unrecognised model logs a WARNING and falls back to a flat `12,000`-token budget — the window fraction is not applied. Auto-derivation therefore degrades to the v2.12.0 default rather than failing, but it also means Bedrock inference-profile ids and LiteLLM-prefixed model strings get no benefit from it unless `TRELIX_LLM_MODEL` is set to a bare, recognised model name.
+An unrecognised model logs a WARNING and falls back to a flat `12,000`-token budget — the window fraction is not applied (a local model tag is unrecognised too; `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` supplies its window, see [openai with a local OpenAI-compatible server](#openai-with-a-local-openai-compatible-server)). Auto-derivation therefore degrades to the v2.12.0 default rather than failing, but it also means Bedrock inference-profile ids and LiteLLM-prefixed model strings get no benefit from it unless `TRELIX_LLM_MODEL` is set to a bare, recognised model name.
 
 ---
 
@@ -564,12 +581,16 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 |---|---|---|
 | `TRELIX_EMBEDDER_EMBED_MAX_TOKENS_PER_BATCH` | `100000` | Max tokens per embedding batch |
 | `TRELIX_EMBEDDER_TPM_LIMIT` | `0` | Tokens-per-minute rate limit (0 = unlimited) |
+| `TRELIX_EMBEDDING_CACHE_ENABLED` | `false` | On-disk cache of index-time chunk embeddings, one SQLite file per embedder fingerprint (provider, model id, width knobs). A fresh index of unchanged text makes no provider calls. Refused with `TRELIX_USE_BATCH_API` on `openai`. Not the query cache (`TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`). Single-operator machines only — see [CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time) |
+| `TRELIX_EMBEDDING_CACHE_DIR` | _(unset)_ | Cache directory, absolute path only. Unset: `$XDG_CACHE_HOME/trelix/embeddings`, else `~/.cache/trelix/embeddings`. Created `0o700`, files `0o600` |
+| `TRELIX_EMBEDDING_CACHE_MAX_MB` | `4096` | Per-file LRU trim applied after each index run (minimum 1); not a limit during a run |
 
 ### LLM — Provider-specific
 
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_LLM_BASE_URL` | — | OpenAI-compatible server for the `openai` backend (Ollama, llama-server, a gateway); `OPENAI_API_KEY` is optional with it set and the output cap goes out as `max_tokens`. See [openai with a local OpenAI-compatible server](#openai-with-a-local-openai-compatible-server) |
+| `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` | — | Context length of the server behind `TRELIX_LLM_BASE_URL` (`1024`–`2000000`); with `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` the budget is this × the window fraction instead of the 12,000 fallback for an unknown tag. Needs `TRELIX_LLM_BASE_URL` |
 | `ANTHROPIC_API_KEY` | — (required for anthropic) | Anthropic API key |
 | `TRELIX_LLM_THINKING_ENABLED` | `false` | Claude extended thinking on the synthesizer's calls (`anthropic` and `bedrock`). Other backends accept and ignore it |
 | `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | `thinking.budget_tokens` sent to the Anthropic Messages API (Bedrock: `reasoning_config`). Bills as output tokens. Ignored for adaptive-only models (Claude 5 and newer, Opus 4.7 and newer) |

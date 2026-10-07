@@ -4,14 +4,17 @@ test_otel_llm_forwarding.py).
 Not a test module. A TrelixChatClient stand-in whose replies the test chooses and which records
 what it RECEIVED, a recording stand-in for util-genai's TelemetryHandler (so a test can see what
 trelix ASSIGNED, not what the library later chose to emit), the LLMConfig/ChatResponse builders,
-the canaries and the 1.2b0 floor check. Every expected value stays a literal in the test files;
-nothing here is imported from the module under test.
+the canaries and the 1.2b0 floor check, and `exporting_spans()`, the in-memory span exporter both
+real-span fixtures (test_otel_llm_spans.py and test_otel_tracing.py) attach to the process's
+TracerProvider and detach again. Every expected value stays a literal in the test files; nothing
+here is imported from the module under test.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib.metadata import version
 from typing import Any
 
@@ -37,6 +40,28 @@ def require_util_genai_at_the_floor(*, sdk: bool) -> None:
             f"requires opentelemetry-util-genai>=1.2b0 (installed {installed}); "
             "pip install trelix[otel]"
         )
+
+
+@contextmanager
+def exporting_spans(provider: Any) -> Iterator[Any]:
+    """An InMemorySpanExporter fed by *provider* (an SDK TracerProvider) for the block, DETACHED
+    on exit. The SDK has no remove_span_processor(); a processor that is only shut down stays
+    attached, and opentelemetry-sdk >= 1.45 then logs WARNING "Processor is already shutdown,
+    ignoring call" for every later span in the process, which every later test counting WARNING
+    records sees (measured on 1.45.1: 4 failures in test_otel_tracing.py with the two files in
+    CI's alphabetical order)."""
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    processor = SimpleSpanProcessor(exporter)
+    provider.add_span_processor(processor)
+    try:
+        yield exporter
+    finally:
+        multi = provider._active_span_processor
+        multi._span_processors = tuple(p for p in multi._span_processors if p is not processor)
+        processor.shutdown()
 
 
 def cfg(provider: str = "anthropic", model: str = "claude-sonnet-4-6", **fields: Any) -> Any:
