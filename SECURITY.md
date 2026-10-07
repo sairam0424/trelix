@@ -234,7 +234,7 @@ Exposure by default vs opt-in:
 | Path | Default | What reaches a model |
 | ---- | ------- | -------------------- |
 | `trelix index` | on | with the default `local` embedder (`EmbedderConfig.provider` in `core/config.py`), nothing leaves the machine; with any remote embedder, every chunk's text is sent to the embedding model (`indexing/indexer.py:959`, `:1021`) |
-| `trelix ask`, `GET /ask` | on | the assembled retrieval context (below) |
+| `trelix ask`, `GET /ask` | on | the assembled retrieval context (below). With `TRELIX_RETRIEVAL_CITATIONS=true` its blocks carry `[C#]` tags; the model's markers are read back as digits only (`retrieval/citations.py`), and the verifier opens only files the index named, under the repository root, for a newline count |
 | index-time file summaries | off — `TRELIX_FILE_SUMMARIES_ENABLED` (`core/config.py:1234-1237`) | file path, language, and top symbol signatures truncated to 80 chars (`indexing/file_summarizer.py:85-91`) |
 | agentic loop | off — `TRELIX_RETRIEVAL_AGENTIC` (`core/config.py:656-659`), or `--agentic`/`--session` (`cli/main.py:422-424`). **The MCP `ask_agent` tool ignores this** and forces the loop on unconditionally (`trelix_mcp/server.py:762`); it does require an LLM to be configured. | retrieval context plus prior-turn observations |
 | `trelix review` | opt-in command | diff hunk text plus retrieved context |
