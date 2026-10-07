@@ -300,6 +300,12 @@
       },
       "total_mutants": 354
     },
+    "llm.offline": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/llm/offline.py"
+      ]
+    },
     "retrieval.bm25": {
       "ceilings": {
         "no_tests": 0,
