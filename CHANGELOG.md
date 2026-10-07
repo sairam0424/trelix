@@ -56,6 +56,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   tool goes back to a range or to no version.
 
 ### Fixed
+- **`trelix-mcp` answers every invalid input with a tool error that names the argument.** Measured
+  through an in-process client before the fix: a `repo_path` that did not exist, or held only
+  whitespace, was not a tool result at all but a JSON-RPC "Invalid request parameters" error
+  (`IndexConfig` rejects it with a pydantic `ValidationError`, which FastMCP forwards as a protocol
+  error instead of masking it into a result), so a client such as the VS Code extension saw an
+  exception that named no argument; a blank `repo_path` meant the server's working directory (the
+  no-index message named that directory, and `index_codebase` indexed it); a file was told to run
+  `trelix index <file>`; a blank `query` was searched by `search_code`, `graph_search_mcp` and
+  `federation_search_all`, and `ask_agent` persisted a session for it; `get_symbol` and
+  `blast_radius` answered a blank name with an empty result; `federation_add_repo` registered a
+  blank alias, a blank, relative, missing or file path, and a weight of 0 or less;
+  `federation_remove_repo`, `agent_clear_session` and `ask_agent` accepted a blank alias or
+  `session_id`; and a blank `config_path` on the four federation tools resolved to the server's
+  working directory and was refused with a 200 `error` dict that named the allowed roots and that
+  directory, none of which the caller had passed; and on Python 3.12 and 3.13 a `repo_path` whose
+  name the filesystem rejects (a component over 255 bytes) escaped as FastMCP's generic `Error
+  calling tool` text carrying the whole path (3.14's pathlib already answered "does not exist").
+  Each is now `isError: true` with one text block naming the argument, what was given (cut to 200
+  characters) and what is valid, for example
+  `repo_path is not a directory: '<path>'; pass the repository root, not a file in it.`; nothing
+  is opened or created first. The no-index wording is unchanged. Unchanged on purpose: `k` and
+  `limit` outside their range are clamped (as documented), `federation_remove_repo` of an
+  unregistered alias stays a no-op, the federation tools keep their `error` key for a duplicate
+  alias, a full registry, a non-blank `config_path` outside the allowed roots and a registry with
+  nothing indexed (a client contract, owner decision), and a wrong type or a value outside a
+  `Literal` is rejected by FastMCP itself with pydantic's text. The checks live in
+  `trelix_mcp.arguments`; `docs/MCP_GUIDE.md` has the table (section 8, Errors).
+- **Every `trelix-mcp` result carries a text block, including the empty ones.** FastMCP sends `[]`
+  and `None` as `structuredContent` alone, so `blast_radius` with no dependents (or an unknown
+  symbol), `graph_search_mcp` with no hits and `get_symbol` for an unknown symbol had no text
+  block, so a client that reads only the first text block had nothing to parse (the VS Code
+  extension defaults to `null` and `[]` for that case); they now carry `[]` or `null` as text,
+  equal to the structured content. `blast_radius`'s truncation note ended "raise either to see
+  more" even at `limit=500` or under `TRELIX_MCP_MAX_RESULT_CHARS=0`; it now names what can still
+  be raised, decided from what cut the list (the budget, the limit, or both) so that a raise it
+  names always shows more, or says that nothing can and the remaining dependents cannot be
+  fetched with this tool. `federation_search_all` with some registered repos indexed and some not
+  returned the indexed ones with no sign of the rest; the additive `repos_unindexed` key names the
+  skipped aliases (the `error` response when none is indexed is unchanged). Two documentation
+  fixes: the trelix-mcp README's Tools paragraph, one 200-word sentence, is split into sentences and
+  links section 8 of `docs/MCP_GUIDE.md`, and that guide no longer says the `search_code` trace
+  directory has "its own `.gitignore`" (the ignore file is `.trelix/.gitignore`, one level up).
 - **`trelix review --json` on a local diff printed text ahead of the JSON, so stdout did not
   parse.** The `Reviewing N hunks across M files...` line went to stdout, and "No issues found.",
   "No changes found in diff." and "No findings in the hunks that were reviewed." took the place of
@@ -262,6 +304,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Peek References popup still lists the entries it has) and `@trelix /impact` says
   `has 150 dependent(s), showing the first 100`. An uncut list reads as before. No new setting and
   no new server call; `limit` is not passed.
+- **`docs/OBSERVABILITY.md` described the OpenTelemetry integration as planned, not as it runs.**
+  It said every retrieval leg span carries the query text (trelix hands it over, but
+  `opentelemetry-util-genai` records `gen_ai.retrieval.query.text` only when
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `SPAN_ONLY` or `SPAN_AND_EVENT`; the default
+  `NO_CONTENT` drops it, so by default no query text reaches a span), that metrics cover embedding
+  only (the same library records a `gen_ai.client.operation.duration` histogram for every retrieval
+  leg span once a `MeterProvider` exists), that the library was `1.0b0` at time of writing (1.2b0 is
+  current; the `otel` extra still accepts `>=1.0b0`, and 1.2b0 renamed the cache-write and `top_k`
+  attributes), and it linked the GenAI conventions in the core `semantic-conventions` repository,
+  whose pages are now "Moved" stubs: the conventions live in `semantic-conventions-genai`, which has
+  no tags, so the link pins a commit. The library link now points at the `opentelemetry-util-genai`
+  1.2b0 tag in `opentelemetry-python-genai`. The primary-source spike behind these corrections
+  (pinned sources, the inference attribute table with requirement levels, the content opt-in and
+  the Logs-signal path, the util-genai 1.0b0 vs 1.2b0 API differences, the cache-token names and
+  the metrics the library already records) is `docs/reports/otel-genai-semconv-spike-2026-10-07.md`
+  (roadmap C-8, requirement R-C6-01). No package code changes;
+  `tests/unit/test_observability_doc_pins.py` pins the sentence about when trelix installs its
+  `MeterProvider` (on the first counted embedding provider call; never for `bge-code` or
+  `nomic-code`) to the embedder code.
 
 ### Added
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import trelix_mcp.server as srv
 from budget_support import seed
+from fastmcp.exceptions import ToolError
 
 
 @pytest.fixture(scope="module")
@@ -58,6 +59,12 @@ def test_a_bare_name_shared_by_two_symbols_returns_the_one_indexed_first(
     )
 
 
-@pytest.mark.parametrize("asked", ["nothing", "no.such.symbol", "target.missing", ""])
-def test_a_name_the_index_does_not_hold_returns_none(shared_name_repo: Path, asked: str) -> None:
-    assert srv.get_symbol(asked, str(shared_name_repo)) is None
+@pytest.mark.parametrize("asked", ["nothing", "no.such.symbol", "target.missing"])
+def test_a_name_the_index_does_not_hold_returns_null(shared_name_repo: Path, asked: str) -> None:
+    """The answer travels as a ToolResult, so that a client is sent a `null` text block."""
+    assert srv.get_symbol(asked, str(shared_name_repo)).structured_content == {"result": None}
+
+
+def test_a_blank_name_is_a_tool_error_not_a_lookup(shared_name_repo: Path) -> None:
+    with pytest.raises(ToolError, match="^qualified_name must not be empty or whitespace"):
+        srv.get_symbol("", str(shared_name_repo))
