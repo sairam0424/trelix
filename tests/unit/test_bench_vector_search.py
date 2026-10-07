@@ -77,6 +77,8 @@ def _assert_report_shape(report: dict[str, Any], text: str) -> None:
     assert report["schema_version"] == 1
     advisory = report["advisory"]
     assert advisory["threshold_ms"] == 100.0
+    pairs = [(result["dim"], result["rows"]) for result in report["results"]]
+    assert pairs == sorted(pairs)  # dims ascending, then sizes ascending (the grid order)
     dims = {str(result["dim"]) for result in report["results"]}
     assert set(advisory["rows_at_p95_100ms"]) == set(advisory["extrapolated"]) == dims
     assert all(isinstance(v, int) and v > 0 for v in advisory["rows_at_p95_100ms"].values())
@@ -409,6 +411,7 @@ def test_default_workdir_is_created_and_removed(
         ([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], False, False),
         ([[0.5, 0.5, 0.5], [99.0, 1.0, 1.0]], [0.5, 0.5, 0.5], [99.0, 1.0, 1.0], True, False),
         ([None, None], None, None, False, False),
+        ([[10.0, 1.0, 1.0], [10.0, 1.0, 1.0]], [10.0, 1.0, 1.0], [10.0, 1.0, 1.0], False, False),
     ],
 )
 def test_notes_record_load_and_inflation(
@@ -429,7 +432,9 @@ def test_notes_record_load_and_inflation(
     row inflates on the END sample and must see no warning).
 
     99.0 exceeds os.cpu_count() here and on every CI runner; the patched free space is
-    deterministic where the real reading is not."""
+    deterministic where the real reading is not. cpu_count is patched to 10 so the last row
+    pins the boundary: a load exactly equal to cpu_count is quiet (`>` -> `>=` fails it)."""
+    monkeypatch.setattr(script.os, "cpu_count", lambda: 10)
     order: list[str] = []
     it = iter(samples)
 

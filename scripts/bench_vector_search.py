@@ -15,10 +15,9 @@ How to run
     python scripts/bench_vector_search.py --workdir <scratch dir outside the repo> --label apple-m4
     python scripts/bench_vector_search.py --quick --workdir <scratch dir> --label apple-m4
 
-``--label`` names the machine class (a chip, never a hostname) and defaults to
-``platform.machine()``. Without ``--out`` the report lands at
-``docs/reports/vector-search-bench-<UTC date>-<label>.json`` beside this repository's
-``docs/`` directory, whatever the current directory is.
+``--label`` names the machine class (a chip, never a hostname); default ``platform.machine()``.
+``--out`` defaults to ``docs/reports/vector-search-bench-<UTC date>-<label>.json`` under this
+repository, whatever the current directory is.
 
 Cost
 ----
@@ -40,7 +39,7 @@ one day, not a guarantee.
 Exit codes
 ----------
     0  the grid was measured and the report written
-    1  the sqlite-vec extension failed to load, or --workdir lacks the space
+    1  sqlite-vec failed to load; --workdir lacks the space or holds an earlier run's cell file
     2  usage error
 """
 
@@ -226,6 +225,8 @@ def run_cell(
     """Measure one (dim, rows) cell; return its result row and the raw (unrounded) p95."""
     rng = np.random.default_rng(seed)
     db_path = workdir / f"bench-{dim}-{rows}.db"
+    if db_path.exists():  # an earlier run's cell: never open, measure or delete a file not ours
+        raise SystemExit(f"error: {db_path} already exists; remove it or choose another --workdir")
     try:
         conn = connect(db_path)
         try:

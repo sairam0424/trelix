@@ -9,9 +9,11 @@ each test's docstring names the mutations that fail it.
 
 from __future__ import annotations
 
+import json
 import platform
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -35,8 +37,9 @@ def test_parse_int_list() -> None:
 
 def test_settings_defaults_and_quick() -> None:
     """Mutations: a default changed; --quick overriding an explicit --queries or --sizes;
-    default_out_path made cwd-relative."""
+    default_out_path made cwd-relative; `--warmup 0` refused (`< 0` -> `< 1`)."""
     defaults = _settings([])
+    assert _settings(["--warmup", "0"]).warmup == 0
     assert defaults.dims == [384, 768, 1024]
     assert defaults.sizes == [10000, 100000, 1000000]
     assert (defaults.k, defaults.queries, defaults.warmup, defaults.seed) == (20, 100, 5, 0)
@@ -63,6 +66,7 @@ def test_settings_defaults_and_quick() -> None:
         (("--label", "apple m4"), "--label must match"),
         (("--label", ".x"), "--label must match"),
         (("--out", "/nonexistent/dir/r.json"), "--out parent directory does not exist"),
+        (("--out", "{tmp}/afile/r.json"), "--out parent directory does not exist"),
         (("--out", "{tmp}"), "--out must be a file path, not a directory"),
         (("--dims", "0"), "--dims must be a comma-separated list of positive integers"),
         (("--queries", "0"), "--queries must be at least 1"),
@@ -85,10 +89,13 @@ def test_usage_errors_exit_2(
     the pattern's leading class widened to `[A-Za-z0-9._-]+` (the `.x` row: a label may not
     start with a dot or a dash, so the file is never hidden or flag-shaped); the
     --workdir existence check removed (FileNotFoundError instead of exit 2); the
-    _validate call dropped from resolve_settings (every row but --dims)."""
+    _validate call dropped from resolve_settings (every row but --dims); the --out parent
+    check loosened to `.exists()` (the `afile` row: a regular file is not a directory)."""
     flag, value = override
     argv = _argv(tmp_path)
     value = value.replace("{tmp}", str(tmp_path))
+    if "afile" in value:  # the parent must be a regular FILE: `.exists()` would let it through
+        (tmp_path / "afile").write_bytes(b"")
     if flag in argv:
         argv[argv.index(flag) + 1] = value
     else:  # --label is not part of the AC-2a argv (it defaults to platform.machine())
@@ -97,7 +104,7 @@ def test_usage_errors_exit_2(
         script.main(argv)
     assert excinfo.value.code == 2
     assert expected_text in capsys.readouterr().err
-    assert list(tmp_path.iterdir()) == []
+    assert [p.name for p in tmp_path.iterdir()] == (["afile"] if "afile" in value else [])
 
 
 def test_k_equal_to_the_smallest_size_is_accepted(tmp_path: Path) -> None:
@@ -105,3 +112,54 @@ def test_k_equal_to_the_smallest_size_is_accepted(tmp_path: Path) -> None:
     argv = _argv(tmp_path)
     argv[argv.index("--k") + 1] = "20"
     assert _settings(argv).k == 20
+
+
+def test_the_scratch_dir_is_removed_on_a_refusal_too(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Mutation: the scratch dir removed only on exit 0 (the finally turned into a
+    success-only branch): a disk refusal must leave no trelix-bench-* directory behind."""
+    made = tmp_path / "scratch"
+    made.mkdir()
+    monkeypatch.setattr(script.tempfile, "mkdtemp", lambda *args, **kwargs: str(made))
+    monkeypatch.setattr(
+        script.shutil, "disk_usage", lambda p: SimpleNamespace(total=1, used=0, free=1)
+    )
+    argv = _argv(tmp_path)
+    workdir_at = argv.index("--workdir")
+    del argv[workdir_at : workdir_at + 2]
+    assert script.main(argv) == 1
+    assert not made.exists()
+
+
+def test_a_pre_existing_cell_file_is_refused_and_kept(tmp_path: Path) -> None:
+    """Mutation: the existence check before connect() dropped (the stale file is opened,
+    `file is not a database` tracebacks, and run_cell's finally deletes a file this run did
+    not create)."""
+    stale = tmp_path / "bench-4-20.db"
+    stale.write_bytes(b"not a database")
+    with pytest.raises(SystemExit) as excinfo:
+        script.main(_argv(tmp_path))
+    assert "already exists" in str(excinfo.value)
+    assert stale.read_bytes() == b"not a database"
+    assert not (tmp_path / "r.json").exists()
+
+
+def test_batch_rows_is_the_documented_memory_bound() -> None:
+    """Mutation: BATCH_ROWS = 50000 (a tenfold per-batch working set)."""
+    assert script.BATCH_ROWS == 5000
+
+
+def test_results_come_out_dims_then_sizes_ascending(tmp_path: Path) -> None:
+    """Mutation: the run_grid loops swapped (sizes outer, dims inner), which the one-dim
+    AC-2a grid and the committed report cannot see; two dims make the order observable."""
+    argv = _argv(tmp_path)
+    argv[argv.index("--dims") + 1] = "8,4"
+    assert script.main(argv) == 0
+    report = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert [(r["dim"], r["rows"]) for r in report["results"]] == [
+        (4, 20),
+        (4, 40),
+        (8, 20),
+        (8, 40),
+    ]
