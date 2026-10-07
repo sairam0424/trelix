@@ -569,10 +569,13 @@ class TestOpeningAtTheRecordedWidth:
         assert tables == []
 
     def test_open_readonly_is_none_for_a_missing_file(self, tmp_path: Path) -> None:
-        """MUTATION: the missing file created (`open` semantics) or raised on."""
+        """MUTATION: the missing file created (`open` semantics) or raised on; `is_file()`
+        loosened to `exists()` (a directory at the path is opened and raises)."""
         cache_dir = prepare_cache_dir(tmp_path / "cache")
         assert EmbeddingCache.open_readonly(cache_dir / "missing.db") is None
-        assert sorted(p.name for p in cache_dir.iterdir()) == []
+        (cache_dir / "d.db").mkdir()
+        assert EmbeddingCache.open_readonly(cache_dir / "d.db") is None
+        assert sorted(p.name for p in cache_dir.iterdir()) == ["d.db"]
 
     def test_open_readonly_serves_hits_at_the_recorded_width_and_writes_nothing(
         self, tmp_path: Path

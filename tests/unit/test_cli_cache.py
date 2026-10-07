@@ -342,15 +342,17 @@ class TestCacheClear:
     def test_removes_cache_files_and_journals_only_and_prints_the_total(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """MUTATION: the name filter widened to `*` (`notes.txt` goes); the listing recurses
-        (`sub/<fingerprint>.db` goes); the journal pattern dropped (2 becomes 1); the byte
-        total not summed."""
+        """MUTATION: the name filter widened to `*` (`notes.txt` goes) or loosened to
+        `.*\\.db(-journal)?` (`notes.db` and the 31-hex `.db` go); the listing recurses
+        (`sub/<fingerprint>.db` goes); the journal pattern dropped (2 -> 1); bytes not summed."""
         cache_dir = tmp_path / "cache"
         monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(cache_dir))
         a = _cache_file(cache_dir, _A, dimension=4, rows=3)
         journal = cache_dir / (_B + "-journal")
         journal.write_bytes(b"\x00" * 100)
-        (cache_dir / "notes.txt").write_text("keep me", encoding="utf-8")
+        foreign = {"notes.txt": "keep me", "notes.db": "not a database", "c" * 31 + ".db": ""}
+        for name, text in foreign.items():
+            (cache_dir / name).write_text(text, encoding="utf-8")
         nested = cache_dir / "sub"
         nested.mkdir()
         _cache_file(nested, _A, dimension=4, rows=1)
@@ -362,7 +364,7 @@ class TestCacheClear:
         assert _unwrapped(result.output) == _unwrapped(
             f"Removed 2 file(s), {expected_bytes} bytes, from {cache_dir}"
         )
-        assert sorted(p.name for p in cache_dir.iterdir()) == ["notes.txt", "sub"]
+        assert sorted(p.name for p in cache_dir.iterdir()) == sorted([*foreign, "sub"])
         assert (nested / _A).is_file()
 
     @_POSIX_ONLY
