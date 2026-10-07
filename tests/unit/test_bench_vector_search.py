@@ -228,7 +228,8 @@ def test_rows_at_threshold_rejects_non_positive_p95() -> None:
 
 
 def test_time_queries_discards_the_warmup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Mutations: `ms[warmup:]` -> `ms` (length 4); the discard taken from the tail,
+    """Mutations: `ms[warmup:]` -> `ms` (length 4); `ms[warmup:]` -> `ms[1:]` (the warm-up
+    hard-coded: warmup 2 and 0 then keep 3, not 2 and 4); the discard taken from the tail,
     `ms[: len(ms) - warmup]` (the clock below times the first, cold query at 1000.0 and the
     three warm ones at 500.0, so the kept list must start at 500.0); `* 1000.0` -> `* 1.0`
     (seconds recorded as milliseconds: the same clock must give 500.0, not 0.5)."""
@@ -239,6 +240,8 @@ def test_time_queries_discards_the_warmup(tmp_path: Path, monkeypatch: pytest.Mo
         timings = script.time_queries(conn, queries, 2, 1)
         assert len(timings) == 3
         assert all(isinstance(ms, float) and ms > 0.0 for ms in timings)
+        assert len(script.time_queries(conn, queries, 2, 2)) == 2
+        assert len(script.time_queries(conn, queries, 2, 0)) == 4
         clock = iter([0.0, 1.0, 1.0, 1.5, 1.5, 2.0, 2.0, 2.5])
         monkeypatch.setattr(script, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
         assert script.time_queries(conn, queries, 2, 1) == [500.0, 500.0, 500.0]
@@ -311,20 +314,26 @@ def test_run_cell_seeds_the_generator_and_draws_queries_plus_warmup(
 def test_run_cell_sorts_timings_before_taking_percentiles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Mutations: `sorted(...)` dropped around time_queries (the unsorted answer is
-    1.0 / 3.0 / 3.0); insert_rows_per_s computed from rows * seconds, or offset by one
-    (with time_queries patched, build_table's two readings are the only clock reads, so a
-    0.5-s step makes insert_seconds exactly 0.5 and 20 rows exactly 40 rows/s)."""
-    monkeypatch.setattr(script, "time_queries", lambda conn, queries, k, warmup: [5.0, 1.0, 3.0])
+    """One hundred distinct timings in reverse order: nearest rank over the sorted list gives
+    p50 = 50 (index 49), p95 = 95 (index 94) and p99 = 99 (index 98), three different values
+    that also differ from p100 (index 99); with fewer than 100 timings p99 and p100 share an
+    index, and with three they share it with p95 too. Mutations: `sorted(...)` dropped around
+    time_queries (the reversed list reads 51 / 6 / 2); `warm_p99_ms` read from
+    `percentile(ms, 95)` (95.0) or `percentile(ms, 100)` (100.0); insert_rows_per_s computed
+    from rows * seconds, or offset by one (with time_queries patched, build_table's two readings
+    are the only clock reads, so a 0.5-s step makes insert_seconds exactly 0.5 and 20 rows
+    exactly 40 rows/s)."""
+    shuffled = [float(i) for i in range(100, 0, -1)]
+    monkeypatch.setattr(script, "time_queries", lambda conn, queries, k, warmup: shuffled)
     clock = itertools.count(0.0, 0.5)
     monkeypatch.setattr(script, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
     result, raw_p95 = script.run_cell(4, 20, k=2, queries=3, warmup=0, seed=0, workdir=tmp_path)
     assert (result["warm_p50_ms"], result["warm_p95_ms"], result["warm_p99_ms"]) == (
-        3.0,
-        5.0,
-        5.0,
+        50.0,
+        95.0,
+        99.0,
     )
-    assert raw_p95 == 5.0
+    assert raw_p95 == 95.0
     assert (result["insert_seconds"], result["insert_rows_per_s"]) == (0.5, 40)
 
 
