@@ -813,6 +813,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   reject `with_retry()`'s `Callable[[F], F]` contract and turned every CI run red; the decorator
   return now carries a version-agnostic `type: ignore` that states that contract. No runtime
   change: the decorated functions, the backoff and the Retry-After handling are the same.
+- **The `trelix-mcp` command line moved to `trelix_mcp.cli`.** `trelix_mcp.server` keeps the
+  FastMCP server and every tool; its `main()` is now a two-line entry point that calls
+  `trelix_mcp.cli.main()`, so `[project.scripts]` (`trelix_mcp.server:main`) and every
+  `import trelix_mcp.server` are unchanged. Internal, no user-visible change: the flags (`--help`,
+  `--version`, `--tools core|full`, `--root PATH`), their texts and exit codes are the same. Done
+  ahead of the Streamable HTTP transport so that `server.py` (1,432 lines) stops growing.
 - **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim
   space in vec0 tables, which trelix's `DELETE`+`INSERT` upsert and `--prune` rely on; 0.1.9 is
   the release the vec0 contract tests were verified against; the ceiling keeps the 0.1.10
