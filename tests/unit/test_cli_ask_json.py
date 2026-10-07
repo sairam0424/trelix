@@ -26,7 +26,10 @@ refuse `--json` after retrieval instead of before -> test_json_context_only_* (R
     constructed);
 drop the `--agentic`/`--session` conflict check -> test_json_with_an_agent_flag_* (exit 0);
 drop the environment-agentic refusal -> test_json_with_agentic_mode_from_the_environment_*;
-drop `--json` from the option -> test_ask_help_lists_json.
+drop `--json` from the option -> test_ask_help_lists_json;
+escape the tokens before collecting them -> test_json_answer_is_the_models_raw_text;
+print a blank line after the object -> test_json_two_marker_answer_* (exact stdout);
+hoist the agentic refusal above the index check -> test_json_with_agentic_mode_and_no_index_*.
 """
 
 from __future__ import annotations
@@ -115,6 +118,20 @@ class TestJsonOutput:
         assert result.exit_code == 0, result.stderr
         assert result.stderr == ""
         assert json.loads(result.stdout) == TWO_MARKER_OBJECT
+        # "nothing else on stdout": no blank line before or after the object either.
+        assert result.stdout == json.dumps(TWO_MARKER_OBJECT, indent=2) + "\n"
+
+    def test_json_answer_is_the_models_raw_text(self, repo: Path) -> None:
+        """`[optional]` and `[/!]` are Rich markup; `_safe_text` would turn them into
+        `\\[optional]` and `\\[/!]`, which a consumer reads back as backslashes. The human-mode
+        twin is test_footer_path_with_markup_is_printed_intact. MUTATION: escape the tokens
+        before collecting them -> the answer carries backslashes."""
+        result = invoke_ask(
+            repo, ScriptedChatClient(("an [optional] arg [/!] [C1]",)), make_context(), "--json"
+        )
+
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["answer"] == "an [optional] arg [/!] [C1]"
 
     def test_json_abstention_exits_0_with_abstained_true(self, repo: Path) -> None:
         client = ScriptedChatClient(
@@ -282,6 +299,26 @@ class TestRefusals:
         assert result.exit_code == 1, result.output
         assert result.stdout == ""
         assert "--json is not available in agentic mode" in one_line(result.stderr)
+        agent_loop.assert_not_called()
+
+    def test_json_with_agentic_mode_and_no_index_reports_the_missing_index(
+        self, tmp_path: Path
+    ) -> None:
+        """docs/CLI_REFERENCE.md: the index check runs before both `--json` refusals.
+        MUTATION: hoist the agentic refusal above `_require_index` -> the agentic text."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        with patch("trelix.agent.AgentLoop") as agent_loop:
+            result = runner.invoke(
+                app,
+                ["ask", str(repo), QUERY, "--json", "--provider", "openai"],
+                env={"TRELIX_RETRIEVAL_AGENTIC": "true"},
+            )
+
+        assert result.exit_code == 1, result.output
+        assert result.stdout == ""
+        assert "No index found" in one_line(result.stderr)
+        assert "--json is not available" not in one_line(result.stderr)
         agent_loop.assert_not_called()
 
     def test_json_context_only_mode_is_refused_before_retrieval(self, repo: Path) -> None:
