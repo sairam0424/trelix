@@ -316,18 +316,22 @@ class TestSetAttribute:
         self, otel_test_exporter, caplog: pytest.LogCaptureFixture
     ) -> None:
         """`s` is always the context manager (`__enter__` returns self), never a span.
-        MUTATIONS: drop the `trelix.{stage}.` prefix -> key `hunk_status`; drop the `None` guard
-        -> `None.set_attribute` raises inside the `try` and a DEBUG record appears; drop the
-        try/except -> AttributeError on the broken-span case."""
+        MUTATIONS: drop the `trelix.{stage}.` prefix -> key `hunk_status`; hard-code the stage
+        (`trelix.review.{key}`) -> the `fusion` span carries a `trelix.review.` key; drop the
+        `None` guard -> `None.set_attribute` raises inside the `try` and a DEBUG record appears;
+        drop the try/except -> AttributeError on the broken-span case."""
         from trelix.retrieval.otel_tracing import pipeline_stage_span
 
         cfg = _cfg(otel_enabled=True)
         with pipeline_stage_span(cfg, "review") as s:
             s.set_attribute("hunk_status", "refused")
+        with pipeline_stage_span(cfg, "fusion") as s:
+            s.set_attribute("hunk_status", "refused")
 
-        (span,) = otel_test_exporter.get_finished_spans()
-        assert span.name == "trelix.review"
-        assert dict(span.attributes) == {"trelix.review.hunk_status": "refused"}
+        review_span, fusion_span = otel_test_exporter.get_finished_spans()
+        assert [review_span.name, fusion_span.name] == ["trelix.review", "trelix.fusion"]
+        assert dict(review_span.attributes) == {"trelix.review.hunk_status": "refused"}
+        assert dict(fusion_span.attributes) == {"trelix.fusion.hunk_status": "refused"}
         otel_test_exporter.clear()
 
         # Both no-span paths: tracing off, and constructed but never entered.
