@@ -156,19 +156,6 @@ class TestCacheGc:
         assert result.exit_code == 2, result.output
         assert EmbeddingCache.open(tmp_path / "cache" / _A, dimension=4).row_count() == 1
 
-    def test_without_a_cache_directory_says_so_and_exits_0(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """MUTATION: a missing directory exits 1, or is created."""
-        absent = tmp_path / "absent"
-        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(absent))
-
-        result = _invoke("cache", "gc")
-
-        assert result.exit_code == 0, result.output
-        assert _unwrapped(result.output) == _unwrapped(f"No embedding cache at {absent}.")
-        assert not absent.exists()
-
     def test_an_unreadable_file_is_reported_the_rest_is_trimmed_and_the_exit_code_is_1(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -216,18 +203,28 @@ class TestCacheGc:
     def test_only_fingerprint_named_files_are_opened(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """MUTATION: the name filter loosened to `.*\\.db` (`notes.db` is opened, found
-        foreign, and the command exits 1)."""
+        """Only regular files whose whole name is a fingerprint are opened: not a `-journal`
+        sidecar (a concurrent `trelix index` holds one), not a directory carrying a cache
+        file's name (`clear` leaves it alone too), not a symlink to a directory (`clear`
+        unlinks that one). MUTATION: the name filter loosened to `.*\\.db` (`notes.db` is
+        opened, found foreign, exit 1); `fullmatch` -> `match` (the journal is opened the
+        same way); the directory skip in `_cache_files` dropped; the `is_dir()` skip in
+        `cache_gc` dropped (`os.open` on the link hits EISDIR: `unreadable`, exit 1)."""
         cache_dir = tmp_path / "cache"
         monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(cache_dir))
         _cache_file(cache_dir, _A, dimension=4, rows=1)
+        (cache_dir / (_A + "-journal")).write_bytes(b"\x00" * 100)
+        (cache_dir / _B).mkdir()
+        if os.name != "nt":  # a symlink to a directory, kept by `_cache_files` for `clear`
+            (cache_dir / ("c" * 32 + ".db")).symlink_to(cache_dir / _B, target_is_directory=True)
         (cache_dir / "notes.db").write_bytes(b"not a database")
         (cache_dir / ("c" * 31 + ".db")).write_bytes(b"not a database")  # 31 hex chars
 
         result = _invoke("cache", "gc")
 
         assert result.exit_code == 0, result.output
-        assert "notes.db" not in result.output
+        assert f"{_A}: 1 -> 1 rows" in _squash(result.output)
+        assert "notes.db" not in result.output and "journal" not in result.output
         assert "unreadable" not in result.output
 
     def test_gc_uses_the_recorded_dimension(
@@ -267,35 +264,39 @@ class TestCacheGc:
         finally:
             cache.close()
 
-    def test_a_lock_during_the_trim_is_reported_the_rest_is_trimmed_and_the_exit_code_is_1(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("removed", [False, pytest.param(True, marks=_POSIX_ONLY)])
+    def test_a_failure_during_the_trim_is_reported_the_rest_is_trimmed_and_the_exit_code_is_1(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, removed: bool
     ) -> None:
-        """A concurrent `trelix index` can take the write lock between `gc`'s `open()` and
-        its trim, so `enforce_size_cap` raises SQLite's own `OperationalError`, not an
-        `EmbeddingCacheError`; the exit-code table promises `Embedding cache unreadable` for
-        a file that could not be trimmed. The lock is simulated: a real one would wait out
-        `open()`'s 30 s timeout and surface there instead.
-        MUTATION: `sqlite3.Error` dropped from `gc`'s except tuple (the error escapes
-        `CliRunner` as a traceback: no error line, no line for B, no `SystemExit`)."""
+        """Between `gc`'s `open()` and its trim, a concurrent `trelix index` can take the write
+        lock (`enforce_size_cap` raises SQLite's own `OperationalError`) and a concurrent
+        `trelix cache clear` can remove the file (`enforce_size_cap`'s own `stat` raises
+        `FileNotFoundError`); the exit-code table promises `Embedding cache unreadable` for a
+        file that could not be trimmed. Both races are staged at the trim: a real lock would
+        wait out `open()`'s 30 s timeout and surface there. MUTATION: `sqlite3.Error` (locked) or
+        `OSError` (removed) dropped from `gc`'s except tuple (a traceback, no `SystemExit`)."""
         cache_dir = tmp_path / "cache"
         monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(cache_dir))
         _cache_file(cache_dir, _A, dimension=4, rows=3)
         _cache_file(cache_dir, _B, dimension=4, rows=3)
         real_enforce = EmbeddingCache.enforce_size_cap
 
-        def _locked_for_a(cache: EmbeddingCache, max_bytes: int) -> int:
-            if cache.path.name == _A:
+        def _failing_for_a(cache: EmbeddingCache, max_bytes: int) -> int:
+            if cache.path.name == _A and not removed:
                 raise sqlite3.OperationalError("database is locked")
+            if cache.path.name == _A:
+                cache.path.unlink()  # `clear` won the race; the real trim's `stat` raises
             return real_enforce(cache, max_bytes)
 
-        monkeypatch.setattr(EmbeddingCache, "enforce_size_cap", _locked_for_a)
+        monkeypatch.setattr(EmbeddingCache, "enforce_size_cap", _failing_for_a)
 
         result = _invoke("cache", "gc")
 
         assert result.exit_code == 1, result.output
         assert isinstance(result.exception, SystemExit), result.exception
         output = _squash(result.output)
-        assert "Embedding cache unreadable: database is locked" in output
+        detail = "No such file or directory" if removed else "database is locked"
+        assert "Embedding cache unreadable:" in output and detail in output, output
         assert f"{_A}:" not in output
         assert f"{_B}: 3 -> 3 rows" in output
 
@@ -413,19 +414,6 @@ class TestCacheClear:
         assert "Removed 1 file(s)," in result.output
         assert (cache_dir / _A).is_dir()
 
-    def test_without_a_cache_directory_says_so_and_exits_0(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """MUTATION: a missing directory exits 1, or is created."""
-        absent = tmp_path / "absent"
-        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(absent))
-
-        result = _invoke("cache", "clear")
-
-        assert result.exit_code == 0, result.output
-        assert _unwrapped(result.output) == _unwrapped(f"No embedding cache at {absent}.")
-        assert not absent.exists()
-
     @_POSIX_ONLY
     @pytest.mark.skipif(os.geteuid() == 0, reason="root unlinks regardless of directory mode")
     def test_a_file_that_cannot_be_removed_is_reported_and_the_exit_code_is_1(
@@ -486,3 +474,24 @@ class TestCacheClear:
         output = _squash(result.output)
         assert "Configuration error:" in output
         assert "must be an absolute path" in output
+
+
+@pytest.mark.parametrize("command", ["gc", "clear"])
+@pytest.mark.parametrize("occupant", ["nothing", "a regular file"])
+def test_without_a_cache_directory_both_say_so_and_exit_0(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, command: str, occupant: str
+) -> None:
+    """Nothing at the configured path, or a regular file there (a misconfiguration the real
+    run names; these two create nothing, so there is nothing to do). MUTATION: a missing
+    directory exits 1, or is created; `is_dir()` -> `exists()` in either command (the file
+    is listed: `Embedding cache unreadable: [Errno 20] Not a directory`, exit 1)."""
+    path = tmp_path / "absent"
+    if occupant == "a regular file":
+        path.write_bytes(b"")
+    monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(path))
+
+    result = _invoke("cache", command)
+
+    assert result.exit_code == 0, result.output
+    assert _unwrapped(result.output) == _unwrapped(f"No embedding cache at {path}.")
+    assert not path.is_dir() and path.exists() == (occupant == "a regular file")

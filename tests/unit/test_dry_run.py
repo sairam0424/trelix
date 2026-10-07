@@ -587,3 +587,58 @@ class TestItSubtractsWhatTheEmbeddingCacheAlreadyHolds:
         assert "Move it away" not in output
         assert "already cached" not in output
         assert _number(output, "Chunks to embed") >= 2
+
+    def test_a_lock_taken_after_the_open_is_reported_and_priced_as_absent(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The open succeeds and a later lookup fails: a concurrent `trelix index` on the
+        same fingerprint reaches its end-of-run VACUUM while the preview is chunking, and
+        the preview's SELECT times out. Two files, the second one's lookup failing, so the
+        hits already counted for the first must be forgotten: cache rows missing while the
+        priced figure quietly subtracts them would contradict each other.
+
+        MUTATION: the `sqlite3.Error` handler around the lookup dropped (exit 1, no cost
+        table); the note dropped; the counters not zeroed (the priced count is below
+        `Embedding tokens`); the cache kept after the failure (the two rows appear); the
+        close on the failure path dropped, or the cache closed twice (the count)."""
+        import sqlite3
+
+        from trelix.indexing.embedding_cache import EmbeddingCache
+
+        monkeypatch.setenv("TRELIX_EMBEDDER_PROVIDER", "openai")
+        monkeypatch.setenv("TRELIX_EMBEDDER_OPENAI_MODEL", "text-embedding-3-large")
+        (repo / "second.py").write_text(_SAMPLE.replace("greet", "wave"), encoding="utf-8")
+        cache_dir = tmp_path / "cache"
+        self._enable(monkeypatch, cache_dir)
+        chunks = self._chunks(repo)
+        self._seed_cache(repo, cache_dir, [c.chunk_text for c in chunks])
+        real_get_many, real_close = EmbeddingCache.get_many, EmbeddingCache.close
+        lookups: list[int] = []
+        closes: list[bool] = []
+
+        def _locked_on_the_second_file(
+            cache: EmbeddingCache, keys: list[bytes]
+        ) -> dict[bytes, list[float]]:
+            lookups.append(len(keys))
+            if len(lookups) == 2:
+                raise sqlite3.OperationalError("database is locked")
+            return real_get_many(cache, keys)
+
+        def _counted_close(cache: EmbeddingCache) -> None:
+            closes.append(True)
+            real_close(cache)
+
+        monkeypatch.setattr(EmbeddingCache, "get_many", _locked_on_the_second_file)
+        monkeypatch.setattr(EmbeddingCache, "close", _counted_close)
+
+        output = _run(repo)
+
+        assert len(lookups) == 2
+        assert len(closes) == 1  # on the failure, and not again after the loop
+        assert "The embedding cache could not be read (database is locked)" in output
+        assert "already cached" not in output
+        assert _number(output, "Chunks to embed") == len(chunks)
+        total = _number(output, "Embedding tokens")
+        priced = re.search(r"Estimated cost.*?([\d,]+) tokens at", output)
+        assert priced, output
+        assert int(priced.group(1).replace(",", "")) == total > 0

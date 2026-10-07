@@ -2491,8 +2491,10 @@ same trim on demand, for instance after lowering `TRELIX_EMBEDDING_CACHE_MAX_MB`
 It takes no repository argument and never opens an index: the directory comes from
 `TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`, else
 `~/.cache/trelix/embeddings`. Only files named `<32 hex chars>.db` (one per
-embedder fingerprint) are opened, in name order; each is opened at the width it
-records, so no embedder is loaded and no width check can fail.
+embedder fingerprint) are opened, in name order (a directory carrying such a name
+is left alone, as `clear` leaves it, and so is a symlink to a directory, which
+`clear` unlinks); each is opened at the width it records, so no embedder is
+loaded and no width check can fail.
 
 #### Options
 

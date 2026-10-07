@@ -476,7 +476,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `Embedding cache unreadable` and the rest are still trimmed, exit 1 afterwards (`gc` creates
   nothing: an empty file or a symlink with no target is refused before SQLite touches it); a
   directory that exists but cannot be listed is the same line and exit 1 at once, for both
-  commands. `trelix cache clear`
+  commands; a directory that happens to carry a cache file's name is left alone by both, and
+  `gc` also skips a symlink to one (`clear` unlinks the link, as it does any symlink).
+  `trelix cache clear`
   deletes every `<fingerprint>.db` and `.db-journal` directly in that directory (nothing else, no
   recursion, a symlink is unlinked and never followed) and prints `Removed N file(s), M bytes,
   from <dir>`. With no cache directory both print `No embedding cache at <dir>.` and exit 0;
@@ -485,7 +487,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   cache file read-only (`EmbeddingCache.open_readonly`, new; it creates nothing and never reads
   the configured width, which is a constant 384 for every `local` model), adds `Chunks already
   cached` and `Tokens already cached` rows, and prices `Embedding tokens - Tokens already cached
-  + Repair tokens`; an absent file adds no rows, an unreadable one is reported and priced as
+  + Repair tokens`; an absent file adds no rows; one that cannot be read, at the open or at a
+  lookup (a concurrent run's end-of-run `VACUUM` holding the lock), is reported and priced as
   absent. `trelix index --resume-batch` with the cache on is refused before any model is loaded
   (`Cannot resume a Batch API job`, exit 1, the way out named), as the bullet above says; the
   refusal is now also in `docs/CLI_REFERENCE.md`'s exit codes. The CLI's cost preview takes the

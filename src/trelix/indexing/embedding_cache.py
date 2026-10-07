@@ -360,7 +360,7 @@ class EmbeddingCache:
             raise EmbeddingCacheError(
                 _WIDTH_MISMATCH.format(path=path, stored=stored, current=dimension)
             )
-        if stored is None or not stored.isdigit():
+        if stored is None or not stored.isdecimal():
             raise EmbeddingCacheError(_NOT_A_CACHE.format(path=path))
         return int(stored)
 

@@ -74,14 +74,15 @@ class TestIndexSummaryRow:
     def test_chunks_from_cache_is_a_row_when_nonzero(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """MUTATION: the row not added; the row reads another key."""
-        _fake_indexer(monkeypatch, {**_STATS, "chunks_from_cache": 3})
+        """MUTATION: the row not added; the row reads another key (`chunks_embedded`, the row
+        above it, is 3 here and the cached count 2, so the two values cannot be confused)."""
+        _fake_indexer(monkeypatch, {**_STATS, "chunks_from_cache": 2})
 
         result = _invoke("index", str(tmp_path))
 
         assert result.exit_code == 0, result.output
         output = _squash(result.output)
-        assert re.search(r"Chunks from cache\D*?3\b", output), output
+        assert re.search(r"Chunks from cache\D*?2\b", output), output
         assert re.search(r"Chunks embedded\D*?3\b", output), output
 
     def test_no_row_at_zero(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:

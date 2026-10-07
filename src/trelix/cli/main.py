@@ -1167,8 +1167,19 @@ def _print_cost_preview(config: IndexConfig) -> None:
             )
             chunk_count += len(chunks)
             token_count += sum(c.token_count for c in chunks)
-            if cache is not None:
+            if cache is None:
+                continue
+            try:
                 hits = _cached_chunks(cache, chunks)
+            except sqlite3.Error as exc:
+                # A lock taken after the open (a concurrent run's end-of-run VACUUM, say).
+                # From here every chunk is priced, as if there were no cache — the hits
+                # already counted included, or the priced figure would subtract tokens the
+                # table no longer shows.
+                _print_cache_unreadable(str(exc))
+                cache.close()
+                cache, cached_chunks, cached_tokens = None, 0, 0
+            else:
                 cached_chunks += len(hits)
                 cached_tokens += sum(c.token_count for c in hits)
     if cache is not None:
@@ -1270,18 +1281,24 @@ def _open_cache_for_preview(config: IndexConfig) -> EmbeddingCache | None:
             cache_dir / f"{embedder_fingerprint(config.embedder)}.db"
         )
     except EmbeddingCacheError as exc:
-        console.print(
-            f"[yellow]The embedding cache could not be read[/yellow] "
-            f"({_safe_text(str(exc))}), so no cached chunk is subtracted below."
-        )
+        _print_cache_unreadable(str(exc))
         return None
+
+
+def _print_cache_unreadable(detail: str) -> None:
+    """The preview's one note for a cache it cannot consult, at the open or at a lookup."""
+    console.print(
+        f"[yellow]The embedding cache could not be read[/yellow] "
+        f"({_safe_text(detail)}), so no cached chunk is subtracted below."
+    )
 
 
 def _cached_chunks(cache: EmbeddingCache, chunks: Sequence[Chunk]) -> list[Chunk]:
     """The chunks whose text the cache already holds a vector for.
 
     Keyed by `text_key` — the wrapper's own key over `chunk_text`, which is exactly what
-    Phase 3 hands the embedder — so the preview and the run agree on what is a hit.
+    Phase 3 hands the embedder — so the preview and the run agree on what is a hit. A
+    lookup that fails (`sqlite3.Error`: a lock taken after the open) is the caller's.
     """
     from trelix.indexing.embedding_cache import text_key
 
@@ -4901,11 +4918,17 @@ def _embedding_cache_location() -> tuple[EmbeddingCacheConfig, Path]:
 def _cache_files(cache_dir: Path, name: re.Pattern[str]) -> list[Path]:
     """Direct children of `cache_dir` whose whole name matches, sorted — the directory
     listing order is the filesystem's, and the output order must not be. A directory that
-    exists but cannot be listed (owned by another user, say) is `Embedding cache
-    unreadable`, exit 1: the exit-code tables in CLI_REFERENCE promise a line, not a
-    traceback."""
+    happens to carry a cache file's name is not ours and is left alone by both commands; a
+    symlink is kept (`clear` unlinks it, never following it; `gc` opens one that leads to a
+    file and skips one that leads to a directory). A cache directory that exists
+    but cannot be listed (owned by another user, say) is `Embedding cache unreadable`, exit
+    1: the exit-code tables in CLI_REFERENCE promise a line, not a traceback."""
     try:
-        return sorted(path for path in cache_dir.iterdir() if name.fullmatch(path.name))
+        return sorted(
+            path
+            for path in cache_dir.iterdir()
+            if name.fullmatch(path.name) and (path.is_symlink() or not path.is_dir())
+        )
     except OSError as exc:
         _print_error("Embedding cache unreadable", exc)
         raise typer.Exit(1) from exc
@@ -4937,6 +4960,8 @@ def cache_gc(
     max_bytes = (cfg.max_mb if max_mb is None else max_mb) * 1024 * 1024
     failed = False
     for path in _cache_files(cache_dir, _CACHE_FILE_NAME):
+        if path.is_dir():  # a symlink to a directory: not a cache file, `clear` unlinks it
+            continue
         # Each file is trimmed on its own and a bad one does not stop the rest; the exit
         # code says afterwards that not every file was handled.
         try:
@@ -4979,11 +5004,8 @@ def cache_clear() -> None:
     freed = 0
     failed = False
     for path in _cache_files(cache_dir, _CACHE_FILE_OR_JOURNAL_NAME):
-        # Files only, never recursing: a directory that happens to carry a cache file's name
-        # is left alone. A symlink is unlinked, never followed — `lstat` and `unlink` both
-        # act on the link itself — so the directory can never reach outside itself.
-        if path.is_dir() and not path.is_symlink():
-            continue
+        # A symlink is unlinked, never followed — `lstat` and `unlink` both act on the link
+        # itself — so the directory can never reach outside itself.
         try:
             size = path.lstat().st_size
             path.unlink()

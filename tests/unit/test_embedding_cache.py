@@ -700,13 +700,15 @@ class TestOpeningAtTheRecordedWidth:
         """`open(dimension=None)` and `open_readonly` trust `meta.dimension`; a row that is
         not a number, or no row at all, must be the foreign-file line `gc` and `--dry-run`
         handle, not the `ValueError`/`TypeError` of `int()`, which neither handler catches.
-        MUTATION: the `isdigit` guard dropped (`int('abc')` escapes); only its
-        `stored is None` half dropped (`None.isdigit()` escapes)."""
+        MUTATION: the `isdecimal` guard dropped (`int('abc')` escapes); loosened to `isdigit`
+        (SUPERSCRIPT TWO is a digit to `str` but not to `int()`: `int('²')` escapes); only its
+        `stored is None` half dropped (`None.isdecimal()` escapes)."""
         _open(tmp_path).close()
         path = tmp_path / "cache" / "f.db"
         expected = f"{path} is not a trelix embedding cache (no meta table). Move it away."
         for statement in (
             "UPDATE meta SET value = 'abc' WHERE key = 'dimension'",
+            "UPDATE meta SET value = '²' WHERE key = 'dimension'",
             "DELETE FROM meta WHERE key = 'dimension'",
         ):
             conn = sqlite3.connect(str(path))
