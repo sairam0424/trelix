@@ -1,0 +1,142 @@
+{
+  "advisory": {
+    "extrapolated": {
+      "1024": false,
+      "384": false,
+      "768": false
+    },
+    "rows_at_p95_100ms": {
+      "1024": 28956,
+      "384": 32765,
+      "768": 12979
+    },
+    "threshold_ms": 100.0
+  },
+  "generated_at": "2026-10-07T10:58:24Z",
+  "notes": {
+    "comment": "shared machine: other agent lanes running; load averages recorded in notes",
+    "inflated": true,
+    "load_avg_end": [
+      17.7353515625,
+      24.6884765625,
+      29.55419921875
+    ],
+    "load_avg_start": [
+      23.90380859375,
+      25.8046875,
+      27.55419921875
+    ],
+    "numpy": "2.5.0",
+    "python_full": "3.12.12 (main, Feb  4 2026, 01:57:59) [Clang 21.1.4 ]",
+    "workdir_free_bytes": 59507625984
+  },
+  "params": {
+    "k": 20,
+    "queries": 100,
+    "seed": 0,
+    "warmup": 5
+  },
+  "platform": {
+    "cpu_count": 10,
+    "machine": "arm64",
+    "python": "3.12.12",
+    "release": "27.0.0",
+    "sqlite": "3.50.4",
+    "sqlite_vec": "0.1.9",
+    "system": "Darwin",
+    "vec_version": "v0.1.9"
+  },
+  "results": [
+    {
+      "db_bytes": 16003072,
+      "dim": 384,
+      "insert_rows_per_s": 22729,
+      "insert_seconds": 0.44,
+      "rows": 10000,
+      "warm_p50_ms": 8.99,
+      "warm_p95_ms": 20.63,
+      "warm_p99_ms": 33.22
+    },
+    {
+      "db_bytes": 156606464,
+      "dim": 384,
+      "insert_rows_per_s": 16138,
+      "insert_seconds": 6.196,
+      "rows": 100000,
+      "warm_p50_ms": 135.48,
+      "warm_p95_ms": 334.42,
+      "warm_p99_ms": 407.11
+    },
+    {
+      "db_bytes": 1562062848,
+      "dim": 384,
+      "insert_rows_per_s": 12016,
+      "insert_seconds": 83.216,
+      "rows": 1000000,
+      "warm_p50_ms": 2202.59,
+      "warm_p95_ms": 5256.86,
+      "warm_p99_ms": 7044.84
+    },
+    {
+      "db_bytes": 31752192,
+      "dim": 768,
+      "insert_rows_per_s": 1512,
+      "insert_seconds": 6.611,
+      "rows": 10000,
+      "warm_p50_ms": 20.39,
+      "warm_p95_ms": 91.61,
+      "warm_p99_ms": 142.18
+    },
+    {
+      "db_bytes": 310947840,
+      "dim": 768,
+      "insert_rows_per_s": 2106,
+      "insert_seconds": 47.476,
+      "rows": 100000,
+      "warm_p50_ms": 146.42,
+      "warm_p95_ms": 345.04,
+      "warm_p99_ms": 401.8
+    },
+    {
+      "db_bytes": 3100758016,
+      "dim": 768,
+      "insert_rows_per_s": 1828,
+      "insert_seconds": 546.748,
+      "rows": 1000000,
+      "warm_p50_ms": 2167.37,
+      "warm_p95_ms": 4553.81,
+      "warm_p99_ms": 5445.0
+    },
+    {
+      "db_bytes": 42246144,
+      "dim": 1024,
+      "insert_rows_per_s": 3403,
+      "insert_seconds": 2.938,
+      "rows": 10000,
+      "warm_p50_ms": 16.22,
+      "warm_p95_ms": 37.27,
+      "warm_p99_ms": 90.19
+    },
+    {
+      "db_bytes": 413761536,
+      "dim": 1024,
+      "insert_rows_per_s": 2574,
+      "insert_seconds": 38.846,
+      "rows": 100000,
+      "warm_p50_ms": 163.65,
+      "warm_p95_ms": 335.08,
+      "warm_p99_ms": 554.82
+    },
+    {
+      "db_bytes": 4125712384,
+      "dim": 1024,
+      "insert_rows_per_s": 1630,
+      "insert_seconds": 613.247,
+      "rows": 1000000,
+      "warm_p50_ms": 4999.17,
+      "warm_p95_ms": 8248.81,
+      "warm_p99_ms": 9701.92
+    }
+  ],
+  "schema_version": 1
+}
