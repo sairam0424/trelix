@@ -31,6 +31,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from trelix.review.hunk_status import HunkStatus
+
 _ROOT = Path(__file__).resolve().parents[2]
 _DOC = _ROOT / "docs" / "OBSERVABILITY.md"
 _EMBEDDER = _ROOT / "src" / "trelix" / "embedder"
@@ -145,6 +147,33 @@ class TestLlmChatSpansSection:
         assert "`gen_ai.usage.*`" in bullet
         assert "`gen_ai.client.token.usage`" in bullet
         assert "none increments a counter" not in bullet
+
+
+class TestReviewSpanRow:
+    """The `trelix.review` row C-8 PR 4 added to the stage table, and the sentence PR 3 wrote
+    forward about the reviewer's chat spans being roots."""
+
+    def test_the_stage_table_names_the_review_span_and_every_hunk_status(self) -> None:
+        """MUTATION: delete `parse_failed` from the row."""
+        lines = _DOC.read_text(encoding="utf-8").splitlines()
+        row = next(line for line in lines if line.startswith("| `trelix.review` |"))
+        assert "`trelix.review.hunk_status`" in row
+        for status in ("reviewed", "truncated", "refused", "parse_failed", "error"):
+            assert f"`{status}`" in row, status
+        # The code side, as literals: the row lists exactly the vocabulary of hunk_status.py.
+        assert [s.value for s in HunkStatus] == [
+            "reviewed",
+            "truncated",
+            "refused",
+            "parse_failed",
+            "error",
+        ]
+
+    def test_the_chat_spans_intro_no_longer_defers_the_review_parent(self) -> None:
+        """MUTATION: leave PR 3's parenthetical in place."""
+        section = _llm_chat_spans_section()
+        assert "PR 4 of C-8" not in section
+        assert "`trelix.review`" in section
 
 
 def test_env_example_says_the_capture_flag_covers_prompts_and_replies() -> None:

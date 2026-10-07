@@ -291,9 +291,15 @@ MUTMUT_CONFIG: dict[str, object] = {
     # (test_request_guard_deployment_contracts). `_SYNC_DIRS` / `_SYNC_FILES` below gained
     # the same four, since the throwaway tree is what mutmut copies from.
     #
+    # `plugins` and `.claude-plugin` joined when #479 added the Claude Code plugin after
+    # `retrieval.citations` was first measured: the Claude Code plugin tests
+    # (tests/unit/test_claude_plugin_*.py) read both from the tree root, so without them the
+    # stats pass failed under `-x` on the merged tree (`_SYNC_DIRS` gained the same two).
+    #
     # The alternative -- deselecting those files -- was rejected: it shrinks the
     # kill set, which is the one thing a survivor count must not do.
     "also_copy": [
+        ".claude-plugin",
         ".env.example",
         ".gitignore",
         ".github",
@@ -309,6 +315,7 @@ MUTMUT_CONFIG: dict[str, object] = {
         "LICENSE",
         "Makefile",
         "packages",
+        "plugins",
         "README.md",
         "scripts",
         "SECURITY.md",
@@ -355,6 +362,9 @@ DESELECTED_FILES: tuple[str, ...] = (
     # Same attach-to-the-incumbent TracerProvider fixture as test_otel_tracing.py, same
     # one-shot global. Its SDK-free twin, test_otel_llm_wrapper.py, stays in the kill set.
     "tests/unit/test_otel_llm_spans.py",
+    # Same attach-to-the-incumbent TracerProvider fixture as test_otel_tracing.py, same
+    # one-shot global, around the reviewer's per-hunk span; it cannot run twice in one process.
+    "tests/unit/test_reviewer_otel_span.py",
 )
 # ROUND 8 (mutation:widen-scope retry), NOT reproduced from this tuple -- reverted
 # back to the 4 above after the run that needed it, per this task's own prescribed
@@ -519,6 +529,8 @@ _SYNC_DIRS = (
     "config",
     "eval",
     "infra",
+    "plugins",
+    ".claude-plugin",
 )
 _SYNC_FILES = (
     "pyproject.toml",
