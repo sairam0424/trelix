@@ -551,6 +551,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   client, so with the variable set `search` and `query` plan through that server too (one call per
   distinct query); the zero-LLM-call recipe in the FAQ, README, getting-started, user and
   why-trelix guides and `SECURITY.md` now requires it unset as well as the chat credential.
+- **`trelix review` reports a hunk as `truncated` (`detail: prompt_truncated`) when a local server
+  cut the prompt.** Ollama drops the head of a prompt that exceeds its context length and answers
+  HTTP 200 with a normal finish reason (the system prompt is the first thing to go); the only trace
+  is a `prompt_tokens` smaller than the prompt. With `TRELIX_LLM_BASE_URL` set, a reported count
+  below 0.85 x the cl100k_base count of what was sent marks the hunk unreviewed, nothing is salvaged
+  from the reply and the hunk is not retried. Exit codes 3/4 and the outcome record are unchanged in
+  shape (the workflow and the GitHub App validate `status` only and never read `detail`). The check
+  needs `usage` in the reply and the cl100k_base encoding on disk; when either is missing it warns
+  once and stays out of the way. `trelix ask` (a stream) and the query planner's tool call are not
+  checked.
 
 ### Changed
 - **`trelix ask` and `GET /ask` no longer call the LLM when retrieval found nothing, and an answer
