@@ -117,6 +117,20 @@ def _handler_for(cfg: Any) -> TelemetryHandler | None:
     )
 
 
+def is_enabled_from_env() -> bool:
+    """TRELIX_OTEL_ENABLED as resolved from the environment and `.env`, memoised once per
+    process, for call sites that hold no RetrievalConfig (the LLM factory; the embedding
+    counters use the same read). Never imports opentelemetry."""
+    return _otel_settings(None).enabled
+
+
+def handler_from_env() -> TelemetryHandler | None:
+    """The memoized TelemetryHandler for the environment's service name and OTLP endpoint --
+    the same one the retrieval legs use. None on any import/init failure."""
+    settings = _otel_settings(None)
+    return _get_handler(settings.service_name, settings.otlp_endpoint)
+
+
 class _OtelSettings(NamedTuple):
     enabled: bool
     service_name: str

@@ -329,6 +329,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `nomic-code`) to the embedder code.
 
 ### Added
+- **GenAI `chat` spans for every LLM call, behind `TRELIX_OTEL_ENABLED`** (roadmap C-8, requirement
+  R-C6-02; PR 3 of 4). `build_chat_client()` returns the backend wrapped in a `TracedChatClient`
+  (`src/trelix/llm/otel.py`) when the flag resolves true from the environment, and every
+  `complete()`, `stream()` and `tool_call()` emits one `chat {request model}` span through the same
+  `TelemetryHandler` as the retrieval legs (same instrumentation scope, no new provider). Every span
+  carries `gen_ai.operation.name`, `gen_ai.provider.name` (`openai`, `azure.ai.openai`, `anthropic`,
+  `aws.bedrock`, `gcp.gemini` or `gcp.vertex_ai`, and the custom value `litellm`),
+  `gen_ai.request.model` (the backend's active id: the Azure deployment, the LiteLLM model, Bedrock's
+  possibly swapped id) and `gen_ai.request.max_tokens` (the effective cap). A `complete()` span adds
+  `gen_ai.response.model`, `gen_ai.response.finish_reasons` (the provider's raw word),
+  `trelix.finish_reason` (the normalised one), `gen_ai.usage.input_tokens` (input plus cache read
+  plus cache write, as the GenAI Anthropic conventions require), `gen_ai.usage.output_tokens` and
+  the two cache counts when non-zero; `stream()` and `tool_call()` spans carry request attributes
+  only (`ToolCallResponse` has no usage; a stream is not buffered). A backend exception ends the
+  span `ERROR` with `error.type` and the status description both set to the exception's class name
+  (never `str(exc)`, which can echo a provider error body) and is re-raised unchanged. Prompt,
+  system instruction and reply text reach a span only under `TRELIX_OTEL_CAPTURE_CONTENT=true` AND
+  a span content mode in `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`; `stream()` replies
+  and images never do. The off path returns the same backend object and type as before and imports
+  nothing from `opentelemetry` (one memoised `RetrievalConfig()` read per process). With the flag
+  on but `opentelemetry-util-genai` not installed, one WARNING per process names the cause and the
+  bare backend is returned. The wrapper exposes the backend's `_client` by identity (the
+  synthesizer, the planner's decomposition path and GraphRAG read it to choose the
+  `TrelixChatClient` path over a legacy raw-OpenAI path) and nothing else. The placeholder reply of
+  an unconfigured backend is recorded like any other (`gen_ai.response.model="none"`). With a
+  `MeterProvider` installed, the library also records `gen_ai.client.operation.duration` and
+  `gen_ai.client.token.usage` for these spans. `docs/OBSERVABILITY.md` § LLM chat spans has the
+  attribute table, the provider map and the stream lifecycle; `scripts/mutation.py` gains the
+  `llm.otel` scope and deselects the new span test file (the global TracerProvider is one-shot).
+  Owner decisions taken: the `otel` extra floor (under Changed), the placeholder span, request-only
+  `stream()`/`tool_call()` spans, the custom `litellm` value, the one-time WARNING and the
+  class-name-only error text.
 - **A Claude Code plugin.** `claude plugin marketplace add sairam0424/trelix` then
   `claude plugin install trelix@trelix` installs the `trelix-mcp` server (launched as
   `uvx --from trelix-mcp==<newest published release> trelix-mcp`, so the plugin trails this
@@ -667,6 +699,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     An unusable `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` stops `trelix-mcp` at start-up
     with exit code 2. `docs/MCP_GUIDE.md` and `docs/BACKWARDS_COMPATIBILITY.md` describe the limits.
   - Not covered: `build_knowledge_graph` and `federation_list_repos` are not cut.
+- **The `otel` extra now requires `opentelemetry-util-genai>=1.2b0`** (it accepted `>=1.0b0`). The
+  chat spans need two things that exist only from 1.2b0: `suspend()`, which detaches a `stream()`
+  span from the caller's context while the stream is drained (without it every span the consumer
+  opens mid-stream would nest under the chat span), and the `gen_ai.usage.cache_write.input_tokens`
+  attribute name (1.0b0 and 1.1b0 emit `gen_ai.usage.cache_creation.input_tokens`, which the GenAI
+  registry no longer has). Verified against 1.2b0 on 2026-10-07; `pip install 'trelix[otel]'` picks
+  it up, and `tests/unit/test_dependency_floor_guards.py` pins the floor. Nothing changes for a
+  default install: the extra is optional.
+- **`trelix.retrieval.otel_tracing` keeps every public name; the OTLP metrics wiring moved.** The
+  metrics endpoint mapping, the `MeterProvider` builder and the embedding counter definitions now
+  live in `trelix.retrieval.otel_metrics` and are re-exported, so `otel_tracing.py` stays under the
+  500-line limit with the `is_enabled_from_env()` and `handler_from_env()` helpers the LLM factory
+  uses. No behaviour change; the OTel test files are unchanged.
 
 ## [3.4.3] — 2026-10-04
 

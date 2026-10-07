@@ -118,3 +118,23 @@ def test_trelix_mcp_fastmcp_floor_is_the_release_the_tool_metadata_was_run_again
         "components=), which were run only against fastmcp 4.0.10; 4.0.0 to 4.0.9 were not "
         "tested. Lower the floor only after running packages/trelix-mcp/tests on the older release"
     )
+
+
+def test_util_genai_floor_is_the_release_the_chat_spans_were_run_against() -> None:
+    """The chat spans (src/trelix/llm/otel.py) call `suspend()` on a `stream()` span and rely on
+    the `gen_ai.usage.cache_write.input_tokens` attribute name; both exist only from
+    opentelemetry-util-genai 1.2b0 (1.0b0 and 1.1b0 have no `suspend()` and emit
+    `gen_ai.usage.cache_creation.input_tokens`)."""
+    spec = _extra_dependency_specifier("otel", "opentelemetry-util-genai")
+    match = re.search(r">=\s*(\d+)\.(\d+)b(\d+)", spec)
+    assert match is not None, (
+        f"opentelemetry-util-genai specifier {spec!r} has no >=X.YbN floor to check"
+    )
+    floor = tuple(int(x) for x in match.groups())
+    assert floor >= (1, 2, 0), (
+        f"opentelemetry-util-genai floor is {spec!r} -- the chat spans need suspend() (a stream's "
+        "span would otherwise parent every span the consumer opens while draining it) and the "
+        "gen_ai.usage.cache_write.input_tokens name, both 1.2b0-only; verified against 1.2b0 on "
+        "2026-10-07. Lower the floor only after re-running tests/unit/test_otel_llm_spans.py on "
+        "the older release"
+    )
