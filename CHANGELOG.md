@@ -329,6 +329,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `nomic-code`) to the embedder code.
 
 ### Added
+- **`trelix-mcp --root PATH` (repeatable) and `TRELIX_ALLOWED_REPO_ROOTS`** confine every
+  `repo_path`, `federation_add_repo.path` and `trelix://repo/...` URI to those roots; a path
+  outside answers `isError` with 'repo_path is not inside an allowed repository root';
+  `federation_search_all` skips registry entries outside the roots and reports
+  `repos_outside_roots`. A blank `--root` value is a startup error. Stdio with no root is
+  unchanged.
 - **A Claude Code plugin.** `claude plugin marketplace add sairam0424/trelix` then
   `claude plugin install trelix@trelix` installs the `trelix-mcp` server (launched as
   `uvx --from trelix-mcp==<newest published release> trelix-mcp`, so the plugin trails this

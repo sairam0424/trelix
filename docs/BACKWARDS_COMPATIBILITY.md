@@ -230,6 +230,17 @@ exit code 2.
 
 `trelix-mcp` now sends tool annotation hints, server `instructions` and a five-minute cache hint, lists its tools in a fixed order (the two subscription tools, which came first, now come last) and accepts `--tools core|full` (default `full`, every tool); this is additive, because no tool name, parameter or result changes.
 
+### Additive: `trelix-mcp --root` and `repos_outside_roots`
+
+`trelix-mcp` accepts `--root PATH` (repeatable) and reads `TRELIX_ALLOWED_REPO_ROOTS`. With at
+least one root, every `repo_path`, `federation_add_repo`'s `path` and `trelix://repo/...` URI
+outside the roots is refused (`isError: true` with `repo_path is not inside an allowed repository
+root`; a resource read fails with the same text), and every `federation_search_all` response gains
+`repos_outside_roots`. With neither, nothing changes: no tool, parameter or result differs, and no
+key is added. One consumer can be confined without asking for it: `trelix-mcp` over stdio reads
+`TRELIX_ALLOWED_REPO_ROOTS` from the process environment; if you export it for `trelix serve`, the
+VS Code extension's server is confined to the same roots.
+
 ### v3.3.0 Breaking Changes
 
 The following deprecated item was removed in v3.3.0. Its `AliasChoices`/`DeprecationWarning` backward-compat shim had been active since v2.4.0.
