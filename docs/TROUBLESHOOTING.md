@@ -650,6 +650,8 @@ To generate a token with the correct scope:
 2. Break the PR into smaller PRs with fewer than 3000 changed files each.
 3. Cap the work with `trelix review ./repo --pr owner/repo#<number> --max-files 10` (default is `10`). `trelix review` has no path-scoping flag — to review a subset of paths, save a filtered diff to a file and pass it with `--diff`.
 
+Reviewing against a local OpenAI-compatible server (`TRELIX_LLM_BASE_URL`)? `exception:NotFoundError` on every hunk, `prompt_truncated` on every hunk, `exception:JSONDecodeError`, a review that takes minutes before failing, and `Configuration error: llm -> base_url` each have a row in [OFFLINE.md](OFFLINE.md#troubleshooting).
+
 ---
 
 ## 6. Federation Issues
@@ -895,6 +897,14 @@ pip install trelix
 ```bash
 python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
 ```
+
+tiktoken's `cl100k_base` encoding is downloaded on first use as well (the chunker, the context assembler and the review's prompt-truncation check count with it); prefetch it once and keep its cache out of the temp directory:
+
+```bash
+TIKTOKEN_CACHE_DIR=$HOME/.cache/trelix-tiktoken python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+```
+
+Export `TIKTOKEN_CACHE_DIR` in every later shell; the full air-gapped checklist is in [OFFLINE.md](OFFLINE.md#prefetch).
 
 If the conflict persists, use a clean virtual environment (see below).
 
