@@ -52,8 +52,16 @@ _SENTENCES = [
         id="vscode-plugin",
     ),
 ]
-# A declared flag is `parser.add_argument("--name", ...)`; `-h`/`--help` is argparse's own.
-_DECLARED_FLAG = re.compile(r'add_argument\(\s*"(--[\w-]+)"')
+# A declared flag is every `--name` written inside a `parser.add_argument(...)` call, wherever it
+# stands (`add_argument("-t", "--transport", ...)` counts); `-h`/`--help` is argparse's own.
+_ADD_ARGUMENT_CALL = re.compile(r"add_argument\(([^)]*)")
+_LONG_FLAG = re.compile(r'"(--[\w-]+)"')
+
+
+def _declared_flags(source: str) -> set[str]:
+    return {
+        flag for call in _ADD_ARGUMENT_CALL.findall(source) for flag in _LONG_FLAG.findall(call)
+    }
 
 
 @pytest.mark.parametrize(("document", "sentence"), _SENTENCES)
@@ -63,5 +71,5 @@ def test_each_document_names_every_flag(document: str, sentence: str) -> None:
 
 def test_the_documented_list_is_the_parser_flag_list() -> None:
     """`--version`, `--tools` and `--root`, and nothing else: a fourth flag must reach all five."""
-    declared = set(_DECLARED_FLAG.findall(_SERVER.read_text(encoding="utf-8")))
+    declared = _declared_flags(_SERVER.read_text(encoding="utf-8"))
     assert declared == {"--version", "--tools", "--root"}

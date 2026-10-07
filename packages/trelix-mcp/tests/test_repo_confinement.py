@@ -190,6 +190,14 @@ async def test_resource_uri_is_confined(
                 await client.read_resource(uri)
             assert str(exc_info.value) == REFUSAL, uri
 
+        # A blank segment is refused before the handler runs, with the cwd AT the root: there a
+        # missing blank check would resolve `root/ ` inside the root and the handler would answer
+        # `{"error": "repo_path is not a directory"}` JSON instead of the refusal.
+        monkeypatch.chdir(roots.root)
+        with pytest.raises(MCPError) as exc_info:
+            await client.read_resource("trelix://repo/%20/stats")
+        assert str(exc_info.value) == REFUSAL
+
         # trelix://index/stats names no repository and is not confined.
         hint = json.loads((await client.read_resource("trelix://index/stats"))[0].text)
         assert hint["hint"].startswith("Use trelix://repo/")
