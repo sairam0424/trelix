@@ -804,8 +804,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   apple-m4-shared (Apple M4, 10 CPUs, macOS 27.0.1 / Darwin 27.0.0 arm64, Python 3.12.12,
   SQLite 3.50.4, sqlite-vec 0.1.9, load average 23.9 at start): p95 passes 100 ms near 32,765
   rows at 384 dimensions, 12,979 at 768 and 28,956 at 1024, measured on a shared machine, so the
-  thresholds are conservative. It is manual, not a test, and its scratch files need up to ~5 GB;
-  the numbers describe that machine, not a guarantee.
+  thresholds are conservative. The 768 value sits below both neighbours, which an exact flat
+  scan (cost proportional to rows x width) cannot produce: its 10k-row cell absorbed a load
+  spike (inserts ran at 1,512 rows/s against 22,729 at 384 and 3,403 at 1024, and its p95 was
+  4.5x its p50 where the other two 10k cells were at 2.3x). The whole grid is load-dominated,
+  not just that cell: the three 100k-row p95s are 334 / 345 / 335 ms across 384 / 768 / 1024
+  where a flat scan predicts 1 : 2 : 2.67, and a quiet one-off taken while designing the
+  script (same Python, SQLite and sqlite-vec; 384 x 100k read 45 ms where this run read
+  334 ms) put the crossings near 220,000 / 53,000 / 41,000 rows, so the 384 value is the
+  furthest from a quiet reading (0.15x), 768 next (0.24x) and 1024 nearest (0.71x). All three
+  crossings, and the three literals the flat-scan advisory (`feat/flat-scan-advisory`) pins to
+  them, are placeholders until the owner's quiet run replaces this file. It is manual, not a
+  test, and its scratch files need up to ~5 GB; the numbers describe that machine, not a
+  guarantee.
 
 ### Changed
 - **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim

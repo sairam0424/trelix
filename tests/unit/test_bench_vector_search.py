@@ -2,21 +2,25 @@
 
 The script is not a test and nothing in CI runs it; what this file pins is the part the
 flat-scan advisory depends on: the report's shape, the seeded vectors, the nearest-rank
-percentile, the 100 ms crossing rule, the usage errors, and that every committed report
-under docs/reports/ was produced under sqlite-vec 0.1.9. Every expected value is a literal;
-the script is imported by path (scripts/ is not a package) and nothing is imported from
-trelix. Each test's docstring names the mutations that fail it.
+percentile, the 100 ms crossing rule, the exit-1 paths, and that every committed report
+under docs/reports/ was produced under sqlite-vec 0.1.9 (the command line, its defaults
+and its usage errors are in tests/unit/test_bench_vector_search_flags.py, which imports
+``script`` and ``_argv`` from here so both files exercise one loaded module). Every
+expected value is a literal; the script is imported by path (scripts/ is not a package)
+and nothing is imported from trelix. Each test's docstring names the mutations that
+fail it.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
+import os
 import platform
 import re
 import sqlite3
 import sys
-from datetime import date
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -40,11 +44,6 @@ def _load_script() -> ModuleType:
 
 
 script = _load_script()
-
-
-def _settings(argv: list[str], today: date = date(2026, 10, 7)) -> Any:
-    parser = script.build_parser()
-    return script.resolve_settings(parser, parser.parse_args(argv), today=today)
 
 
 def _argv(tmp_path: Path) -> list[str]:
@@ -91,25 +90,77 @@ def _assert_report_shape(report: dict[str, Any], text: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_tiny_grid_produces_the_report_shape(tmp_path: Path) -> None:
+def test_a_tiny_grid_produces_the_report_shape(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Mutations: sizes not sorted; SCHEMA_VERSION 2; a result key renamed; sort_keys or
-    the trailing newline dropped; platform.node() added; chunk_id restarted per batch;
-    notes.numpy or notes.python_full read from the wrong module; DB cleanup removed."""
+    the trailing newline dropped; platform.node() added, or written under the `system` key
+    (every platform value is pinned to the same stdlib reading, so a hostname cannot hide
+    under a correct key); chunk_id restarted per batch; notes.numpy or notes.python_full
+    read from the wrong module; DB cleanup removed; db_bytes replaced by a constant below
+    one SQLite page, insert_rows_per_s or platform.cpu_count by any constant; the per-cell
+    progress line (the only sign of life in a nohup log) dropped."""
     assert script.main(_argv(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert out.count("dim=4 rows=") == 2
+    assert "dim=4 rows=20 insert_s=" in out
     text = (tmp_path / "r.json").read_text(encoding="utf-8")
     report = json.loads(text)
     _assert_report_shape(report, text)
     assert report["params"] == {"k": 2, "queries": 3, "seed": 0, "warmup": 1}
+    assert report["platform"]["system"] == platform.system()
+    assert report["platform"]["release"] == platform.release()
+    assert report["platform"]["machine"] == platform.machine()
+    assert report["platform"]["python"] == platform.python_version()
+    assert report["platform"]["sqlite"] == sqlite3.sqlite_version
     assert report["platform"]["sqlite_vec"] == sqlite_vec.__version__
+    assert report["platform"]["cpu_count"] == os.cpu_count()
     assert report["notes"]["numpy"] == np.__version__
     assert report["notes"]["python_full"] == sys.version
     assert len(report["results"]) == 2
     assert report["results"][0]["rows"] == 20
     assert report["results"][1]["rows"] == 40
+    for result in report["results"]:
+        assert result["db_bytes"] >= 4096
+        assert result["insert_rows_per_s"] > 0
     assert report["advisory"]["rows_at_p95_100ms"]["4"] > 40
     assert report["advisory"]["extrapolated"] == {"4": True}
     assert str(tmp_path) not in text
     assert list(tmp_path.glob("bench-*.db*")) == []
+
+
+def test_build_report_keeps_an_interpolated_crossing_unflagged() -> None:
+    """Mutations: build_report's `extrapolated` value replaced by a constant True (AC-2a's
+    two-point grid only ever extrapolates, so it pins the constant False alone); the
+    advisory's two maps swapped (a bool passes the shape test's positive-int check).
+    """
+    settings = script.Settings(
+        dims=[4],
+        sizes=[20, 40],
+        k=2,
+        queries=3,
+        warmup=1,
+        seed=0,
+        workdir=None,
+        out=Path("r.json"),
+        label="x",
+        note="",
+    )
+    report = script.build_report(
+        settings,
+        {"cpu_count": 1},
+        [],
+        {4: [(20, 50.0), (40, 150.0)]},
+        generated_at="2026-10-07T00:00:00Z",
+        load_start=None,
+        load_end=None,
+        free_bytes=1,
+    )
+    assert report["advisory"] == {
+        "threshold_ms": 100.0,
+        "rows_at_p95_100ms": {"4": 30},
+        "extrapolated": {"4": False},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +203,7 @@ def test_percentile_is_nearest_rank() -> None:
         ([(10_000, 16.0)], (62_500, True)),
         ([(10_000, 16.0), (100_000, 16.0)], (625_000, True)),
         ([(50_000, 40.0), (100_000, 100.0), (300_000, 135.0)], (100_000, False)),
+        ([(300_000, 135.0), (100_000, 45.0)], (222_222, False)),
     ],
 )
 def test_rows_at_threshold_interpolates_the_crossing(
@@ -160,7 +212,7 @@ def test_rows_at_threshold_interpolates_the_crossing(
     """Mutations: numerator/denominator swapped; extrapolated always False; upper bound
     `T < p95[i+1]` instead of `<=` (only the three-point row sees it: p95 equals T at a
     measured point whose lower neighbour is measured); the slope <= 0 branch removed
-    (ZeroDivisionError on the flat row)."""
+    (ZeroDivisionError on the flat row); `sorted(points)` dropped (the reversed row)."""
     assert script.rows_at_threshold(points, 100.0) == expected
 
 
@@ -175,24 +227,31 @@ def test_rows_at_threshold_rejects_non_positive_p95() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_time_queries_discards_the_warmup(tmp_path: Path) -> None:
-    """Mutation: `ms[warmup:]` -> `ms` (length 4)."""
+def test_time_queries_discards_the_warmup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutations: `ms[warmup:]` -> `ms` (length 4); the discard taken from the tail,
+    `ms[: len(ms) - warmup]` (the clock below times the first, cold query at 1000.0 and the
+    three warm ones at 500.0, so the kept list must start at 500.0); `* 1000.0` -> `* 1.0`
+    (seconds recorded as milliseconds: the same clock must give 500.0, not 0.5)."""
     conn = script.connect(tmp_path / "t.db")
     try:
         script.build_table(conn, 4, 20, np.random.default_rng(0))
         queries = script.make_vectors(np.random.default_rng(1), 4, 4)
         timings = script.time_queries(conn, queries, 2, 1)
+        assert len(timings) == 3
+        assert all(isinstance(ms, float) and ms > 0.0 for ms in timings)
+        clock = iter([0.0, 1.0, 1.0, 1.5, 1.5, 2.0, 2.0, 2.5])
+        monkeypatch.setattr(script, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
+        assert script.time_queries(conn, queries, 2, 1) == [500.0, 500.0, 500.0]
     finally:
         conn.close()
-    assert len(timings) == 3
-    assert all(isinstance(ms, float) and ms > 0.0 for ms in timings)
 
 
 def test_build_table_generates_vectors_per_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Mutations: one make_vectors(rng, rows, dim) call for the whole cell; chunk_id
-    restarted at 0 in every batch (IntegrityError)."""
+    restarted at 0 in every batch (IntegrityError); conn.commit() dropped from the batch loop
+    (close() rolls the inserts back, so the reopened file holds 0 rows)."""
     seen: list[int] = []
     real = script.make_vectors
 
@@ -209,14 +268,18 @@ def test_build_table_generates_vectors_per_batch(
     finally:
         conn.close()
     assert seen == [5, 5, 2]
+    again = script.connect(tmp_path / "b.db")
+    assert again.execute("SELECT count(*) FROM v").fetchone()[0] == 12
+    again.close()
 
 
 def test_run_cell_seeds_the_generator_and_draws_queries_plus_warmup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Mutations: run_cell builds default_rng() without the seed; it draws `queries`
-    instead of `queries + warmup` vectors (recorded n becomes [20, 2]); the DB/-journal
-    cleanup removed."""
+    instead of `queries + warmup` vectors (recorded n becomes [20, 2]); the query draw
+    restarted from a fresh default_rng(seed) (its first vectors would equal the first
+    inserted rows); the DB/-journal cleanup removed."""
     seen: list[tuple[int, Any]] = []
     real = script.make_vectors
 
@@ -233,6 +296,7 @@ def test_run_cell_seeds_the_generator_and_draws_queries_plus_warmup(
             4, 20, k=2, queries=2, warmup=1, seed=seed, workdir=tmp_path
         )
         assert [n for n, _ in seen] == [20, 3]
+        assert not np.array_equal(seen[1][1], seen[0][1][:3])
         assert set(result) == {
             *("dim", "rows", "insert_seconds", "insert_rows_per_s"),
             *("db_bytes", "warm_p50_ms", "warm_p95_ms", "warm_p99_ms"),
@@ -247,9 +311,13 @@ def test_run_cell_seeds_the_generator_and_draws_queries_plus_warmup(
 def test_run_cell_sorts_timings_before_taking_percentiles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Mutation: `sorted(...)` dropped around time_queries (the unsorted answer is
-    1.0 / 3.0 / 3.0)."""
+    """Mutations: `sorted(...)` dropped around time_queries (the unsorted answer is
+    1.0 / 3.0 / 3.0); insert_rows_per_s computed from rows * seconds, or offset by one
+    (with time_queries patched, build_table's two readings are the only clock reads, so a
+    0.5-s step makes insert_seconds exactly 0.5 and 20 rows exactly 40 rows/s)."""
     monkeypatch.setattr(script, "time_queries", lambda conn, queries, k, warmup: [5.0, 1.0, 3.0])
+    clock = itertools.count(0.0, 0.5)
+    monkeypatch.setattr(script, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
     result, raw_p95 = script.run_cell(4, 20, k=2, queries=3, warmup=0, seed=0, workdir=tmp_path)
     assert (result["warm_p50_ms"], result["warm_p95_ms"], result["warm_p99_ms"]) == (
         3.0,
@@ -257,74 +325,7 @@ def test_run_cell_sorts_timings_before_taking_percentiles(
         5.0,
     )
     assert raw_p95 == 5.0
-
-
-# ---------------------------------------------------------------------------
-# Flags and settings
-# ---------------------------------------------------------------------------
-
-
-def test_parse_int_list() -> None:
-    """Mutations: sorted() dropped; duplicates kept; the positive check removed."""
-    assert script.parse_int_list("100000,10000") == [10000, 100000]
-    assert script.parse_int_list("5,5") == [5]
-    for bad in ("0", "a", ""):
-        with pytest.raises(ValueError):
-            script.parse_int_list(bad)
-
-
-def test_settings_defaults_and_quick() -> None:
-    """Mutations: a default changed; --quick overriding an explicit --queries or --sizes;
-    default_out_path made cwd-relative."""
-    defaults = _settings([])
-    assert defaults.dims == [384, 768, 1024]
-    assert defaults.sizes == [10000, 100000, 1000000]
-    assert (defaults.k, defaults.queries, defaults.warmup, defaults.seed) == (20, 100, 5, 0)
-    assert defaults.workdir is None
-    assert defaults.label == platform.machine()
-    expected_name = f"vector-search-bench-2026-10-07-{platform.machine()}.json"
-    assert defaults.out == _ROOT / "docs" / "reports" / expected_name
-    quick = _settings(["--quick"])
-    assert (quick.sizes, quick.queries) == ([10000, 100000], 30)
-    explicit = _settings(["--quick", "--queries", "7", "--sizes", "50"])
-    assert (explicit.sizes, explicit.queries) == ([50], 7)
-    out = script.default_out_path("arm64", date(2026, 10, 7))
-    assert out.is_absolute()
-    assert str(out).endswith("docs/reports/vector-search-bench-2026-10-07-arm64.json")
-
-
-@pytest.mark.parametrize(
-    ("override", "expected_text"),
-    [
-        (("--k", "50"), "--k must not exceed the smallest --sizes value"),
-        (("--label", "../x"), "--label must match"),
-        (("--out", "/nonexistent/dir/r.json"), "--out parent directory does not exist"),
-        (("--dims", "0"), "--dims must be a comma-separated list of positive integers"),
-        (("--queries", "0"), "--queries must be at least 1"),
-        (("--workdir", "{tmp}/missing"), "--workdir must be an existing directory"),
-    ],
-)
-def test_usage_errors_exit_2(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    override: tuple[str, str],
-    expected_text: str,
-) -> None:
-    """Mutations: the k <= min(sizes) check removed; the --workdir existence check removed
-    (FileNotFoundError instead of exit 2); the _validate call dropped from
-    resolve_settings (every row but --dims)."""
-    flag, value = override
-    argv = _argv(tmp_path)
-    value = value.replace("{tmp}", str(tmp_path))
-    if flag in argv:
-        argv[argv.index(flag) + 1] = value
-    else:  # --label is not part of the AC-2a argv (it defaults to platform.machine())
-        argv += [flag, value]
-    with pytest.raises(SystemExit) as excinfo:
-        script.main(argv)
-    assert excinfo.value.code == 2
-    assert expected_text in capsys.readouterr().err
-    assert list(tmp_path.iterdir()) == []
+    assert (result["insert_seconds"], result["insert_rows_per_s"]) == (0.5, 40)
 
 
 # ---------------------------------------------------------------------------
@@ -335,14 +336,28 @@ def test_usage_errors_exit_2(
 def test_disk_check_refuses_and_exits_1(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Mutations: the check_disk call removed; the estimate formula changed."""
-    monkeypatch.setattr(
-        script.shutil, "disk_usage", lambda p: SimpleNamespace(total=1, used=0, free=1)
-    )
+    """Mutations: the check_disk call removed; the estimate formula changed; `free >=
+    estimate` -> `>` (exactly enough space is refused); `max(dims)` or `max(sizes)` -> `min`
+    (the two-dim grid must name the 8 x 40 cell and 1,600 bytes); disk_usage measured on
+    the cwd (or any path but --workdir): the one recorded argument must be tmp_path."""
+    seen: list[Path] = []
+
+    def tiny_disk(path: Path) -> SimpleNamespace:
+        seen.append(Path(path))
+        return SimpleNamespace(total=1, used=0, free=1)
+
+    monkeypatch.setattr(script.shutil, "disk_usage", tiny_disk)
     assert script.main(_argv(tmp_path)) == 1
+    assert seen == [tmp_path]
     err = capsys.readouterr().err
     assert "bytes free; the largest cell (4 x 40 rows) needs about 800 bytes" in err
     assert not (tmp_path / "r.json").exists()
+    refusal = script.check_disk(tmp_path, [4, 8], [20, 40])[1]
+    assert refusal is not None and "(8 x 40 rows) needs about 1,600 bytes" in refusal
+    monkeypatch.setattr(
+        script.shutil, "disk_usage", lambda p: SimpleNamespace(total=800, used=0, free=800)
+    )
+    assert script.check_disk(tmp_path, [4], [40]) == (800, None)
 
 
 def test_extension_load_failure_exits_1(
@@ -379,44 +394,71 @@ def test_default_workdir_is_created_and_removed(
 
 
 @pytest.mark.parametrize(
-    ("samples", "expected_start", "expected_end", "expected_inflated"),
+    ("samples", "expected_start", "expected_end", "expected_inflated", "expected_warning"),
     [
-        ([[99.0, 1.0, 1.0], [99.0, 1.0, 1.0]], [99.0, 1.0, 1.0], [99.0, 1.0, 1.0], True),
-        ([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], False),
-        ([[0.5, 0.5, 0.5], [99.0, 1.0, 1.0]], [0.5, 0.5, 0.5], [99.0, 1.0, 1.0], True),
-        ([None, None], None, None, False),
+        ([[99.0, 1.0, 1.0], [99.0, 1.0, 1.0]], [99.0, 1.0, 1.0], [99.0, 1.0, 1.0], True, True),
+        ([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], False, False),
+        ([[0.5, 0.5, 0.5], [99.0, 1.0, 1.0]], [0.5, 0.5, 0.5], [99.0, 1.0, 1.0], True, False),
+        ([None, None], None, None, False, False),
     ],
 )
 def test_notes_record_load_and_inflation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
     samples: list[list[float] | None],
     expected_start: list[float] | None,
     expected_end: list[float] | None,
     expected_inflated: bool,
+    expected_warning: bool,
 ) -> None:
     """Mutations: the inflated comparison `>` -> `<`; the end-of-run load sample dropped
-    (None, or a copy of the start sample); workdir_free_bytes read from .total instead of
-    .free (2_000_000_000_000); a third load_average() call (StopIteration).
+    (None, or a copy of the start sample) or taken before the grid (the call order becomes
+    load, load, grid); workdir_free_bytes read from .total instead of .free
+    (2_000_000_000_000); a third load_average() call (StopIteration); the start-of-run
+    stderr warning dropped, or keyed on `inflated` instead of the start sample (the third
+    row inflates on the END sample and must see no warning).
 
     99.0 exceeds os.cpu_count() here and on every CI runner; the patched free space is
     deterministic where the real reading is not."""
+    order: list[str] = []
     it = iter(samples)
-    monkeypatch.setattr(script, "load_average", lambda: next(it))
-    monkeypatch.setattr(
-        script.shutil,
-        "disk_usage",
-        lambda p: SimpleNamespace(
-            total=2_000_000_000_000, used=1_000_000_000_000, free=1_000_000_000_000
-        ),
-    )
+
+    def sampled_load() -> list[float] | None:
+        order.append("load")
+        return next(it)
+
+    real_run_grid = script.run_grid
+
+    def recorded_run_grid(*args: Any, **kwargs: Any) -> Any:
+        order.append("grid")
+        return real_run_grid(*args, **kwargs)
+
+    free = SimpleNamespace(total=2_000_000_000_000, used=1_000_000_000_000, free=1_000_000_000_000)
+    monkeypatch.setattr(script, "load_average", sampled_load)
+    monkeypatch.setattr(script, "run_grid", recorded_run_grid)
+    monkeypatch.setattr(script.shutil, "disk_usage", lambda p: free)
     assert script.main([*_argv(tmp_path), "--note", "shared machine"]) == 0
+    assert order == ["load", "grid", "load"]
+    err = capsys.readouterr().err
+    assert ("warning: load average 99.0 exceeds cpu_count" in err) is expected_warning
     notes = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["notes"]
     assert notes["load_avg_start"] == expected_start
     assert notes["load_avg_end"] == expected_end
     assert notes["inflated"] is expected_inflated
     assert notes["comment"] == "shared machine"
     assert notes["workdir_free_bytes"] == 1_000_000_000_000
+
+
+def test_load_average_reads_three_floats() -> None:
+    """Mutation: load_average's body replaced by `return None` (the notes rows patch the
+    function itself, so only this test reads the real sample the LABEL RULE rests on)."""
+    sample = script.load_average()
+    if not hasattr(os, "getloadavg"):
+        assert sample is None
+        return
+    assert isinstance(sample, list) and len(sample) == 3
+    assert all(isinstance(value, float) for value in sample)
 
 
 # ---------------------------------------------------------------------------

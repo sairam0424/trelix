@@ -155,7 +155,7 @@ provenance. These are not guides — do not read a number here as a documented g
 | [reports/self-index-v3.1.2.md](reports/self-index-v3.1.2.md) | v3.1.2 self-index run: indexing trelix with trelix, then checking which index dimensions were actually populated. Numbers that could not be measured honestly are marked as such rather than estimated |
 | [reports/index-hygiene-before.json](reports/index-hygiene-before.json) | Raw before-state for that run: 915 files, 59.3% of them `.vscode-test/` noise, indexed with the 384-dim local embedder |
 | [reports/index-hygiene-after.json](reports/index-hygiene-after.json) | Raw after-state: 454 files, 0% noise, indexed with the configured `azure` provider |
-| [reports/vector-search-bench-2026-10-07-apple-m4-shared.json](reports/vector-search-bench-2026-10-07-apple-m4-shared.json) | sqlite-vec flat-scan latency grid (384/768/1024 dims x 10k/100k/1M rows) from `scripts/bench_vector_search.py` on apple-m4-shared; the per-width 100 ms p95 crossings the flat-scan advisory quotes; measured on a shared machine, so the thresholds are conservative |
+| [reports/vector-search-bench-2026-10-07-apple-m4-shared.json](reports/vector-search-bench-2026-10-07-apple-m4-shared.json) | sqlite-vec flat-scan latency grid (384/768/1024 dims x 10k/100k/1M rows) from `scripts/bench_vector_search.py` on apple-m4-shared; the per-width 100 ms p95 crossings a flat-scan advisory can pin to; measured on a shared machine, so the thresholds are conservative, and all three crossings are load-depressed placeholders until a quiet run (the CHANGELOG bullet has the analysis) |
 
 ---
 

@@ -5,10 +5,10 @@ Why
 ---
 trelix's sqlite store (``src/trelix/store/vector.py``) answers every search with an exact
 flat scan, so search cost is linear in rows x width and a row-count threshold is only
-meaningful per dimension, and only when it was measured. The flat-scan advisory
-(``trelix index`` / ``trelix stats``) quotes the row count at which the warm p95 search
-latency passes 100 ms for each width; this script measures those crossings and writes the
-JSON report the advisory pins to.
+meaningful per dimension, and only when it was measured. The flat-scan advisory planned for
+``trelix index`` / ``trelix stats`` (branch ``feat/flat-scan-advisory``) will quote the row
+count at which the warm p95 search latency passes 100 ms for each width; this script
+measures those crossings and writes the JSON report the advisory pins to.
 
 How to run
 ----------
@@ -22,14 +22,14 @@ How to run
 
 Cost
 ----
-The default grid is 384/768/1024 dimensions x 10k/100k/1M rows. The 1M x 1024 cell alone
-writes about 4.1 GB; an M-series laptop inserts roughly 47k rows/s at 384 dimensions, 4.3k
-at 768 and 3.1k at 1024, so the full grid takes 15-25 minutes on a quiet machine and wants
-at least 6 GB free in ``--workdir`` (the largest cell's estimate with a 25 % margin, plus
-SQLite's ``-journal``). One database file is written per cell and deleted when the cell
-finishes. The script refuses to start when ``--workdir`` has less free space than the
-largest cell's estimate (5,120,000,000 bytes for the default grid). ``--quick`` drops the
-1M cells and times 30 queries per cell instead of 100.
+The default grid is 384/768/1024 dimensions x 10k/100k/1M rows. The 1M x 1024 cell alone writes
+about 4.1 GB. The design's quiet M-series one-off inserted roughly 47k rows/s at 384 dimensions,
+4.3k at 768 and 3.1k at 1024, so the full grid takes 15-25 minutes on a quiet machine and wants
+at least 6 GB free in ``--workdir`` (the largest cell's estimate with a 25 % margin, plus SQLite's
+``-journal``). One database file is written per cell and deleted when the cell finishes. The
+script refuses to start when ``--workdir`` has less free space than the largest cell's estimate
+(5,120,000,000 bytes for the default grid). ``--quick`` drops the 1M cells and times 30 queries
+per cell instead of 100.
 
 Not a test
 ----------
@@ -315,12 +315,16 @@ def _validate(parser: argparse.ArgumentParser, settings: Settings) -> None:
         parser.error("--queries must be at least 1")
     if settings.warmup < 0:
         parser.error("--warmup must not be negative")
+    if settings.seed < 0:
+        parser.error("--seed must not be negative")
     if settings.k > min(settings.sizes):
         parser.error("--k must not exceed the smallest --sizes value")
     if LABEL_PATTERN.fullmatch(settings.label) is None:
         parser.error("--label must match [A-Za-z0-9][A-Za-z0-9._-]*")
     if not settings.out.parent.is_dir():
         parser.error(f"--out parent directory does not exist: {settings.out.parent}")
+    if settings.out.is_dir():
+        parser.error(f"--out must be a file path, not a directory: {settings.out}")
     if settings.workdir is not None and not settings.workdir.is_dir():
         parser.error(f"--workdir must be an existing directory: {settings.workdir}")
 
