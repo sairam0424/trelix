@@ -535,6 +535,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     `suite_gold` and `suite_prepare`. See `eval/README.md`.
 
 ### Changed
+- **`trelix ask` and `GET /ask` no longer call the LLM when retrieval found nothing, and an answer
+  can abstain** (second of six changes toward `trelix ask` answers that cite the retrieved code and
+  abstain when it does not answer the question). `Synthesizer.stream()`, behind plain `trelix ask`
+  with a non-local embedder and REST `/ask`, used to send the model `No relevant code found.` as the
+  whole code context and stream whatever it said; `synthesize()` (FLARE, `eval-synthesis`) already
+  answered with the notice and made no call. Both now answer with the one literal
+  `[trelix] No relevant code found — cannot synthesize an answer.`
+  (`trelix.retrieval.citations.NO_RESULTS_MESSAGE`) and make no LLM call; `trelix ask` exits `0`
+  (an unconfigured LLM is still reported first, as before) and REST `/ask`
+  streams that line then `[DONE]`. A caller that parsed the streamed text sees the notice where an
+  ungrounded answer was; there is no toggle (`docs/BACKWARDS_COMPATIBILITY.md`). With
+  `TRELIX_RETRIEVAL_CITATIONS=true` the citation instruction gains a fourth sentence: when the
+  context does not contain what the question needs, reply with exactly one line starting
+  `INSUFFICIENT_EVIDENCE:` followed by what is missing, and nothing else. That line is an answer: it
+  streams as one, `trelix ask` exits `0` with it on stdout and nothing on stderr,
+  `Synthesizer.last_error` stays `None`, and the new `Synthesizer.last_abstain_reason` says
+  `"insufficient_evidence"` (or `"no_results"`) once the whole answer is in; a stream closed early
+  records nothing. FLARE's uncertainty phrases gain `insufficient_evidence:`, so an abstention
+  triggers its re-retrieval. GraphRAG map-reduce prompts carry the cite lines but not the
+  abstention sentence, so a GraphRAG answer cannot abstain by protocol. With the flag off the
+  prompts are unchanged; the line is recognised either way. No live model call was made.
 - **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
   `resolve_allowed_roots`, `is_within_allowed_roots`; the first now takes any number of explicit
   roots, otherwise same bodies) so `trelix-mcp` can apply
