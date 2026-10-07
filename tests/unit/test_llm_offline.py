@@ -1,14 +1,28 @@
-"""`trelix.llm.offline`: the model-size parser and the size-floor warning (R-C4-03).
+"""`trelix.llm.offline`: the model-size parser and the size-floor warning (R-C4-03), the
+prompt-token estimate and the prompt-truncation rule (R-C4-02).
 
-Pure functions over the model tag. Every expected value is a literal, including the two
-warning texts, so a wording change has to be made here on purpose.
+Pure functions over the model tag and over message lists. Every expected value is a literal,
+including the warning texts, so a wording change has to be made here on purpose.
 """
 
 from __future__ import annotations
 
-import pytest
+import logging
 
-from trelix.llm.offline import model_size_billions, small_model_warning
+import pytest
+import tiktoken
+
+from trelix.llm import offline
+from trelix.llm.offline import (
+    estimate_prompt_tokens,
+    model_size_billions,
+    prompt_truncation_signal,
+    small_model_warning,
+)
+
+# Loaded at collection, the shape of test_chunker_token_budget_boundary.py: the process cache is
+# warm before pytest-socket's per-test ban, so `estimate_prompt_tokens` never needs the network.
+_ENC = tiktoken.get_encoding("cl100k_base")
 
 # (tag, billions). A size token is a number followed by b/B or m/M, not glued to a letter,
 # digit or dot on either side; the largest wins; `m` is divided by 1000.
@@ -98,3 +112,102 @@ class TestSmallModelWarning:
 
     def test_a_mixture_tag_is_w2_not_a_product(self) -> None:
         assert small_model_warning("mixtral-8x7b") == _W2_MIXTRAL
+
+
+# (estimated, reported, signal). Truncated means `reported < 0.85 * estimated`; anything that is
+# not a positive int on either side is unknown, never truncated.
+_TRUNCATION_TABLE = [
+    (1000, 849, "prompt_truncated"),
+    (1000, 850, None),  # exactly at the floor is not truncated
+    (1000, 700, "prompt_truncated"),
+    (1000, 1, "prompt_truncated"),
+    (1000, 1200, None),
+    (20, 17, None),  # 17 < 17.0 is false
+    (None, 5, None),
+    (1000, None, None),
+    (1000, 0, None),
+    (0, 0, None),
+    (0, 5, None),
+    (1000, True, None),  # a bool is not a count
+]
+
+
+@pytest.mark.parametrize(("estimated", "reported", "signal"), _TRUNCATION_TABLE)
+def test_prompt_truncation_signal(estimated: object, reported: object, signal: str | None) -> None:
+    """MUTATION: floor 0.85 -> 0.5 (`(1000, 700)` and `(1000, 849)` stop signalling); `<` -> `<=`
+    (`(1000, 850)` signals); `prompt_tokens == 0` read as truncated (`(1000, 0)` signals);
+    `isinstance(..., int)` without the bool exclusion (`(1000, True)` signals)."""
+    assert prompt_truncation_signal(estimated, reported) == signal  # type: ignore[arg-type]
+
+
+_TWO_MESSAGES = [
+    {"role": "system", "content": "hello world"},
+    {"role": "user", "content": "hi"},
+]
+_W5_OSERROR = (
+    "tiktoken cl100k_base is not available (OSError); the prompt-truncation check is off for this "
+    "run (docs/OFFLINE.md: prefetch)"
+)
+
+
+class TestEstimatePromptTokens:
+    def test_counts_the_content_of_every_message(self) -> None:
+        """MUTATION: count the last message only (1); count the system message out (1)."""
+        assert estimate_prompt_tokens(_TWO_MESSAGES) == 3
+
+    def test_no_messages_is_zero(self) -> None:
+        assert estimate_prompt_tokens([]) == 0
+
+    def test_a_special_token_in_the_text_is_counted_not_refused(self) -> None:
+        """MUTATION: drop `disallowed_special=()` (tiktoken raises ValueError on the text)."""
+        assert estimate_prompt_tokens([{"role": "user", "content": "<|endoftext|>"}]) == 7
+
+
+class TestEncoderUnavailable:
+    """The encoder cannot load (no cache file and no network): the estimate is None, W5 once."""
+
+    @pytest.fixture
+    def cold_encoder(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        calls: list[str] = []
+
+        def refuse(name: str) -> object:
+            calls.append(name)
+            raise OSError("canary: no cache file and no network")
+
+        monkeypatch.setattr(offline, "_encoder", None)
+        monkeypatch.setattr(offline, "_ENCODER_UNAVAILABLE", False)
+        monkeypatch.setattr(tiktoken, "get_encoding", refuse)
+        return calls
+
+    def test_two_estimates_load_once_and_warn_once(
+        self, cold_encoder: list[str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """MUTATION: drop the `_ENCODER_UNAVAILABLE` flag (two `get_encoding` calls and two W5
+        records); return 0 instead of None (the rule then reads 0 as a count)."""
+        with caplog.at_level(logging.WARNING, logger="trelix.llm.offline"):
+            first = estimate_prompt_tokens(_TWO_MESSAGES)
+            second = estimate_prompt_tokens(_TWO_MESSAGES)
+
+        assert (first, second) == (None, None)
+        assert cold_encoder == ["cl100k_base"]
+        warnings = [r.getMessage() for r in caplog.records if r.name == "trelix.llm.offline"]
+        assert warnings == [_W5_OSERROR]
+
+    @pytest.mark.parametrize("error", [RuntimeError, ValueError])
+    def test_other_load_errors_are_none_and_name_the_class(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        error: type[Exception],
+    ) -> None:
+        def refuse(_name: str) -> object:
+            raise error("canary")
+
+        monkeypatch.setattr(offline, "_encoder", None)
+        monkeypatch.setattr(offline, "_ENCODER_UNAVAILABLE", False)
+        monkeypatch.setattr(tiktoken, "get_encoding", refuse)
+
+        with caplog.at_level(logging.WARNING, logger="trelix.llm.offline"):
+            assert estimate_prompt_tokens(_TWO_MESSAGES) is None
+
+        assert f"is not available ({error.__name__});" in caplog.text

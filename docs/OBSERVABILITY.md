@@ -33,14 +33,14 @@ One span per retrieval leg, using the official [`gen_ai.*` semantic conventions]
 
 | Leg | `gen_ai.data_source.id` | Attributes set |
 |---|---|---|
-| Vector (dense ANN) | `vector` | `query_text`, `top_k`, `trelix.leg.result_count` |
+| Vector (dense ANN) | `vector` | `query_text` (content capture only, see below), `top_k`, `trelix.leg.result_count` |
 | BM25 (FTS5) | `bm25` | same |
 | Grep | `grep` | same |
 | Sparse (SPLADE-Code, 7th leg) | `sparse` | same |
 | Sub-chunk (MGS3, 6th leg) | `sub_chunk` | same |
 | File-summary (RAPTOR-style, 5th leg) | `file_summary` | same |
 
-`query_text` is handed to every leg span, but the library **records it only when the upstream content opt-in is on**: `opentelemetry-util-genai` writes `gen_ai.retrieval.query.text` only when `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `SPAN_ONLY` or `SPAN_AND_EVENT`; in 1.0b0, 1.1b0 and 1.2b0 the default (`NO_CONTENT`, also what an unset or invalid value becomes) drops the text, so by default no query text reaches a span (measured on `opentelemetry-util-genai` 1.0b0 and 1.2b0; the 1.1b0 behaviour read in its extracted wheel). When the variable is read differs by version: 1.2b0 reads it once, when the handler is built on the first span, so a value exported into a running process has no effect until restart; 1.0b0 and 1.1b0 re-read it on every span, so exporting `SPAN_ONLY` into a running process puts the query text on every leg span from then on. See the [spike report](reports/otel-genai-semconv-spike-2026-10-07.md).
+`query_text` reaches a leg span only when **both** content switches are on (see [Content capture](#content-capture)): trelix hands it to the library only when `TRELIX_OTEL_CAPTURE_CONTENT=true` (default `false`), and `opentelemetry-util-genai` writes `gen_ai.retrieval.query.text` only when `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `SPAN_ONLY` or `SPAN_AND_EVENT`; in 1.0b0, 1.1b0 and 1.2b0 the default (`NO_CONTENT`, also what an unset or invalid value becomes) drops the text, so by default no query text reaches a span (measured on `opentelemetry-util-genai` 1.0b0 and 1.2b0; the 1.1b0 behaviour read in its extracted wheel). When the library reads its variable for the span attribute differs by version: 1.2b0 reads it once, when the handler is built on the first span, so a value exported into a running process has no effect until restart; 1.0b0 and 1.1b0 re-read it on every span, so exporting `SPAN_ONLY` into a running process with the trelix flag on puts the query text on every leg span from then on. See the [spike report](reports/otel-genai-semconv-spike-2026-10-07.md).
 
 Plus trelix-specific pipeline-stage spans (not `gen_ai.*` — these are trelix concepts, not GenAI operations), namespaced under `trelix.*`:
 
@@ -53,6 +53,52 @@ Plus trelix-specific pipeline-stage spans (not `gen_ai.*` — these are trelix c
 | `trelix.rerank` | Cross-encoder/Cohere/PLAID/XTR reranking (only when `rerank_enabled` and not skipped by strategy) |
 | `trelix.pagerank_boost` | PageRank centrality boost (only actually does work when `TRELIX_RETRIEVAL_PAGERANK_BOOST=true`) |
 | `trelix.assembly` | Final context assembly within the token budget |
+
+---
+
+## Content capture
+
+Spans carry no prompt, reply or query text unless **two** switches are on, and each defaults to off:
+
+| Switch | Default | Read by | What it decides |
+|---|---|---|---|
+| `TRELIX_OTEL_CAPTURE_CONTENT` | `false` | trelix | Whether trelix hands any text to the GenAI instrumentation at all. Today that text is the retrieval `query_text` of every leg span; LLM prompts and replies join it when the chat spans ship (roadmap C-8). It includes repository code: retrieved context, diff hunks, the review system prompt. |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `NO_CONTENT` | `opentelemetry-util-genai` (an OpenTelemetry name, not `TRELIX_`-prefixed) | Where the text trelix handed over goes: `SPAN_ONLY` puts it on span attributes (`gen_ai.retrieval.query.text` on the leg spans), `EVENT_ONLY` puts it on the Logs signal (below), `SPAN_AND_EVENT` does both, `NO_CONTENT` (also what an unset or invalid value becomes) discards it. |
+
+The trelix flag is an AND-gate in front of the OpenTelemetry one. A host process that opted another
+library into content capture with `SPAN_ONLY` does not also receive trelix's query text (and, later,
+prompts and repository code) unless it sets `TRELIX_OTEL_CAPTURE_CONTENT=true` as well. The cost is
+two switches to turn on, which is why the inert combination warns (below).
+
+**The Logs signal.** `EVENT_ONLY`/`SPAN_AND_EVENT`, or `OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT=true`,
+also emit one `gen_ai.client.inference.operation.details` log record per chat call on the Logs signal
+(content-free under `NO_CONTENT`); trelix installs no `LoggerProvider`, so these go nowhere unless the
+host configures one. Retrieval spans emit no such record (checked on `opentelemetry-util-genai` 1.0b0),
+so until the chat spans exist `EVENT_ONLY` records nothing from trelix at all.
+
+**One WARNING when the trelix flag is inert.** With `TRELIX_OTEL_CAPTURE_CONTENT=true` and the upstream
+mode `NO_CONTENT`, trelix logs once (best effort: parallel retrieval legs on that first query may
+repeat the line), on the first span that would have carried text:
+
+```
+TRELIX_OTEL_CAPTURE_CONTENT is true but OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT is NO_CONTENT (unset or invalid) — no prompt, reply or query text will be recorded. Set it to SPAN_ONLY, EVENT_ONLY or SPAN_AND_EVENT.
+```
+
+The decision is the memoised `TelemetryHandler`'s (`should_capture_content()`, fixed when the handler is
+built on the first span), not a re-read of the environment, so a value exported into a running process
+does not silence it until restart. On `opentelemetry-util-genai` 1.2b0, which reads the variable once,
+that is also what the spans carry; on 1.0b0 and 1.1b0 the span attribute follows the live variable (see
+the leg table above), so a late `SPAN_ONLY` export puts the query text on the spans from then on while
+the one-time warning stands.
+
+**Malformed values.** `TRELIX_OTEL_CAPTURE_CONTENT` is a pydantic boolean, the same parser as
+`TRELIX_OTEL_ENABLED`: `true/1/yes/on` and `false/0/no/off` (case-insensitive, no surrounding spaces);
+anything else, including a blank value, makes `RetrievalConfig()` raise. Where the embedding counters
+resolve the flag from the environment, that is swallowed into "telemetry off, content off"; on every
+`IndexConfig` construction it surfaces as the existing `Configuration error: TRELIX_OTEL_CAPTURE_CONTENT:
+Input should be a valid boolean...` and exit 1 where the CLI catches it (`trelix search`), and as an
+uncaught traceback (exit 1) in `trelix review`, identical to a malformed `TRELIX_OTEL_ENABLED` today. The
+hosted GitHub App passes every `TRELIX_*` name to its review child, so a typo there fails every review.
 
 ---
 
@@ -201,7 +247,7 @@ The `trelix.*`-namespaced pipeline-stage spans (fusion/expansion/rerank/etc.) ar
 This is additive — it does not replace either of trelix's existing telemetry mechanisms:
 
 - **`TelemetryWriter`** (`TRELIX_TELEMETRY_ENABLED=true`) — writes one row per `retrieve()` call to the `query_telemetry` SQLite table (query text, intent, latency, result count, expansion columns) in the index DB. The only reader is the `trelix telemetry` CLI report. `trelix eval` does **not** read this table — it re-runs the queries in a golden JSONL file live through `Retriever` and computes nDCG@10 / recall@10 / MRR from those fresh results, so telemetry can be off and `eval` still works. (Earlier revisions of this doc claimed `eval` consumed the telemetry table; that was never true.)
-- **Debug trace JSON** (always on unless commented out in `retriever.py`) — writes a structured `.trelix/debug/<ts>_<slug>.json` file per query with plan/legs/fusion/expansion/rerank/assembly data.
+- **Debug trace JSON** (always on unless commented out in `retriever.py`) — writes a structured `debug/<ts>_<slug>.json` file per query, beside the index (`<repo>/.trelix/debug/` for the default `TRELIX_STORE_DB_PATH`; an index kept elsewhere, as a `trelix eval-suite` run keeps it, gets its traces there and the source tree stays untouched), with plan/legs/fusion/expansion/rerank/assembly data.
 
 Use OTel tracing when you want to export spans to an existing observability stack (Jaeger, Grafana Tempo, Honeycomb, Datadog, etc. — anything that accepts OTLP). Use the other two when you want local-file or in-DB analysis without standing up a collector.
 
@@ -216,7 +262,7 @@ The v3.0.0 audit trail (`TRELIX_AUDIT_ENABLED=true`, documented in [AUDIT.md](AU
 | Question | Who did what, when, and was it allowed? | How did retrieval perform over time? | Where did the time go inside one query? |
 | Unit | one row per **HTTP request** | one row per **`retrieve()` call** | one span per pipeline stage/leg |
 | Records caller identity | **yes** (`principal` — `sub@iss` or `static-token`) | no | no |
-| Records query text | no (deliberately) | **yes**, verbatim | only when `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `SPAN_ONLY` or `SPAN_AND_EVENT` (default `NO_CONTENT`: not recorded) |
+| Records query text | no (deliberately) | **yes**, verbatim | only with `TRELIX_OTEL_CAPTURE_CONTENT=true` and a span content mode upstream (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` = `SPAN_ONLY` or `SPAN_AND_EVENT`); both default off, so not recorded |
 | Stored in | a separate `audit.db` that survives re-indexing | `query_telemetry` in the **disposable** index DB | your OTLP backend |
 | Integrity | hash-chained, append-only, `trelix audit verify` | none — plain rows, deleted with the index | none — sampled, ephemeral |
 | Covers | the HTTP API only (not MCP, not the agent loop, not the CLI) | every `retrieve()` regardless of caller | every `retrieve()` regardless of caller |

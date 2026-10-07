@@ -6,27 +6,64 @@ Covers:
   (the single most important test — proves the feature is truly opt-in)
 - Correct gen_ai.* span attributes when enabled
 - Thread-context propagation across ThreadPoolExecutor via with_current_context()
+- The content gate: query text reaches a leg span only with TRELIX_OTEL_CAPTURE_CONTENT=true
+  (trelix's AND-gate in front of OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT), and a
+  one-time WARNING when the trelix flag is on but the upstream mode discards the text
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+
+_CANARY = "CANARY-QUERY-1a2b"
+_UPSTREAM_MODE = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+_INERT_WARNING = (
+    "TRELIX_OTEL_CAPTURE_CONTENT is true but OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+    " is NO_CONTENT (unset or invalid) — no prompt, reply or query text will be recorded."
+    " Set it to SPAN_ONLY, EVENT_ONLY or SPAN_AND_EVENT."
+)
 
 
 def _cfg(
     otel_enabled: bool,
     service_name: str = "trelix-test",
     otel_exporter_endpoint: str | None = None,
+    otel_capture_content: bool | None = None,
 ) -> SimpleNamespace:
-    return SimpleNamespace(
-        otel_enabled=otel_enabled,
-        otel_service_name=service_name,
-        otel_exporter_endpoint=otel_exporter_endpoint,
+    """A RetrievalConfig stand-in. `otel_capture_content=None` leaves the attribute OFF the
+    object, the shape of every config built before the flag existed."""
+    fields: dict[str, Any] = {
+        "otel_enabled": otel_enabled,
+        "otel_service_name": service_name,
+        "otel_exporter_endpoint": otel_exporter_endpoint,
+    }
+    if otel_capture_content is not None:
+        fields = {**fields, "otel_capture_content": otel_capture_content}
+    return SimpleNamespace(**fields)
+
+
+def _span_text(span: Any) -> str:
+    """Everything a finished span can carry text in, as one JSON string."""
+    events = [{"name": e.name, "attributes": dict(e.attributes or {})} for e in span.events]
+    return json.dumps(
+        {
+            "attributes": dict(span.attributes or {}),
+            "events": events,
+            "status": span.status.description,
+        },
+        default=str,
     )
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 # ---------------------------------------------------------------------------
@@ -190,21 +227,31 @@ def _test_tracer_provider():
 
 
 @pytest.fixture()
-def otel_test_exporter(_test_tracer_provider):
+def otel_test_exporter(_test_tracer_provider, monkeypatch: pytest.MonkeyPatch):
     """
     Yield the module-wide InMemorySpanExporter, cleared before each test.
     Also resets trelix's memoized TelemetryHandler so _get_handler() rebuilds
     it against the real (already-installed) TracerProvider on next use,
     since a freshly-imported handler observed the ProxyTracerProvider only
     once, at first import.
+
+    The two upstream content variables are removed BEFORE the handler is reset:
+    the handler reads them once, when it is built, so a developer shell with
+    SPAN_ONLY exported would otherwise leak into every rebuilt handler. The
+    content-gate state (`_env_otel_settings`, `_capture_inert_warned`) is reset
+    alongside the handler so each test starts from "never warned".
     """
     import trelix.retrieval.otel_tracing as otel_tracing
 
+    monkeypatch.delenv(_UPSTREAM_MODE, raising=False)
+    monkeypatch.delenv("OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT", raising=False)
     _test_tracer_provider.clear()
     prev_handler = otel_tracing._handler
     prev_service_name = otel_tracing._handler_service_name
     otel_tracing._handler = None
     otel_tracing._handler_service_name = None
+    monkeypatch.setattr(otel_tracing, "_env_otel_settings", None)
+    monkeypatch.setattr(otel_tracing, "_capture_inert_warned", False)
     try:
         yield _test_tracer_provider
     finally:
@@ -338,3 +385,282 @@ class TestThreadContextPropagation:
         spans = {s.name: s for s in otel_test_exporter.get_finished_spans()}
         child = spans["child_leg_unwrapped"]
         assert child.parent is None or child.parent.span_id != root_span_id
+
+
+# ---------------------------------------------------------------------------
+# Content gate — TRELIX_OTEL_CAPTURE_CONTENT in front of the upstream opt-in
+# ---------------------------------------------------------------------------
+
+
+class _RecordingHandler:
+    """Stands in for TelemetryHandler: keeps every invocation trelix asked for, so a test can
+    see what trelix ASSIGNED (not what the library later chose to emit)."""
+
+    def __init__(self, captures: bool) -> None:
+        self.invocations: list[SimpleNamespace] = []
+        self._captures = captures
+
+    def retrieval(self, *, data_source_id: str) -> SimpleNamespace:
+        invocation = SimpleNamespace(
+            data_source_id=data_source_id, stop=lambda: None, fail=lambda exc: None
+        )
+        self.invocations.append(invocation)
+        return invocation
+
+    def should_capture_content(self) -> bool:
+        return self._captures
+
+
+class TestContentGateOnTheInvocation:
+    """The gate as trelix applies it, against a recording fake handler: no opentelemetry
+    needed, so these run in the default CI job without the `otel` extra."""
+
+    @pytest.fixture()
+    def recording_handler(self, monkeypatch: pytest.MonkeyPatch) -> _RecordingHandler:
+        import trelix.retrieval.otel_tracing as otel_tracing
+
+        handler = _RecordingHandler(captures=True)
+        monkeypatch.setattr(otel_tracing, "_handler_for", lambda cfg: handler)
+        monkeypatch.setattr(otel_tracing, "_capture_inert_warned", False)
+        return handler
+
+    def test_query_text_is_never_assigned_when_the_flag_is_absent(
+        self, recording_handler: _RecordingHandler
+    ) -> None:
+        """A config built before the flag existed (no attribute at all) means OFF.
+
+        MUTATION that must make this fail: assign `query_text` unconditionally.
+        """
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        with retrieval_leg_span(_cfg(otel_enabled=True), "vector", query_text=_CANARY, top_k=10):
+            pass
+
+        (invocation,) = recording_handler.invocations
+        assert not hasattr(invocation, "query_text")
+        assert invocation.top_k == 10.0
+
+    def test_query_text_is_never_assigned_when_the_flag_is_false(
+        self, recording_handler: _RecordingHandler
+    ) -> None:
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        cfg = _cfg(otel_enabled=True, otel_capture_content=False)
+        with retrieval_leg_span(cfg, "bm25", query_text=_CANARY, top_k=5):
+            pass
+
+        (invocation,) = recording_handler.invocations
+        assert not hasattr(invocation, "query_text")
+
+    def test_query_text_is_assigned_when_the_flag_is_true(
+        self, recording_handler: _RecordingHandler
+    ) -> None:
+        """MUTATION that must make this fail: invert the gate (`not capture_content_enabled`)."""
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        cfg = _cfg(otel_enabled=True, otel_capture_content=True)
+        with retrieval_leg_span(cfg, "vector", query_text=_CANARY, top_k=10):
+            pass
+
+        (invocation,) = recording_handler.invocations
+        assert invocation.query_text == "CANARY-QUERY-1a2b"
+
+    def test_inert_capture_warns_once_across_spans_with_a_fake_handler(
+        self, recording_handler: _RecordingHandler, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The fake says it will not capture; two spans with the flag on -> ONE warning."""
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        recording_handler._captures = False
+        cfg = _cfg(otel_enabled=True, otel_capture_content=True)
+        with caplog.at_level(logging.WARNING, logger="trelix.retrieval.otel"):
+            for leg in ("vector", "bm25"):
+                with retrieval_leg_span(cfg, leg, query_text="q", top_k=1):
+                    pass
+
+        assert [r.getMessage() for r in _warnings(caplog)] == [_INERT_WARNING]
+
+
+class TestContentGateOnRealSpans:
+    """R5(e): what a finished span carries, with the upstream opt-in set to SPAN_ONLY."""
+
+    def test_upstream_span_only_alone_puts_no_query_text_on_the_span(
+        self, otel_test_exporter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The host opted another library into content capture; trelix's text stays home.
+
+        MUTATION that must make this fail: hand `query_text` to the invocation unconditionally.
+        """
+        pytest.importorskip("opentelemetry.util.genai", reason="requires pip install trelix[otel]")
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        monkeypatch.setenv(_UPSTREAM_MODE, "SPAN_ONLY")
+        with retrieval_leg_span(_cfg(otel_enabled=True), "vector", query_text=_CANARY, top_k=10):
+            pass
+
+        spans = otel_test_exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert "gen_ai.retrieval.query.text" not in spans[0].attributes
+        assert all("CANARY-QUERY-1a2b" not in _span_text(s) for s in spans)
+
+    def test_both_switches_on_put_the_query_text_on_the_span(
+        self, otel_test_exporter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pytest.importorskip("opentelemetry.util.genai", reason="requires pip install trelix[otel]")
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        monkeypatch.setenv(_UPSTREAM_MODE, "SPAN_ONLY")
+        cfg = _cfg(otel_enabled=True, otel_capture_content=True)
+        with retrieval_leg_span(cfg, "vector", query_text=_CANARY, top_k=10):
+            pass
+
+        spans = otel_test_exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].attributes["gen_ai.retrieval.query.text"] == "CANARY-QUERY-1a2b"
+
+    def test_trelix_flag_alone_puts_no_query_text_on_the_span(self, otel_test_exporter) -> None:
+        """Upstream unset (NO_CONTENT): the library drops the text trelix handed over."""
+        pytest.importorskip("opentelemetry.util.genai", reason="requires pip install trelix[otel]")
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        cfg = _cfg(otel_enabled=True, otel_capture_content=True)
+        with retrieval_leg_span(cfg, "vector", query_text=_CANARY, top_k=10):
+            pass
+
+        spans = otel_test_exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert all("CANARY-QUERY-1a2b" not in _span_text(s) for s in spans)
+
+
+class TestInertCaptureWarning:
+    """R5(g): the one-time WARNING when the trelix flag is on and upstream is NO_CONTENT."""
+
+    def test_warns_exactly_once_for_two_spans(
+        self, otel_test_exporter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """MUTATIONS that must make this fail: remove the call (0 records); warn on every
+        span instead of once (2 records)."""
+        pytest.importorskip("opentelemetry.util.genai", reason="requires pip install trelix[otel]")
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        cfg = _cfg(otel_enabled=True, otel_capture_content=True)
+        with caplog.at_level(logging.WARNING, logger="trelix.retrieval.otel"):
+            for leg in ("vector", "bm25"):
+                with retrieval_leg_span(cfg, leg, query_text="q", top_k=1):
+                    pass
+
+        records = _warnings(caplog)
+        assert len(records) == 1
+        assert "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT" in records[0].getMessage()
+        assert records[0].getMessage() == _INERT_WARNING
+
+    def test_no_warning_when_the_trelix_flag_is_off(
+        self, otel_test_exporter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Nothing was asked for, so nothing is inert — the default must stay silent."""
+        pytest.importorskip("opentelemetry.util.genai", reason="requires pip install trelix[otel]")
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        with caplog.at_level(logging.WARNING, logger="trelix.retrieval.otel"):
+            with retrieval_leg_span(_cfg(otel_enabled=True), "vector", query_text="q", top_k=1):
+                pass
+
+        assert _warnings(caplog) == []
+
+    def test_no_warning_when_upstream_captures(
+        self, otel_test_exporter, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pytest.importorskip("opentelemetry.util.genai", reason="requires pip install trelix[otel]")
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        monkeypatch.setenv(_UPSTREAM_MODE, "SPAN_ONLY")
+        cfg = _cfg(otel_enabled=True, otel_capture_content=True)
+        with caplog.at_level(logging.WARNING, logger="trelix.retrieval.otel"):
+            with retrieval_leg_span(cfg, "vector", query_text="q", top_k=1):
+                pass
+
+        assert _warnings(caplog) == []
+
+    def test_the_memoised_handler_decides_not_the_live_environment(
+        self, otel_test_exporter, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The handler reads the upstream variable once, when it is built. A value exported
+        afterwards changes nothing about what the spans carry, so the warning must follow the
+        handler, not the environment.
+
+        MUTATION that must make this fail: decide from
+        `opentelemetry.util.genai.utils.get_content_capturing_mode()` (a re-read of the
+        environment) instead of `handler.should_capture_content()` -> 0 records.
+        """
+        pytest.importorskip("opentelemetry.util.genai", reason="requires pip install trelix[otel]")
+        from trelix.retrieval.otel_tracing import retrieval_leg_span
+
+        with caplog.at_level(logging.WARNING, logger="trelix.retrieval.otel"):
+            # Build (and memoise) the handler while upstream is unset: it decides NO_CONTENT.
+            with retrieval_leg_span(_cfg(otel_enabled=True), "vector", query_text="q", top_k=1):
+                pass
+            assert _warnings(caplog) == []
+            monkeypatch.setenv(_UPSTREAM_MODE, "SPAN_ONLY")
+            cfg = _cfg(otel_enabled=True, otel_capture_content=True)
+            with retrieval_leg_span(cfg, "bm25", query_text="q", top_k=1):
+                pass
+
+        assert len(_warnings(caplog)) == 1
+
+
+class TestCaptureContentConfig:
+    """R5(f): the RetrievalConfig field and what a malformed value does."""
+
+    def test_default_is_false(self) -> None:
+        """MUTATION that must make this fail: `default=True` in config.py."""
+        from trelix.core.config import RetrievalConfig
+
+        assert RetrievalConfig.model_fields["otel_capture_content"].default is False
+        assert RetrievalConfig(_env_file=None).otel_capture_content is False
+
+    def test_env_true_turns_it_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        monkeypatch.setenv("TRELIX_OTEL_CAPTURE_CONTENT", "true")
+        assert RetrievalConfig(_env_file=None).otel_capture_content is True
+
+    @pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False)])
+    def test_env_value_reaches_the_environment_resolution_path(
+        self, monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
+    ) -> None:
+        """`capture_content_enabled()` with no cfg (the embedder's path today, the chat spans'
+        in PR 3) resolves TRELIX_OTEL_CAPTURE_CONTENT through RetrievalConfig.
+
+        MUTATION that must make this fail: replace `bool(resolved.otel_capture_content)` in
+        `_otel_settings` with a constant (`True` fails "false", `False` fails "true") or with
+        `bool(resolved.otel_enabled)` (fails "true").
+        """
+        import trelix.retrieval.otel_tracing as otel_tracing
+
+        monkeypatch.setenv("TRELIX_OTEL_CAPTURE_CONTENT", value)
+        monkeypatch.setattr(otel_tracing, "_env_otel_settings", None)
+        assert otel_tracing._otel_settings(None) == (False, "trelix", None, expected)
+        assert otel_tracing.capture_content_enabled() is expected
+
+    @pytest.mark.parametrize("value", ["maybe", ""])
+    def test_malformed_value_raises_on_construction_and_resolves_to_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """pydantic's bool parser rejects it (every IndexConfig construction raises); the
+        environment-resolution path swallows that into "telemetry off, content off".
+
+        MUTATION that must make this fail: change the swallow-path fallback in
+        `_otel_settings` to `_OtelSettings(False, "trelix", None, True)`. (A `default=True`
+        on the field does NOT reach this path — `test_default_is_false` pins that.)
+        """
+        from pydantic import ValidationError
+
+        import trelix.retrieval.otel_tracing as otel_tracing
+        from trelix.core.config import RetrievalConfig
+
+        monkeypatch.setenv("TRELIX_OTEL_CAPTURE_CONTENT", value)
+        with pytest.raises(ValidationError):
+            RetrievalConfig(_env_file=None)
+
+        monkeypatch.setattr(otel_tracing, "_env_otel_settings", None)
+        assert otel_tracing._otel_settings(None) == (False, "trelix", None, False)

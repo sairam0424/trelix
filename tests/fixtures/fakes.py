@@ -61,6 +61,41 @@ class FakeEmbedder(BaseEmbedder):
         return self._dimension
 
 
+class CountingEmbedder(FakeEmbedder):
+    """``FakeEmbedder`` that records every ``embed``/``embed_async`` call, for the
+    embedding-cache tests (``test_embedding_cache*.py``).
+
+    Two differences from its parent, both load-bearing there:
+
+    * ``calls`` keeps each call's texts as its own list, so "the inner embedder saw
+      ``["c"]`` once" is distinguishable from "it saw ``"c"`` somewhere".
+    * Components are ``digest[i] / 256.0`` rather than ``/ 255.0``: every ``k/256`` with
+      ``k < 256`` is exactly representable as a float32, so a vector read back from the
+      cache (stored as float32) compares EQUAL to the one the embedder produced. With
+      ``/255.0`` a hit would differ from a miss in the low bits and every equality
+      assertion would need a rounding helper.
+    """
+
+    def __init__(self, dimension: int = 4) -> None:
+        super().__init__(dimension)
+        self.calls: list[list[str]] = []
+
+    @property
+    def texts(self) -> list[str]:
+        return [t for call in self.calls for t in call]
+
+    def _vector_for(self, text: str) -> list[float]:
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        return [digest[i % len(digest)] / 256.0 for i in range(self._dimension)]
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        return [self._vector_for(t) for t in texts]
+
+    async def embed_async(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
+
 # ---------------------------------------------------------------------------
 # FakeVectorStore
 # ---------------------------------------------------------------------------

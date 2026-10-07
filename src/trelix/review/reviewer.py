@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from trelix.core.index_check import IndexNotFoundError, require_index
 from trelix.llm.finish_reasons import CONTENT_FILTER, LENGTH, PAUSED, REFUSAL, STOP
+from trelix.llm.offline import PROMPT_TRUNCATED
 from trelix.llm.prompt import fenced_block
 from trelix.review.hunk_status import (
     HunkResult,
@@ -133,6 +134,16 @@ class LLMNotConfiguredError(RuntimeError):
 
 def _error_result(hunk: DiffHunk, detail: str) -> HunkResult:
     return HunkResult(hunk.file_path, hunk.new_start, HunkStatus.ERROR, detail)
+
+
+def _prompt_truncated(response: Any) -> bool:
+    """True when the backend saw a local server cut the prompt (`ChatResponse.signals`).
+
+    Only a list counts: a reply whose `signals` is some other object (a test double) is read as
+    carrying no signal rather than guessed at.
+    """
+    signals = getattr(response, "signals", None)
+    return isinstance(signals, list) and PROMPT_TRUNCATED in signals
 
 
 class DiffReviewer:
@@ -320,7 +331,9 @@ class DiffReviewer:
         limit = self._config.review_max_tokens
         response = self._call(client, user_content, limit)
         used, retried, retry_failed = limit, False, False
-        if self._effective_finish(response, used) in _RETRYABLE:
+        # A bigger output cap cannot help when the input was cut: no retry for that hunk.
+        cut_off = self._effective_finish(response, used) in _RETRYABLE
+        if cut_off and not _prompt_truncated(response):
             larger = min(limit * _RETRY_FACTOR, _RETRY_CEILING)
             if larger > limit:
                 logger.info(
@@ -387,6 +400,11 @@ class DiffReviewer:
         def outcome(status: HunkStatus, detail: str = "", kept: int = 0) -> HunkResult:
             return HunkResult(hunk.file_path, hunk.new_start, status, detail, kept)
 
+        if _prompt_truncated(response):
+            # The model never saw the whole hunk, so nothing in the reply is salvaged: findings
+            # against half a prompt would carry wrong line numbers into a published Check. With
+            # nothing kept, a review whose every hunk was cut this way is one that did not run.
+            return _HunkReview([], outcome(HunkStatus.TRUNCATED, PROMPT_TRUNCATED))
         finish = self._effective_finish(response, used)
         is_text = isinstance(response.content, str)
         content = response.content if is_text else ""

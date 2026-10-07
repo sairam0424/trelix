@@ -14,8 +14,9 @@ Flow:
      direct hits ordered first, instead of returning a thin result as complete.
      The `breadth_floor` trace section records the decision on every such query.
 
-Debug tracing: every query writes a structured JSON file to .trelix/debug/
-relative to the project root configured in IndexConfig.repo_path.
+Debug tracing: every query writes a structured JSON file to a `debug/` directory beside the
+index (`IndexConfig.db_path_resolved.parent`), which is `.trelix/debug/` under
+`IndexConfig.repo_path` for the default `store.db_path`.
 Each file captures all pipeline stages: plan -> legs -> fusion -> expansion
 -> rerank -> assembly.
 To disable: comment out the self._trace(...) calls in this file.
@@ -295,8 +296,11 @@ class Retriever:
         except Exception as exc:
             logger.debug("DimensionGuard.check failed (non-fatal): %s", exc)
 
-        # Debug output dir: <repo_root>/.trelix/debug/
-        self._debug_dir = Path(config.repo_path) / ".trelix" / "debug"
+        # Debug output dir: beside the index, `<db_path's directory>/debug/`, which is
+        # `<repo_root>/.trelix/debug/` for the default `store.db_path`. Anchored on the index
+        # and not on the repository so that an index kept outside the source tree (a suite run
+        # measuring a pristine clone) writes nothing into the source tree.
+        self._debug_dir = config.db_path_resolved.parent / "debug"
 
         # Memoized SparseEmbedder — instantiated at most once per Retriever.
         # _run_subquery_legs() is called once per sub-query; without this slot the

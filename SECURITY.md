@@ -52,6 +52,32 @@ trelix processes local repository contents and makes network calls to configured
   do not warn. See "trelix warned about SQLite WAL reset" in
   [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
+### Embedding cache on disk (`TRELIX_EMBEDDING_CACHE_ENABLED`)
+
+Off by default; nothing is written. When on, `Indexer` stores the float32 vector of every chunk
+it embeds in `$XDG_CACHE_HOME/trelix/embeddings/<fingerprint>.db` (else
+`~/.cache/trelix/embeddings/`, or `TRELIX_EMBEDDING_CACHE_DIR`, which must be an absolute path),
+keyed by `sha256(chunk_text)`. The file holds no chunk text — hashes and vectors only — but a
+vector is a lossy encoding of the text, and the hash lets anyone who can read the file test
+whether a given text was ever indexed (membership inference). The cache therefore carries the
+sensitivity of every index that wrote to it.
+
+What the code does about it: the directory is created `0o700` and each file created `0o600`
+(POSIX; Windows applies neither); the location comes only from the operator environment
+(`TRELIX_EMBEDDING_CACHE_DIR`, `XDG_CACHE_HOME`, `HOME`), never from the repository or the
+cwd; a relative directory, a `TRELIX_EMBEDDING_CACHE_MAX_MB` below 1, or an unusable directory
+stops the run before any model is loaded rather than running uncached; indexed text is hashed and
+its vector stored, never interpreted.
+
+What it does not do: the hosted GitHub App (`infra/github-app`) forwards every `TRELIX_*` host
+variable except `TRELIX_APP_*` and `TRELIX_GIT_TOKEN` to its `trelix index` child and passes
+`HOME` and `XDG_CONFIG_HOME`, so the child also reads the operator env file. An App host that sets
+`TRELIX_EMBEDDING_CACHE_ENABLED=true` in either place turns the cache on for every tenant's
+index run, and every tenant then shares one `<fingerprint>.db` — a tenant who can read that file
+can test whether another tenant's text was embedded. Never set it on a multi-tenant host. To
+remove a cache, delete the `<fingerprint>.db` files (and any `-journal` sidecar) in that
+directory.
+
 ### REST API — /graph/visualize output path constraint
 
 The `output` query parameter on `GET /graph/visualize` is validated server-side:
@@ -123,6 +149,50 @@ is validated server-side:
   `federation_search_all` call, preventing a scripted/adversarial MCP
   client from growing the registry or fan-out unboundedly
 
+### Claude Code plugin — what it runs, reads and writes (`plugins/trelix/`)
+
+The plugin (`.claude-plugin/marketplace.json`, `plugins/trelix/`) runs exactly two
+commands, both listed with their purpose in `plugins/trelix/README.md`:
+
+- `uvx --from trelix-mcp==<pin> trelix-mcp`: the MCP server, the same `trelix-mcp`
+  that `claude mcp add trelix -- trelix-mcp` registers, at the pinned published
+  release. Everything above about the server applies to it unchanged.
+- `uv run --no-project --script "${CLAUDE_PLUGIN_ROOT}/scripts/session_start.py"`,
+  the SessionStart hook (`startup`, `resume`, `clear`; 15 s timeout). The script is
+  standard-library Python (a test pins its import roots and that the name `urlopen`
+  does not appear in it), makes no network call, reads `CLAUDE_PROJECT_DIR` or the
+  hook's stdin `cwd`, and opens only `<project>/.trelix/index.db`, through a
+  `mode=ro` SQLite URI: a missing index is not created and a write would fail
+  (SQLite may create empty `-wal`/`-shm` sidecars beside an existing WAL index, as
+  any read-only open does; when `.trelix/` is not writable and they are absent it
+  cannot open a WAL index at all, and the hook prints nothing). When the index
+  records the commit it was built from (checked against `^[0-9a-f]{7,64}$` before
+  it enters argv) the script runs one child,
+  `git -C <project> rev-list --count <commit>..HEAD`, with
+  `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0` and a 5 s timeout. It prints at
+  most 1,000 characters (the project path, row counts, the build time, 12
+  characters of the commit, the distance, the embedder provider; never a model
+  name, never a key) and exits 0 on every path; on an error it prints nothing and
+  writes `trelix session_start: skipped (<exception type>)` to stderr, which Claude
+  Code keeps in its debug log only.
+
+The plugin files carry no secrets and set no environment variables (`.mcp.json` has
+no `env`; provider keys reach the server from the user's shell or
+`~/.config/trelix/env`). Hook commands run with the user's permissions and inherit
+Claude Code's environment, outside any sandbox (a paraphrase of the hooks
+documentation), on the repository the user opened and Claude Code's own trust dialog
+accepted; beyond the commit-shape check the hook is not hardened against a hostile
+repository.
+
+The skill's `allowed-tools` pre-approves `search_code`, `get_symbol` and
+`blast_radius`: the three tools annotated `readOnlyHint` on this repository's
+`develop` branch (`packages/trelix-mcp/tests/test_tool_readonly.py`). On the pinned
+3.4.3 a call to any of them against an unindexed repository creates an empty,
+gitignored `.trelix/index.db` and answers empty; nothing else is written. The grant
+is kept because the SessionStart line and the skill forbid searching before
+indexing, and it lasts one turn (Claude Code clears it at the next message); the
+pin bump to the next release makes the statement exact.
+
 ## Out of Scope
 
 - Vulnerabilities in third-party dependencies (report to upstream)
@@ -164,7 +234,7 @@ Exposure by default vs opt-in:
 | Path | Default | What reaches a model |
 | ---- | ------- | -------------------- |
 | `trelix index` | on | with the default `local` embedder (`EmbedderConfig.provider` in `core/config.py`), nothing leaves the machine; with any remote embedder, every chunk's text is sent to the embedding model (`indexing/indexer.py:959`, `:1021`) |
-| `trelix ask`, `GET /ask` | on | the assembled retrieval context (below) |
+| `trelix ask`, `GET /ask` | on | the assembled retrieval context (below). With `TRELIX_RETRIEVAL_CITATIONS=true` its blocks carry `[C#]` tags; the model's markers are read back as digits only (`retrieval/citations.py`), and the verifier opens only files the index named, under the repository root, for a newline count |
 | index-time file summaries | off — `TRELIX_FILE_SUMMARIES_ENABLED` (`core/config.py:1234-1237`) | file path, language, and top symbol signatures truncated to 80 chars (`indexing/file_summarizer.py:85-91`) |
 | agentic loop | off — `TRELIX_RETRIEVAL_AGENTIC` (`core/config.py:656-659`), or `--agentic`/`--session` (`cli/main.py:422-424`). **The MCP `ask_agent` tool ignores this** and forces the loop on unconditionally (`trelix_mcp/server.py:762`); it does require an LLM to be configured. | retrieval context plus prior-turn observations |
 | `trelix review` | opt-in command | diff hunk text plus retrieved context |

@@ -622,9 +622,13 @@ class TestDetailVocabulary:
             _reply(prose),
             _reply(prose, finish="unknown", raw="not a token!"),
             _reply(prose, finish="error", raw="x" * 200),
+            # A local server cut the prompt (tests/unit/test_reviewer_prompt_truncated.py).
+            ChatResponse(
+                content=prose, model="gpt-test", finish_reason="stop", signals=["prompt_truncated"]
+            ),
             RuntimeError(prose),
         )
-        hunks = [_hunk(f"f{i}.py", i + 1) for i in range(5)]
+        hunks = [_hunk(f"f{i}.py", i + 1) for i in range(6)]
 
         reviewer.review(hunks)
 
@@ -634,6 +638,7 @@ class TestDetailVocabulary:
             "no_review_array",
             "unknown:none",
             "error:none",
+            "prompt_truncated",
             "exception:RuntimeError",
         ]
         assert all(self._ALLOWED.fullmatch(d) for d in details)
