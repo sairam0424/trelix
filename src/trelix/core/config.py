@@ -464,7 +464,8 @@ class StoreConfig(BaseSettings):
 
     db_path: str = ".trelix/index.db"
 
-    # HNSW index settings (sqlite-vec ≥ 0.1.6)
+    # Accepted and inert: sqlite-vec has never shipped an HNSW (or any ANN) index, so the
+    # sqlite store is always an exact flat scan (store/vector.py). Public env names, kept.
     hnsw: bool = Field(default=True, alias="TRELIX_STORE_HNSW")
     hnsw_m: int = Field(default=16, alias="TRELIX_STORE_HNSW_M")
     hnsw_ef_construction: int = 200

@@ -496,6 +496,8 @@ An unrecognised model logs a WARNING and falls back to a flat `12,000`-token bud
 
 Selected with `TRELIX_STORE_BACKEND` (`sqlite` default, `qdrant`, `lance`). They differ in how a *write* can fail, which is what the rest of this section is about — retrieval quality is identical, since all three store the same vectors.
 
+On `sqlite`, `trelix index` and `trelix stats` print a `Flat-scan advisory` once the index passes the measured row threshold for its width ([CONFIGURATION.md § Storage](CONFIGURATION.md#storage)).
+
 | Backend | Upsert primitive | On a failed write |
 |---|---|---|
 | `sqlite` | `DELETE` + `INSERT` per chunk_id inside one transaction (sqlite-vec virtual tables reject `INSERT OR REPLACE`) | rolled back, then raised — nothing half-written |
@@ -608,9 +610,9 @@ Write-failure behaviour differs per backend — see [Vector Store Backends](#vec
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_STORE_BACKEND` | `sqlite` | Storage backend: `sqlite`, `qdrant`, `lance` |
-| `TRELIX_STORE_HNSW` | `true` | Enable HNSW O(log n) index |
-| `TRELIX_STORE_HNSW_M` | `16` | HNSW M parameter (graph connectivity) |
-| `TRELIX_STORE_HNSW_EF_SEARCH` | `50` | HNSW ef_search (recall vs speed) |
+| `TRELIX_STORE_HNSW` | `true` | **Inert.** Accepted and read nowhere: the sqlite store is always an exact flat scan; see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) |
+| `TRELIX_STORE_HNSW_M` | `16` | **Inert.** HNSW M parameter (graph connectivity); sqlite-vec has no HNSW index |
+| `TRELIX_STORE_HNSW_EF_SEARCH` | `50` | **Inert.** HNSW ef_search (recall vs speed); sqlite-vec has no HNSW index |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
 | `QDRANT_API_KEY` | — | Qdrant API key |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |

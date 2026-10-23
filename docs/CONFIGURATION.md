@@ -342,6 +342,16 @@ echo "dist/" >> .gitignore
 | `QDRANT_TIMEOUT` | `10.0` | Client request timeout in seconds — raise for Cloud deployments with higher network latency |
 | `TRELIX_STORE_BM25_READ_POOL_SIZE` | `0` | Number of read-only SQLite connections to pool for parallel `bm25_search()` calls. `0` disables pooling (default — identical to the pre-existing single-connection behavior). When set, `Retriever` automatically calls `Database.enable_bm25_read_pool()` at construction time. |
 
+**Flat-scan advisory.** The `sqlite` backend is an exact flat scan: sqlite-vec has never shipped an HNSW or any other approximate-nearest-neighbour index, so every search compares the query with every stored vector and latency grows with rows × width. `TRELIX_STORE_HNSW`, `TRELIX_STORE_HNSW_M` and `TRELIX_STORE_HNSW_EF_SEARCH` (and the unaliased `hnsw_ef_construction` field) are accepted and inert. `trelix index` and `trelix stats` print a `Flat-scan advisory: ...` line on stderr, without changing the exit code, once the store holds more vectors (file-summary and sub-chunk rows included, because the scan pays for them too) than the measured threshold for the index's width:
+
+| Width (dimensions) | p95 search latency passes 100 ms near (rows) | Basis |
+|---|---|---|
+| 384 | 32,765 | measured |
+| 768 | 12,979 | measured |
+| 1024 | 28,956 | measured |
+
+The nearest measured width at or above the index's width applies; above 1024 dimensions the 1024 threshold is scaled by `1024 / width`. The numbers come from one machine (`apple-m4-shared`, an Apple M4) and are a guide, not a guarantee: see [the benchmark report](reports/vector-search-bench-2026-10-07-apple-m4-shared.json). That run was measured on a shared machine, so the thresholds are conservative, and they are not monotonic in width (the 768 figure sits below the 1024 one because load spiked during its 10,000-row cell); a quiet run will replace them. Past the threshold, consider `TRELIX_STORE_BACKEND=lance` or `qdrant`.
+
 ### Federation
 
 | Variable | Default | Description |

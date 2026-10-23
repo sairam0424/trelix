@@ -104,6 +104,7 @@ EXPECTED_SCOPE_KEYS = frozenset(
         "retrieval.fusion",
         "store.db",
         "store.dimension_guard",
+        "store.scale_advisory",
         "store.vector",
     }
 )
@@ -148,6 +149,7 @@ EXPECTED_SCOPE_WITNESS = {
     "retrieval.fusion": "src/trelix/retrieval/fusion.py",
     "store.db": "src/trelix/store/db.py",
     "store.dimension_guard": "src/trelix/store/dimension_guard.py",
+    "store.scale_advisory": "src/trelix/store/scale_advisory.py",
     "store.vector": "src/trelix/store/vector.py",
 }
 
@@ -194,6 +196,7 @@ EXPECTED_SCOPE_NON_WITNESS = {
     "retrieval.fusion": "src/trelix/retrieval/bm25.py",
     "store.db": "src/trelix/store/vector.py",
     "store.dimension_guard": "src/trelix/store/db.py",
+    "store.scale_advisory": "src/trelix/store/db.py",
     "store.vector": "src/trelix/store/db.py",
 }
 
