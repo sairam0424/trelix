@@ -81,7 +81,7 @@ def _http_argv(root: Path, *extra: str) -> list[str]:
 def _client(app: Any, mode: str) -> Client:
     transport = StreamableHttpTransport(
         "http://127.0.0.1:8766/mcp",
-        headers={"Authorization": "Bearer t0k"},
+        headers=dict([AUTH]),
         httpx_client_factory=asgi_factory(app),
     )
     return Client(transport, mode=mode)
