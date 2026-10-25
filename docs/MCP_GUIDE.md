@@ -22,9 +22,11 @@ Verify the binary is on your PATH:
 which trelix-mcp
 ```
 
-`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full` and `--root PATH` (section 8)
-— running it with no arguments starts the stdio MCP server. `trelix-mcp --version` prints the
-installed version, and the package exposes it too:
+`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full`, `--root PATH` (section 8) and
+the Streamable HTTP flags `--transport stdio|http`, `--host`, `--port`, `--path`, `--allowed-host`,
+`--stateful` and `--allow-unauthenticated` (section 19) — running it with no arguments starts the
+stdio MCP server. `trelix-mcp --version` prints the installed version, and the package exposes it
+too:
 
 ```bash
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
@@ -69,6 +71,16 @@ claude mcp list
 The server starts automatically whenever Claude Code launches a session. No further configuration is needed.
 Both options can coexist: the two servers' tools carry distinct prefixes (`mcp__trelix__*` and
 `mcp__plugin_trelix_trelix__*`).
+
+**Over HTTP.** A server started with `trelix-mcp --transport http --root /abs/repo` and a token
+(section 19) is added as a remote server rather than a command:
+
+```bash
+claude mcp add --transport http trelix http://127.0.0.1:8766/mcp --header "Authorization: Bearer $TRELIX_MCP_AUTH_TOKEN"
+```
+
+`--scope local|project|user` chooses where the entry is stored, as for a stdio server. The tools
+are the same fifteen; what differs is who starts the process and how it is reached.
 
 ---
 
@@ -289,7 +301,7 @@ What a client sees when results are left out:
 
 ### Errors
 
-An invalid input is answered with a tool error: `isError: true`, one text block holding the message, no `structuredContent`, and the session carries on (the VS Code extension shows the text; a model reads it and corrects the call). The message names the argument, shows what was given (cut to 200 characters) and says what would be valid. It is never a Python traceback, and the only path in it is the one the caller passed. The two subscription tools, `subscribe_resource` and `unsubscribe_resource`, accept any string and are outside this table.
+An invalid input is answered with a tool error: `isError: true`, one text block holding the message, no `structuredContent`, and the session carries on (the VS Code extension shows the text; a model reads it and corrects the call). The message names the argument, shows what was given (cut to 200 characters) and says what would be valid. It is never a Python traceback, and the only path in it is the one the caller passed. The two subscription tools, `subscribe_resource` and `unsubscribe_resource`, accept any string and are outside this table. Over HTTP (section 19) an exception the tool did not expect answers `isError: true` with `Error calling tool '<name>'` — no path, no traceback — while every `ToolError` text (this table, `No index found at ...`, the confinement refusal) is unchanged.
 
 | Input | Text |
 |-------|------|
@@ -1350,10 +1362,11 @@ The knowledge graph must be built separately from the index. Call `build_knowled
 
 ### MCP server crashes silently in Cursor / Windsurf
 
-`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full` and `--root PATH`, and has no
-log-file or log-level setting — it logs unconditionally to **stderr** at INFO via a hardcoded
-`logging.basicConfig`. To capture that stream, point the MCP host at a tiny wrapper that redirects
-stderr to a file:
+`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full`, `--root PATH` and the HTTP
+flags `--transport stdio|http`, `--host`, `--port`, `--path`, `--allowed-host`, `--stateful` and
+`--allow-unauthenticated` (section 19), and has no log-file or log-level setting — it logs
+unconditionally to **stderr** at INFO via a hardcoded `logging.basicConfig`. To capture that
+stream, point the MCP host at a tiny wrapper that redirects stderr to a file:
 
 ```bash
 cat > /usr/local/bin/trelix-mcp-logged <<'EOF'
@@ -1400,3 +1413,132 @@ trelix index ./my-repo
 ### Pagination returns duplicate results
 
 Duplicates indicate that the index changed between pages (a background re-index ran). Re-run the full query from `cursor=0` to get a consistent snapshot.
+
+---
+
+## 19. Streamable HTTP transport
+
+`trelix-mcp` serves stdio by default (section 3). `--transport http` serves the same fifteen tools
+over Streamable HTTP for a client that cannot spawn the process. Start it with a token and a root:
+
+```bash
+TRELIX_MCP_AUTH_TOKEN=... trelix-mcp --transport http --root /abs/repo
+```
+
+It binds `127.0.0.1:8766`, serves MCP at `/mcp` and answers `GET /health` without a credential.
+The tools, their parameters and results are those of section 8; stdio with no flags is unchanged.
+
+### Flags and variables
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--transport stdio\|http` | `stdio` | `http` needs at least one `--root` or `TRELIX_ALLOWED_REPO_ROOTS` (exit 2 without one) |
+| `--host HOST` | `127.0.0.1` | a hostname or IP address; an IPv6 literal may be bracketed (`[::1]` binds `::1`); a port here is refused — pass it with `--port`; a non-loopback address needs a token or `--allow-unauthenticated`; `127.1` is a hostname to the bind check, so write `127.0.0.1` |
+| `--port N` | `8766` | 1–65535 |
+| `--path PATH` | `/mcp` | must start with `/` and cannot be `/health` |
+| `--root PATH` (repeatable) | — | section 8; required over HTTP |
+| `--allowed-host HOST` (repeatable) | — | one more name the Host/Origin guard accepts; a comma list, a URL, a wildcard or a blank here is refused, and so is `*` (only the variable's `*` turns the guard off) |
+| `--stateful` | off | per-client sessions (see *Sessions and eras*) |
+| `--allow-unauthenticated` | off | serve a non-loopback bind with no token; one WARNING at start |
+
+| Variable | Fallback | Meaning |
+|---|---|---|
+| `TRELIX_MCP_AUTH_TOKEN` | `TRELIX_API_AUTH_TOKEN` | the bearer token: the first non-blank value, used as given, printable ASCII |
+| `TRELIX_MCP_ALLOWED_HOSTS` | `TRELIX_API_ALLOWED_HOSTS` | comma-separated hostnames the guard also accepts; `*` turns the guard off (one WARNING) |
+| `TRELIX_ALLOWED_REPO_ROOTS` | — | `os.pathsep`-separated roots, joined with `--root` |
+
+All three come from the process environment only (never a `.env` or `config.toml`). Six flags are
+`--transport http` only and a usage error on stdio: `--host`, `--port`, `--path`, `--allowed-host`,
+`--stateful` and `--allow-unauthenticated`.
+
+### What is refused, and with which text
+
+Start-up errors exit 2 with a usage message: an HTTP-only flag without `--transport http`
+(`--host, --port, --path, --allowed-host, --stateful and --allow-unauthenticated apply to
+--transport http only`); no root (`--transport http needs at least one --root or
+TRELIX_ALLOWED_REPO_ROOTS; every tool call names a repository path and paths outside these roots
+are refused`); a non-loopback bind with no token (`--host 0.0.0.0 is not a loopback address and
+no token is set; set TRELIX_MCP_AUTH_TOKEN (or TRELIX_API_AUTH_TOKEN), or pass
+--allow-unauthenticated to serve without one`); a port outside 1–65535 (`--port must be between
+1 and 65535, got 70000`); a path that does not start with `/` or is `/health` (`--path must start
+with / and cannot be /health, got 'health'`); a non-ASCII token (`the token in
+TRELIX_MCP_AUTH_TOKEN must be printable ASCII`); a host that is not a bare name or address
+(`--host must be a hostname or IP address, optionally in brackets, got 'example.com:9000'`); `*`
+as an `--allowed-host` (`--allowed-host * is not accepted; set TRELIX_MCP_ALLOWED_HOSTS=* to turn
+the guard off`); any other `--allowed-host` that is not one hostname or IP address, such as a comma
+list, a URL, a wildcard like `*.example` or a blank (`--allowed-host must be one hostname or IP
+address, optionally in brackets (repeat the flag for more), got 'a,b'`). A blank `--host` or
+`--path` is refused the same way (`got ''`), never defaulted. An invalid entry in
+`TRELIX_MCP_ALLOWED_HOSTS` is not refused: each one is dropped with a WARNING and the valid entries
+stay.
+
+Requests. With a token set, every request but `GET`/`HEAD /health` must carry
+`Authorization: Bearer <token>` or `X-Trelix-Api-Key: <token>` (each header at most once; any
+match authorises); otherwise `401` with `WWW-Authenticate: Bearer` and the body
+`{"detail": "Invalid or missing bearer token. Send Authorization: Bearer <token> or X-Trelix-Api-Key: <token> matching the server's TRELIX_MCP_AUTH_TOKEN (or TRELIX_API_AUTH_TOKEN)."}`.
+The Host/Origin guard is the REST API's (SECURITY.md) and is always on unless the allowed hosts
+are `*`: it accepts `localhost`, `127.0.0.1`, `::1`, the bind address when it is a specific one
+(`0.0.0.0` and `::` are accepted only when listed), every `--allowed-host` and the variable's
+names. A request under another `Host`, or with an `Origin` it does not allow (`null` included),
+answers `403` with
+`{"detail": "Request rejected: the Host or Origin header is not allowed for this trelix server. If the hostname is legitimate, add it to TRELIX_API_ALLOWED_HOSTS (comma-separated). Set TRELIX_API_ALLOWED_HOSTS=* to disable this check."}`,
+and `Sec-Fetch-Site: cross-site` answers `403` with
+`{"detail": "Request rejected: this trelix server refuses cross-site browser requests. Call it from a page served from the same host as the API, or set TRELIX_API_ALLOWED_HOSTS=* to disable this check."}`.
+The 403 text names `TRELIX_API_ALLOWED_HOSTS` because the check is the REST API's. `trelix-mcp`
+reads `TRELIX_MCP_ALLOWED_HOSTS` first and falls back to `TRELIX_API_ALLOWED_HOSTS` only when the
+MCP variable is unset or blank; when both are set, only the MCP one counts, including `*`.
+
+Tool calls. A `repo_path` (or `federation_add_repo`'s `path`) outside every root answers
+`isError: true` with `repo_path is not inside an allowed repository root` (section 8). An
+exception a tool did not expect answers `isError: true` with `Error calling tool '<name>'` — no
+path, no traceback — while every `ToolError` text (the table in section 8, `No index found at
+...`, the refusal above) is unchanged. Pass absolute paths: the tools do not expand `~`, so `~/repo`
+answers `repo_path does not exist: '~/repo'; pass the absolute path of the repository root.` (the
+confinement check does expand it, so it answers the refusal when your home is outside every root).
+
+### Sessions and eras
+
+Stateless by default: each `POST /mcp` stands alone, no `mcp-session-id` is issued and `GET /mcp`
+answers `405`. A client that opens a server-initiated (GET) stream needs `--stateful`, which keeps
+per-client sessions (`GET /mcp` without one answers `400`, `Missing session ID`); two caveats. Idle
+sessions: `fastmcp` 4.0.x never ends an idle one and 4.1.x ends it after 1800 s, the `mcp` SDK's
+default; `FASTMCP_HTTP_SESSION_IDLE_TIMEOUT=<seconds>` in the environment sets that timeout (`none`
+disables it on 4.1.x; 4.0.x fails to start on `none`), and no flag or `mcp.run` argument reaches
+it. Set it only together with `--stateful`: on `mcp` 2.0.x the default stateless server will not
+start with it (`session_idle_timeout is not supported in stateless mode`). Session cap: the SDK
+caps them at 10,000 from `mcp` 2.3.0 (the 2.0.0 floor has no cap).
+`ask_agent`'s clarify continuation works within one process on either setting. Both protocol eras
+(`2025-11-25` and `2026-07-28`) are negotiated on the one endpoint.
+
+### Behind a proxy
+
+`Host` must arrive as a listed name — a Kubernetes Service name included — or every request is
+`403` until it is added with `--allowed-host` or `TRELIX_MCP_ALLOWED_HOSTS`. Responses are
+`text/event-stream`: turn proxy buffering off and set the read timeout to at least the longest
+`index_codebase` you expect. TLS, `X-Forwarded-*` and CORS are the proxy's job; the server adds
+none.
+
+### Logging and health
+
+uvicorn writes each access line to **stdout** by default (`INFO: <client> - "POST /mcp HTTP/1.1"
+401 Unauthorized`: client, method, path and status; never a header). Section 18's wrapper
+redirects stderr only and misses them; under `--transport http` stdout is not the protocol
+channel, so capture both streams (`>>/tmp/trelix-mcp.log 2>&1`). The rest goes to stderr
+(section 18): `trelix-mcp starting (transport=http, 127.0.0.1:8766/mcp, stateless=True, roots=1)`
+(an IPv6 bind is bracketed, in the `--allow-unauthenticated` WARNING too: `[::1]:8766/mcp`),
+`Host/Origin guard is ON (allowed hosts: ...)`, one WARNING per rejected request — the bearer
+check names only the method and path (never the credential); the Host/Origin guard names the
+refused `Host` or `Origin` value — and uvicorn's own start-up and shutdown lines. FastMCP's
+start-up banner also asks PyPI once for a newer `fastmcp` (`GET https://pypi.org/pypi/fastmcp/json`,
+2 s timeout, cached 12 h); set `FASTMCP_CHECK_FOR_UPDATES=off` to keep the start off the network.
+`GET /health` answers `{"status": "ok", "version": "<trelix-mcp version>"}` under any `Host` and
+without a credential.
+
+### Checking a server
+
+```bash
+claude mcp add --transport http trelix http://127.0.0.1:8766/mcp --header "Authorization: Bearer $TRELIX_MCP_AUTH_TOKEN"   # lists 15 tools
+curl -si -X POST -H 'Authorization: Bearer wrong' http://127.0.0.1:8766/mcp | head -1                                       # HTTP/1.1 401
+curl -si -X POST -H 'Host: evil.example' -H "Authorization: Bearer $TRELIX_MCP_AUTH_TOKEN" http://127.0.0.1:8766/mcp | head -1   # HTTP/1.1 403
+# search_code with a repo_path outside --root answers: repo_path is not inside an allowed repository root
+```

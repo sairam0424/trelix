@@ -49,25 +49,36 @@ def _reset_retriever_cache():
 
 @pytest.fixture(autouse=True)
 def _restore_confinement(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Undo what main() or a test does to the singleton server's confinement.
+    """Undo what main() or a test does to the singleton server's confinement and error mask.
 
     `_install_confinement` sets `_allowed_roots` and appends a RepoConfinementMiddleware to
-    `mcp.middleware`. The test gets a copy of the middleware list, so what it appends never reaches
-    the next test, and `_allowed_roots` goes back to its value. An operator's exported
+    `mcp.middleware`; `--transport http` sets `mcp._mask_error_details`. The test gets a copy of
+    the middleware list, so what it appends never reaches the next test, and the two attributes go
+    back to their values, which is what makes calling main() per test safe. An operator's exported
     TRELIX_ALLOWED_REPO_ROOTS must not confine a test either.
     """
     monkeypatch.setattr(srv.mcp, "middleware", list(srv.mcp.middleware))
     monkeypatch.setattr(srv, "_allowed_roots", srv._allowed_roots)
+    monkeypatch.setattr(srv.mcp, "_mask_error_details", srv.mcp._mask_error_details)
     monkeypatch.delenv("TRELIX_ALLOWED_REPO_ROOTS", raising=False)
 
 
 @pytest.fixture(autouse=True)
 def _clean_output_limit_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """An operator's TRELIX_MCP_MAX_K, TRELIX_MCP_MAX_RESULT_CHARS or
-    TRELIX_MCP_RETRIEVER_CACHE_SIZE must not reach a test."""
-    monkeypatch.delenv("TRELIX_MCP_MAX_K", raising=False)
-    monkeypatch.delenv("TRELIX_MCP_MAX_RESULT_CHARS", raising=False)
-    monkeypatch.delenv("TRELIX_MCP_RETRIEVER_CACHE_SIZE", raising=False)
+    TRELIX_MCP_RETRIEVER_CACHE_SIZE, and an exported bearer token or Host allow-list
+    (TRELIX_MCP_AUTH_TOKEN, TRELIX_API_AUTH_TOKEN, TRELIX_MCP_ALLOWED_HOSTS,
+    TRELIX_API_ALLOWED_HOSTS), must not reach a test."""
+    for name in (
+        "TRELIX_MCP_MAX_K",
+        "TRELIX_MCP_MAX_RESULT_CHARS",
+        "TRELIX_MCP_RETRIEVER_CACHE_SIZE",
+        "TRELIX_MCP_AUTH_TOKEN",
+        "TRELIX_API_AUTH_TOKEN",
+        "TRELIX_MCP_ALLOWED_HOSTS",
+        "TRELIX_API_ALLOWED_HOSTS",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

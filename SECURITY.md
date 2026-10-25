@@ -20,7 +20,10 @@ home; the reporting facts live in the other file.
 trelix processes local repository contents and makes network calls to configured LLM/embedding providers. Security-sensitive areas include:
 
 - **Credential handling** — API keys are read from environment variables and never logged or written to disk
-- **MCP server** (trelix-mcp) — executes as a subprocess; only binds to stdio transport (not network)
+- **MCP server** (trelix-mcp) — stdio by default (a subprocess of the MCP client, no network);
+  `--transport http` binds `127.0.0.1:8766` by default, requires a token (`TRELIX_MCP_AUTH_TOKEN`)
+  for any non-loopback bind unless `--allow-unauthenticated`, keeps the Host/Origin guard on and
+  confines every tool call to `--root`/`TRELIX_ALLOWED_REPO_ROOTS` (see MCP over HTTP below)
 - **File system access** — **symlinks are followed by default, including out of the
   repository.** A symlink under `repo_path` whose target lives elsewhere is indexed,
   and because `rel_path` is computed on the unresolved path it is then reported as
@@ -130,6 +133,33 @@ configured the API is open, and a web page can reach `127.0.0.1` in two ways: fi
   still caught there by the `Host` check. Any other web app served from a loopback address,
   on any port, is an allowed origin. A browser request to `http://0.0.0.0:<port>` carries
   that `Host` and gets `403`.
+
+### MCP over HTTP (trelix-mcp --transport http)
+
+`trelix-mcp` serves stdio by default and nothing listens. `--transport http` serves Streamable
+HTTP on `127.0.0.1:8766/mcp` and is guarded from its first release:
+
+- **The same Host/Origin guard, always on.** The check above runs outermost on every request
+  (unless the allowed hosts are `*`), with `localhost`, `127.0.0.1`, `::1`, the bind address when
+  it is a specific one (`0.0.0.0` and `::` are accepted only when listed), every `--allowed-host`
+  and `TRELIX_MCP_ALLOWED_HOSTS` (fallback `TRELIX_API_ALLOWED_HOSTS`). FastMCP's own guard and the
+  MCP SDK's DNS-rebinding check are off, so there is exactly one allow-list and its 403 bodies are
+  the REST API's.
+- **A bearer token for anything beyond loopback.** `TRELIX_MCP_AUTH_TOKEN` (fallback
+  `TRELIX_API_AUTH_TOKEN`), process environment only, never argv or a `.env`. Every request but
+  `GET`/`HEAD /health` must carry `Authorization: Bearer <token>` or `X-Trelix-Api-Key: <token>`;
+  the comparison is `hmac.compare_digest` on bytes, the answer is a fixed `401` body with
+  `WWW-Authenticate: Bearer`, and no header value is logged. A non-loopback `--host` with no token
+  is a start-up error (exit 2) unless `--allow-unauthenticated`, which logs one warning.
+- **Confinement is required.** `--transport http` without a `--root` or
+  `TRELIX_ALLOWED_REPO_ROOTS` is a start-up error (exit 2), so every `repo_path` a remote client
+  names is checked against the roots before a tool runs.
+- **Unexpected errors are masked.** An exception a tool did not expect answers
+  `Error calling tool '<name>'` with no path or traceback; the deliberate `ToolError` texts are
+  unchanged. Over stdio the texts stay unmasked, as before.
+- **Stateless by default.** No session table and no server-initiated stream unless `--stateful`.
+- **What it is not.** No TLS, OAuth or CORS: a reverse proxy terminates TLS and must pass `Host`
+  as a listed name. Details and the exact texts: `docs/MCP_GUIDE.md` section 19.
 
 ### MCP federation tools — config_path confinement (v2.8.1+)
 

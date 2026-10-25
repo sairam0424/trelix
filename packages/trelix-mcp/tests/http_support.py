@@ -1,18 +1,23 @@
-"""Helpers for the trelix-mcp HTTP tests: a raw ASGI driver, the lifespan and an httpx2 factory.
+"""Helpers for the trelix-mcp HTTP tests: a raw ASGI driver, the lifespan, an httpx2 factory and
+`build_app`, the app `trelix-mcp <argv>` would serve.
 
-There is deliberately no `build_app` here: a test builds its own two-line echo app or a throwaway
-`FastMCP("throwaway")` whose `http_app(**http_app_kwargs(settings))` it calls directly, so what is
-pinned is the module under test and not a helper's idea of the wiring.
+`test_http_settings.py` and `test_http_bearer.py` pin `trelix_mcp.http` on its own (a two-line echo
+app, a throwaway `FastMCP("throwaway")`) and never call `build_app`. `test_http_transport.py`
+pins the wiring, so every app there comes from `build_app`, which runs the production `main()`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
+from unittest.mock import patch
 
 import httpx2
+import trelix_mcp.server as srv
 
 INIT_BODY = (
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25",'
@@ -103,3 +108,22 @@ def asgi_factory(app: Any) -> Any:
         )
 
     return factory
+
+
+def build_app(argv: list[str], environ: dict[str, str]) -> Any:
+    """The ASGI app `trelix-mcp <argv>` would serve, built through the production wiring:
+    `srv.main()` runs with `sys.argv` and `os.environ` patched and `srv.mcp.run` replaced, and the
+    kwargs `run` received, minus `transport`, `host` and `port`, are `http_app`'s. The autouse
+    `_restore_confinement` fixture undoes what `main()` did to the module server.
+    """
+    with (
+        patch.object(sys, "argv", ["trelix-mcp", *argv]),
+        patch.dict(os.environ, environ),
+        patch.object(srv.mcp, "run") as mock,
+    ):
+        srv.main()
+    mock.assert_called_once()
+    kwargs = dict(mock.call_args.kwargs)
+    for name in ("transport", "host", "port"):
+        kwargs.pop(name)
+    return srv.mcp.http_app(**kwargs)

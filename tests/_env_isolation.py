@@ -103,7 +103,15 @@ ENV_PREFIXES_TO_SCRUB: tuple[str, ...] = ("TRELIX_RETRIEVAL_COMPRESSION_RATIO_",
 # anyway. Overriding to "" (falsy, same as unset for every `if not val`
 # validate_config() check in this codebase) is what actually neutralizes
 # the .env value for the test process.
-UNSET_BY_DEFAULT: tuple[str, ...] = ("TRELIX_API_AUTH_TOKEN", "TRELIX_API_ALLOWED_HOSTS")
+UNSET_BY_DEFAULT: tuple[str, ...] = (
+    "TRELIX_API_AUTH_TOKEN",
+    "TRELIX_API_ALLOWED_HOSTS",
+    # `trelix-mcp --transport http` reads these three from the process environment; an exported
+    # token, Host allow-list or root list would otherwise shape an e2e or integration run.
+    "TRELIX_MCP_AUTH_TOKEN",
+    "TRELIX_MCP_ALLOWED_HOSTS",
+    "TRELIX_ALLOWED_REPO_ROOTS",
+)
 EMPTY_STRING_BY_DEFAULT: tuple[str, ...] = (
     "TRELIX_REVIEW_OUTCOME_FILE",
     "TRELIX_LINEAR_API_KEY",
