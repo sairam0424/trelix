@@ -329,7 +329,7 @@ def test_eval_synthesis_failure_prints_a_clean_error_not_a_traceback(tmp_path) -
     from trelix.store.dimension_guard import DimensionMismatchError
 
     exc = DimensionMismatchError(stored=768, current=1536, provider="openai")
-    with patch("trelix.eval.synthesis.SynthesisEvalHarness.run", side_effect=exc):
+    with patch("trelix.eval.synthesis.SynthesisEvalHarness.run_detailed", side_effect=exc):
         result = runner.invoke(app, ["eval-synthesis", str(tmp_path)])
 
     assert result.exit_code == 1

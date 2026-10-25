@@ -30,7 +30,7 @@ None of this exists in the existing code-search tooling available today.
 **What it does:** The entire index — vectors, BM25, call graph, import graph, file summaries — lives in a single SQLite file (`.trelix/index.db`) using WAL mode, FTS5, and sqlite-vec HNSW. No Docker, no Redis, no Postgres, no cloud account required.
 
 **Implementation:**
-- sqlite-vec HNSW provides O(log n) approximate nearest neighbor search inside a stock SQLite file
+- sqlite-vec provides exact nearest-neighbour search (a flat scan) inside a stock SQLite file; `trelix index` and `trelix stats` advise a larger backend once the measured threshold for the index's width is passed
 - FTS5 provides BM25 over symbol names, qualified names, docstrings, bodies, and LLM-generated context summaries
 - Call graph, import graph, and type edges stored as normalized SQLite tables — no graph database needed
 - Everything under `.trelix/` — gitignore it or commit it, your choice
@@ -260,7 +260,7 @@ retrieve → synthesize
 
 | Capability | Trelix | GitHub Copilot Workspace | Cursor | Sourcegraph Cody | pgvector DIY | OpenAI File Search |
 |------------|--------|--------------------------|--------|------------------|--------------|-------------------|
-| **Vector search** | ✅ HNSW sqlite-vec | ✅ cloud | ✅ cloud | ✅ cloud | ✅ Postgres | ✅ cloud |
+| **Vector search** | ✅ sqlite-vec (exact flat scan) | ✅ cloud | ✅ cloud | ✅ cloud | ✅ Postgres | ✅ cloud |
 | **BM25 keyword search** | ✅ FTS5 | ❌ | partial | ✅ | manual | ❌ |
 | **Exact/regex grep** | ✅ | ❌ | partial | ✅ | ❌ | ❌ |
 | **Call-graph expansion** | ✅ 3-priority resolution | ❌ | partial | partial | ❌ | ❌ |

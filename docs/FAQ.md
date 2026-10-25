@@ -144,7 +144,7 @@ trelix query ./my-repo "rate limiting middleware"
 
 trelix combines three complementary retrieval legs and merges their results with Reciprocal Rank Fusion (RRF):
 
-1. **Vector (dense) search** — ANN over sentence embeddings stored in sqlite-vec HNSW. Captures semantic similarity even when exact terms differ.
+1. **Vector (dense) search** — nearest-neighbour search over sentence embeddings stored in sqlite-vec (an exact flat scan; the `Flat-scan advisory` names the measured threshold). Captures semantic similarity even when exact terms differ.
 2. **Contextual BM25** — Full-text search over FTS5. Fast and precise for identifier names, function signatures, and exact tokens.
 3. **Grep search** — Regex/exact pattern matching over raw source. Required for case-sensitive symbol lookups.
 

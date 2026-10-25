@@ -47,6 +47,8 @@ make format         # ruff format
 make typecheck      # mypy
 ```
 
+`scripts/bench_vector_search.py` is a manual benchmark, not a test: it writes multi-gigabyte scratch files and takes 15-25 minutes on a quiet machine, so nothing in CI runs it. Run it with `--workdir` on a scratch volume outside the repository and `--label` naming the machine class (never a hostname); its reports are committed under `docs/reports/` and `tests/unit/test_bench_vector_search.py` checks their shape and that they were produced under sqlite-vec 0.1.9.
+
 **Note on CI checks:** The ruff format step runs as part of linting — files are auto-formatted before the diff-check, ensuring cross-platform consistency (Windows CRLF vs Unix LF).
 
 ### Running specific test subsets
@@ -166,6 +168,12 @@ The evaluation harness lives at `src/trelix/eval/` and is organized as:
 |------|----------------|
 | `ndcg.py` | Pure-Python ndcg_at_k, recall_at_k, mrr — no pandas dependency |
 | `harness.py` | EvalHarness.run(golden_path) — reads JSONL, retrieves, returns aggregate metrics |
+| `synthesis.py` | SynthesisEvalHarness.run_detailed(golden_path) — one `SynthesisRecord` per golden line; `run()` is their aggregate |
+| `synthesis_records.py` | `SynthesisRecord`, `aggregate_synthesis_metrics` (means with their denominators) and the `--per-query-out` file; pure |
+
+A synthesis golden line may carry the v2 fields `answerable`, `gold_answer` and `expected_citations`;
+the loader refuses a mistyped one with its line number (`validate_synthesis_entry` names the
+field; see `eval/README.md`).
 
 **Usage:**
 

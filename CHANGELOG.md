@@ -528,6 +528,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `retrieval.citations` was re-measured on this tree: 155 mutants, 154 killed, 1 survived, so its
   `survived` ceiling moves `0` → `1` for one equivalent mutant (`and` → `or` in the `lines` guard
   of `citation_as_json`, where a `Citation` has both line fields set or both `None`).
+- **`trelix eval-synthesis` reads golden v2 lines and keeps one record per query** (fifth of six
+  changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not answer
+  the question; this one adds the schema, the records and the per-query file, and the stacked PR that
+  follows extends this bullet with the abstention and citation metrics over those records). A golden
+  line may carry `answerable` (`true`/`false`; absent means `true`), `gold_answer` (a non-empty string,
+  stored and never scored) and `expected_citations` (a list of non-empty repo-relative paths, validated
+  and stored); a field of another type, or a line that is JSON but not an object, is refused with its
+  line number and no query runs (a non-object line used to crash the run). The harness keeps one
+  `SynthesisRecord` per line (`run_detailed`); the four GroUSE means run over the answerable records,
+  so the aggregate's keys are `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
+  `n_queries`, `unscoreable` and the new `n_unanswerable`, and the table gains the rows `Unanswerable
+  queries` and `Unscoreable queries` (that count existed and was never printed). A v1 file returns the
+  numbers it always did: three lines where the second query's retrieval raises still report
+  `hallucination_rate 0.3333` and `unscoreable 1.0`, because an errored record keeps its placeholder
+  scores inside the means. `--per-query-out FILE` writes `{"schema_version": 1, "harness": "synthesis",
+  "records": [...], "aggregate": {...}}` through the same hardened writer as `trelix eval` (sorted
+  keys, mode 0600, atomic; exit `1` if it cannot be written), each record with the eight fields `id`,
+  `query`, `answerable`, `hallucination`, `completeness`, `faithfulness`, `overall`, `error`. The
+  module docstring's ninth failure mode is now worded for `line_out_of_range`. Answers on this path are
+  capped at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`) while plain
+  `trelix ask` streams at 12,000: pre-existing, documented now.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
@@ -572,6 +593,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   variable into its `trelix index` child, so setting this on a multi-tenant host would share
   one cache across tenants; SECURITY.md has the section. A `trelix cache` command group is not
   part of this change.
+- **`trelix cache gc` and `trelix cache clear`, and the cache in `trelix index`'s output** (the
+  command group the bullet above deferred). `trelix cache gc [--max-mb N]` trims every cache file
+  (`<fingerprint>.db` in `TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`,
+  else `~/.cache/trelix/embeddings`) to the cap, least recently used rows first, and prints
+  `<name>: <rows> -> <rows> rows, <bytes> -> <bytes> bytes` per file in name order; the default
+  cap is `TRELIX_EMBEDDING_CACHE_MAX_MB`, which is a trim applied after each index run and by this
+  command, not a limit during a run. Each file is opened at the width it records (no embedder is
+  loaded, no width check can fail); a file that cannot be opened or trimmed is reported as
+  `Embedding cache unreadable` and the rest are still trimmed, exit 1 afterwards (`gc` creates
+  nothing: an empty file or a symlink with no target is refused before SQLite touches it); a
+  directory that exists but cannot be listed is the same line and exit 1 at once, for both
+  commands; a directory that happens to carry a cache file's name is left alone by both, and
+  `gc` skips every symlink, whatever it points at (`clear` unlinks the link without following it).
+  `trelix cache clear`
+  deletes every `<fingerprint>.db` and `.db-journal` directly in that directory (nothing else, no
+  recursion, a symlink is unlinked and never followed) and prints `Removed N file(s), M bytes,
+  from <dir>`. With no cache directory both print `No embedding cache at <dir>.` and exit 0;
+  neither takes a repository argument or opens an index. The Index Summary gains a `Chunks from
+  cache` row when the count is above zero. `trelix index --dry-run` with the cache on opens the
+  cache file read-only (`EmbeddingCache.open_readonly`, new; it creates nothing and never reads
+  the configured width, which is a constant 384 for every `local` model), adds `Chunks already
+  cached` and `Tokens already cached` rows, and prices `Embedding tokens - Tokens already cached
+  + Repair tokens`; an absent file adds no rows; one that cannot be read, at the open or at a
+  lookup (a concurrent run's end-of-run `VACUUM` holding the lock), is reported and priced as
+  absent. `trelix index --resume-batch` with the cache on is refused before any model is loaded
+  (`Cannot resume a Batch API job`, exit 1, the way out named), as the bullet above says; the
+  refusal is now also in `docs/CLI_REFERENCE.md`'s exit codes. The CLI's cost preview takes the
+  per-provider model-field table from the cache module (`EMBED_MODEL_FIELDS`) instead of a
+  private copy.
 - **Golden file format v2 and `trelix eval-validate`** (second of three changes toward comparing
   retrieval runs honestly; no score is computed any differently).
   - A golden line may add `id`, `lang`, `kind` (`nl`, `keyword`, `commit` or `issue`), `source`,
@@ -828,6 +878,46 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   details (`exception:NotFoundError`, `prompt_truncated`, `exception:APIConnectionError`, ...).
   Linked from `docs/README.md`, the user guide, the FAQ and TROUBLESHOOTING.md; the three warnings
   that already pointed at it now resolve.
+- **A sqlite-vec flat-scan benchmark and its first committed report.**
+  `python scripts/bench_vector_search.py` builds a `vec0` table per (dimension, rows) cell from
+  seeded unit vectors, times `k`-nearest queries after a warm-up and writes warm p50/p95/p99,
+  insert rate, file size, platform (OS, Python, SQLite, sqlite-vec, numpy, CPU count, load
+  averages, free scratch disk) and, per width, the row count where p95 passes 100 ms
+  (interpolated between measured sizes, or extrapolated and flagged). The report
+  `docs/reports/vector-search-bench-2026-10-07-apple-m4-shared.json` was measured on
+  apple-m4-shared (Apple M4, 10 CPUs, macOS 27.0.1 / Darwin 27.0.0 arm64, Python 3.12.12,
+  SQLite 3.50.4, sqlite-vec 0.1.9, load average 23.9 at start): p95 passes 100 ms near 32,765
+  rows at 384 dimensions, 12,979 at 768 and 28,956 at 1024, measured on a shared machine, so the
+  thresholds are conservative. The 768 value sits below both neighbours, which an exact flat
+  scan (cost proportional to rows x width) cannot produce: its 10k-row cell absorbed a load
+  spike (inserts ran at 1,512 rows/s against 22,729 at 384 and 3,403 at 1024, and its p95 was
+  4.5x its p50 where the other two 10k cells were at 2.3x). The whole grid is load-dominated,
+  not just that cell: the three 100k-row p95s are 334 / 345 / 335 ms across 384 / 768 / 1024
+  where a flat scan predicts 1 : 2 : 2.67, and a quiet one-off taken while designing the
+  script (same Python, SQLite and sqlite-vec; 384 x 100k read 45 ms where this run read
+  334 ms) put the crossings near 220,000 / 53,000 / 41,000 rows, so the 384 value is the
+  furthest from a quiet reading (0.15x), 768 next (0.24x) and 1024 nearest (0.71x). All three
+  crossings, and the three literals the flat-scan advisory (`feat/flat-scan-advisory`) pins to
+  them, are placeholders until the owner's quiet run replaces this file. It is manual, not a
+  test, and its scratch files need up to ~5 GB; the numbers describe that machine, not a
+  guarantee.
+- **`trelix index` and `trelix stats` print a `Flat-scan advisory` when the sqlite store holds
+  more vectors than the measured threshold for the index's width.** The sqlite backend is an
+  exact flat scan (sqlite-vec has never shipped an HNSW or any other ANN index), so p95 search
+  latency grows with rows x width. The thresholds (p95 past 100 ms near 32,765 rows at 384
+  dimensions, 12,979 at 768 and 28,956 at 1024 on apple-m4-shared, measured on a shared
+  machine, so the thresholds are conservative; the nearest measured width at or above the
+  index's width applies, scaled above 1024) come from the committed benchmark report
+  `docs/reports/vector-search-bench-2026-10-07-apple-m4-shared.json`, and a test pins the table
+  to it. The line goes to stderr, names the file and `TRELIX_STORE_BACKEND=lance` or `qdrant`,
+  never changes the exit code (a corrupt recorded width of 0 or less is skipped, so `stats`
+  still exits 0), creates no `.trelix/`, prints only when the recorded width is a positive
+  number, and not on `qdrant`/`lance`. The docs that called the sqlite store an HNSW index or
+  named a 100k/500k threshold now say "exact flat scan" and point at the measured table
+  (CLI_REFERENCE, CONFIGURATION, GLOSSARY, FAQ, WHY_TRELIX, TROUBLESHOOTING, PROVIDERS); the
+  `TRELIX_STORE_HNSW*` settings (and the unaliased `hnsw_ef_construction`) are documented as
+  accepted and inert; the remaining sqlite-HNSW sentences are listed in the PR for a docs-only
+  follow-up.
 
 ### Changed
 - **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows

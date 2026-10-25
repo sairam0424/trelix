@@ -51,6 +51,8 @@ on most commands.
    - [audit list](#trelix-audit-list)
    - [audit verify](#trelix-audit-verify)
    - [audit export](#trelix-audit-export)
+   - [cache gc](#trelix-cache-gc)
+   - [cache clear](#trelix-cache-clear)
 
 ---
 
@@ -119,7 +121,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant connection URL |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
 | `TRELIX_STORE_BACKEND` | `sqlite` | Vector store backend: `sqlite` \| `qdrant` \| `lance` |
-| `TRELIX_STORE_HNSW` | `true` | Enable HNSW index (sqlite-vec ≥ 0.1.6) |
+| `TRELIX_STORE_HNSW` | `true` | **Inert.** Accepted for compatibility and read nowhere: the sqlite store is always an exact flat scan (sqlite-vec has never shipped an HNSW or any other ANN index). See [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) for the flat-scan advisory |
 | `TRELIX_RETRIEVAL_MULTI_QUERY` | `false` | Multi-query expansion before retrieval |
 | `TRELIX_RETRIEVAL_MULTI_QUERY_COUNT` | `2` | Query variant count for multi-query expansion (1–4) |
 | `TRELIX_RETRIEVAL_SPARSE` | `false` | Enable SPLADE-Code sparse retrieval leg |
@@ -183,6 +185,18 @@ index (`index`, `update-index`, `watch`) still create it on first use, and so do
 `eval-synthesis`, `telemetry`, `agent sessions` and (only once it finds a flow) `taint`, which do
 not check yet.
 
+`trelix cache gc` and `trelix cache clear` exit `0` when the cache directory does not exist
+(they print `No embedding cache at <dir>.` and create nothing). `cache gc` exits `1` after
+trimming every other file when one cache file cannot be opened or trimmed (`Embedding cache
+unreadable: ...`); `cache clear` exits `1` after the rest when one file cannot be removed
+(`Could not remove: ...`); both exit `1` at once, touching nothing, when the directory exists
+but cannot be listed (`Embedding cache unreadable: ...`), and with `Configuration error:` for
+a relative `TRELIX_EMBEDDING_CACHE_DIR` or a `TRELIX_EMBEDDING_CACHE_MAX_MB` below `1`. `trelix index
+<repo_path> --resume-batch` exits `1` before loading any model when `TRELIX_EMBEDDING_CACHE_ENABLED=true`
+is set, printing `Cannot resume a Batch API job: TRELIX_EMBEDDING_CACHE_ENABLED=true is set, and the
+Batch API poll path bypasses the cache. Re-run with TRELIX_EMBEDDING_CACHE_ENABLED=false to collect
+the job, then re-enable it.`
+
 ---
 
 ## Embedding providers
@@ -227,6 +241,13 @@ Scans `<repo_path>`, parses source files with tree-sitter, chunks and embeds
 every symbol, and stores the result in `<repo_path>/.trelix/index.db`. On
 subsequent runs only changed files are re-indexed (incremental mode). Prints
 a summary table with file counts, symbol count, chunk count, and elapsed time.
+With the on-disk embedding cache on (`TRELIX_EMBEDDING_CACHE_ENABLED=true`, see
+[CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time)) the table adds a
+`Chunks from cache` row — the chunks served from the cache instead of the
+provider — whenever that count is above zero.
+On the `sqlite` backend it also prints a `Flat-scan advisory` on stderr when the index
+holds more vectors than the measured threshold for its width (see
+[CONFIGURATION.md § Storage](CONFIGURATION.md#storage)); the exit code is unchanged.
 
 #### Options
 
@@ -234,7 +255,7 @@ a summary table with file counts, symbol count, chunk count, and elapsed time.
 |--------|------|---------|-------------|
 | `--provider` | string | `local` | Embedding provider. See [Embedding providers](#embedding-providers). |
 | `--verbose`, `-v` | flag | `false` | Show DEBUG-level log output from the indexer and embedder. |
-| `--dry-run` | flag | `false` | Cost preview only: walks, chunks and counts tokens, embeds nothing and writes nothing to the index. With `--prune` it also prints the prune plan against the index as it stands. Cannot be combined with `--yes`. |
+| `--dry-run` | flag | `false` | Cost preview only: walks, chunks and counts tokens, embeds nothing and writes nothing to the index. With the embedding cache on and its file present, the table adds `Chunks already cached` and `Tokens already cached` (read from the cache file read-only, at the width it records; nothing is created) and the priced token count is `Embedding tokens - Tokens already cached + Repair tokens`. With `--prune` it also prints the prune plan against the index as it stands. Cannot be combined with `--yes`. |
 | `--prune` | flag | `false` | After indexing, remove the rows and embeddings of files no longer in the repository. Previews only unless `--yes` is also given, and refuses unless the walk can be shown to be trustworthy. See [Pruning files that no longer exist](#pruning-files-that-no-longer-exist---prune). |
 | `--yes` | flag | `false` | Actually delete what `--prune` found. Only valid with `--prune`. |
 | `--prune-max-percent` | float | `10` | Refuse a prune that would remove more than this percentage of the index. Applies only above 10 candidates, so a small repository can still drop a few files. Raise it only after reading the previewed list. |
@@ -261,6 +282,10 @@ trelix index . --verbose
 - Languages indexed by default: Python, JavaScript, TypeScript, TSX, Go, Rust,
   Java, Kotlin, Ruby, C/C++, C#, Razor, Markdown, JSON, YAML, TOML, HTML, CSS.
   Files larger than 500 KB are skipped.
+- On the `sqlite` backend, a `Flat-scan advisory` line on stderr means the store holds more
+  vectors than the measured threshold for its width, so the exact flat scan is slow enough to
+  matter. It never changes the exit code; `TRELIX_STORE_BACKEND=lance` or `qdrant` is the
+  remedy. See [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) for the thresholds.
 
 #### Pruning files that no longer exist (`--prune`)
 
@@ -712,6 +737,12 @@ trelix stats /path/to/large-repo
   deleted, because the default ignore list contains `packages` for .NET NuGet output.
   The walk settings are recorded at index time and any difference is named in the
   output, so this is now detectable rather than silent.
+- **The `Flat-scan advisory` line prints after the coverage rows**, on stderr, on the `sqlite`
+  backend when the index records its embedding width and holds more vectors than the measured
+  threshold for that width (see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage)). It
+  never prints when the width is `not recorded` or not a positive number, never changes the
+  exit code, and reads the row count read-only, so it creates no `.trelix/` (the promise
+  under [Exit codes](#exit-codes)).
 
 ---
 
@@ -1204,7 +1235,7 @@ reports the same. See `eval/README.md`.
 #### Synopsis
 
 ```
-trelix eval-synthesis [<repo_path>] --golden <file>
+trelix eval-synthesis [<repo_path>] --golden <file> [--per-query-out <file>]
 ```
 
 #### Description
@@ -1212,13 +1243,16 @@ trelix eval-synthesis [<repo_path>] --golden <file>
 Evaluates LLM synthesis quality (not just retrieval) by running every query in
 a golden JSONL file through the full retrieve-and-synthesize pipeline and
 scoring the generated answer GroUSE-style: hallucination rate, completeness,
-and faithfulness against the expected answer fragments and symbols.
+and faithfulness against the expected answer fragments and symbols. Every
+query becomes one record (`SynthesisEvalHarness.run_detailed`); the table
+prints their means and counts, and `--per-query-out` writes the records.
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
 | `--golden` | `-g` | string | `.trelix/golden_synthesis.jsonl` | Path to the golden JSONL file. |
+| `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. |
 
 #### Examples
 
@@ -1226,40 +1260,57 @@ and faithfulness against the expected answer fragments and symbols.
 # Evaluate with the default golden file
 trelix eval-synthesis .
 
-# Use a custom golden file
-trelix eval-synthesis . --golden tests/golden_synthesis_queries.jsonl
-trelix eval-synthesis /my/repo -g /shared/golden_synthesis.jsonl
+# Use the sample golden file, and keep every query's scores
+trelix eval-synthesis . --golden eval/golden_synthesis_sample.jsonl
+trelix eval-synthesis /my/repo -g /shared/golden_synthesis.jsonl --per-query-out /tmp/synth-a.json
 ```
 
 #### Golden file format
 
 Each line is a JSON object — a superset of `trelix eval`'s golden format,
-adding two optional fields:
+adding optional fields:
 
 ```jsonl
 {"query": "how does JWT validation work?", "relevant_files": ["src/auth/middleware.py"], "expected_answer_fragments": ["decode", "secret", "bearer"], "expected_symbols": ["AuthMiddleware.verify", "jwt.decode"]}
+{"query": "how is a jwt verified", "relevant_files": ["src/auth/middleware.py"], "expected_answer_fragments": ["decode"], "answerable": true, "gold_answer": "AuthMiddleware.verify decodes the bearer token.", "expected_citations": ["src/auth/middleware.py"]}
 ```
 
 - `expected_answer_fragments` — substrings the synthesized answer should
   contain (case-insensitive). Optional.
 - `expected_symbols` — qualified symbol names the answer should reference.
   Optional.
-- Queries that omit both optional fields still contribute to `n_queries` with
-  a score of `1.0`.
+- `answerable` — `true` or `false`; absent means `true`. The right answer to an
+  unanswerable question is an `INSUFFICIENT_EVIDENCE:` line; unanswerable
+  queries are counted under `Unanswerable queries` and left out of the four
+  scores.
+- `gold_answer` — a non-empty string; stored for a future judge, never scored.
+- `expected_citations` — repo-relative paths a correct answer cites; validated
+  and stored here, counted by the next change.
+- A field present with another type (`"answerable": "no"`, `"gold_answer": ""`,
+  `"expected_citations": "a.py"`, any of them `null`), or a line that is JSON
+  but not an object, is refused with its line number and no query runs; a line
+  that is not JSON is skipped.
+- Queries that omit `expected_answer_fragments` and `expected_symbols` still
+  contribute to `n_queries` with completeness `1.0` (faithfulness still depends
+  on the answer).
 
 #### Output
 
+Three golden lines, the second query's retrieval having raised:
+
 ```
-    Synthesis Quality Results (GroUSE-style)     
-┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
-┃ Metric             ┃  Score ┃ Direction       ┃
-┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
-│ Hallucination rate │ 0.0500 │ lower = better  │
-│ Completeness       │ 0.9100 │ higher = better │
-│ Faithfulness       │ 0.9400 │ higher = better │
-│ Overall            │ 0.9300 │ higher = better │
-│ Queries evaluated  │     12 │                 │
-└────────────────────┴────────┴─────────────────┘
+             Synthesis Quality Results (GroUSE-style)              
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Metric               ┃  Score ┃ Direction                       ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Hallucination rate   │ 0.3333 │ lower = better                  │
+│ Completeness         │ 0.6667 │ higher = better                 │
+│ Faithfulness         │ 0.4444 │ higher = better                 │
+│ Overall              │ 0.6222 │ higher = better                 │
+│ Queries evaluated    │      3 │                                 │
+│ Unanswerable queries │      0 │ not in the four scores above    │
+│ Unscoreable queries  │      1 │ placeholder scores; see the log │
+└──────────────────────┴────────┴─────────────────────────────────┘
 ```
 
 #### Notes
@@ -1267,11 +1318,31 @@ adding two optional fields:
 - `<repo_path>` defaults to `.` if omitted.
 - Requires a configured LLM provider (synthesis makes real LLM calls) —
   unlike `trelix eval`, which only exercises retrieval.
-- **Unlike `trelix eval`**, a missing golden file does *not* raise an error
-  or exit non-zero — it exits `0` and prints a table of all-zero scores with
-  `Queries evaluated = 0`. Double-check the `--golden` path if you see an
-  all-zero result; it usually means the file wasn't found, not that
-  synthesis quality is actually zero.
+- A missing golden file prints `Golden file not found: <path>` and exits `1`;
+  a file with only blank or non-JSON lines prints the all-zero table and
+  exits `0`.
+- A query that raised (in retrieval or scoring; a model failure is an empty
+  answer, not an error) is counted under `Unscoreable queries` with placeholder
+  scores (hallucination 1.0, the rest 0.0) and the command still exits `0`.
+- Answers on this path are capped at 2,048 tokens: `synthesize()` hands
+  `_stream_response` an `EmbedderConfig`, which has no `synthesis_max_tokens`,
+  so the fallback applies, while plain `trelix ask` streams at
+  `TRELIX_RETRIEVAL_SYNTHESIS_MAX_TOKENS` (12,000). Pre-existing: the eval
+  measures a shorter answer than the CLI gives.
+- `--per-query-out` writes `{"schema_version": 1, "harness": "synthesis",
+  "records": [...], "aggregate": {...}}` (ASCII-escaped JSON with sorted keys,
+  mode 0600, written atomically through a temporary file beside the target)
+  after the table. Each record has exactly the eight fields `id` (the line's
+  `id`, else `q0001`-style by position), `query`, `answerable`,
+  `hallucination`, `completeness`, `faithfulness`, `overall` and `error`
+  (`null` unless the query raised; then the message, cut at 200 characters,
+  beside the placeholder scores). The golden's `gold_answer` and `expected_citations`
+  stay in the golden file and are not copied into the record; the next change adds
+  the citation facts. `aggregate` holds the seven printed values
+  under `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
+  `n_queries`, `unscoreable` and `n_unanswerable`. Exits `1` with a one-line
+  error if the file cannot be written: the directory must exist, and the path
+  must name a file.
 
 ---
 
@@ -2510,6 +2581,134 @@ trelix audit prune --retention-days 90
 # Cron entry: prune daily at 03:00
 0 3 * * * TRELIX_AUDIT_DB_PATH=/var/log/trelix/audit.db trelix audit prune >> /var/log/trelix/prune.log 2>&1
 ```
+
+---
+
+### `trelix cache gc`
+
+#### Synopsis
+
+```
+trelix cache gc [--max-mb N]
+```
+
+#### Description
+
+Trims every file of the on-disk index-time embedding cache
+(`TRELIX_EMBEDDING_CACHE_*`, see
+[CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time)) to its size cap,
+evicting the least recently used rows first and returning the space with
+`VACUUM`. `trelix index` applies the same trim at the end of each run; this is the
+same trim on demand, for instance after lowering `TRELIX_EMBEDDING_CACHE_MAX_MB`.
+It takes no repository argument and never opens an index: the directory comes from
+`TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`, else
+`~/.cache/trelix/embeddings`. Only files named `<32 hex chars>.db` (one per
+embedder fingerprint) are opened, in name order (a directory carrying such a name
+is left alone, as `clear` leaves it, and so is any symlink, whatever it points at:
+`gc` never trims a file outside the directory, and `clear` unlinks the link without
+following it); each is opened at the width it records, so no embedder is loaded and
+no width check can fail.
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--max-mb` | integer >= 1 | `TRELIX_EMBEDDING_CACHE_MAX_MB` (`4096` when unset) | Trim every file to about this many MB. `0` is a usage error (exit 2). |
+
+#### Examples
+
+```bash
+# Trim every cache file to the configured cap
+trelix cache gc
+
+# Trim to 512 MB per file this once, without changing the environment
+trelix cache gc --max-mb 512
+```
+
+#### Output
+
+One line per cache file, in name order:
+
+```
+9837970b2d56d811957572da7bae6138.db: 512000 -> 327680 rows, 838860800 -> 536870912 bytes
+```
+
+A file already within the cap prints with unchanged counts. With no cache
+directory: `No embedding cache at <dir>.`
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every file was trimmed (or was already within the cap), or there is no cache directory. |
+| `1` | At least one file could not be opened or trimmed (`Embedding cache unreadable: ...`; the others were still trimmed), the directory exists but cannot be listed (`Embedding cache unreadable: ...`; nothing trimmed), or `TRELIX_EMBEDDING_CACHE_*` is invalid (`Configuration error: ...`). |
+| `2` | Usage error, e.g. `--max-mb 0`. |
+
+#### Notes
+
+- The cap is a trim, not a limit: one `trelix index` run can write past it, and
+  the trim after that run (or this command) brings the file back.
+- Rows are evicted by `last_used_at`; a chunk served from the cache during an index
+  run counts as used, a `--dry-run` preview does not (it opens the file read-only).
+- A file of a model you no longer use is never removed by `gc` (it only shrinks);
+  `trelix cache clear` removes every file.
+- `gc` creates nothing. A 0-byte file (a first open interrupted before its first
+  commit, which `trelix index` would initialise) is reported as `not a trelix
+  embedding cache`, exit 1; a symlink carrying a cache file's name is skipped whatever
+  its target, so nothing is created or trimmed outside the directory; `trelix cache
+  clear` removes both.
+
+---
+
+### `trelix cache clear`
+
+#### Synopsis
+
+```
+trelix cache clear
+```
+
+#### Description
+
+Deletes every embedding cache file (`<32 hex chars>.db`) and SQLite journal
+sidecar (`<32 hex chars>.db-journal`) directly inside the cache directory, and
+prints what it removed. Nothing else in that directory is touched: no other
+name, no subdirectory (it never recurses), and a symlink carrying a cache file's
+name is unlinked, never followed. The directory itself stays. This is the removal
+step [SECURITY.md](../SECURITY.md#embedding-cache-on-disk-trelix_embedding_cache_enabled)
+describes, and the way out when a cache file is refused as another width or
+schema.
+
+#### Options
+
+None.
+
+#### Examples
+
+```bash
+trelix cache clear
+# Removed 2 file(s), 1073819648 bytes, from /home/me/.cache/trelix/embeddings
+```
+
+#### Output
+
+`Removed N file(s), M bytes, from <dir>` (`M` is the sum of the removed files'
+sizes), or `No embedding cache at <dir>.` when the directory does not exist.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every matching file was removed, or there is no cache directory. |
+| `1` | At least one file could not be removed (`Could not remove: ...`; the others were still removed and counted), the directory exists but cannot be listed (`Embedding cache unreadable: ...`; nothing removed), or `TRELIX_EMBEDDING_CACHE_*` is invalid (`Configuration error: ...`). |
+
+#### Notes
+
+- Run it with the same `TRELIX_EMBEDDING_CACHE_DIR` (or `XDG_CACHE_HOME`/`HOME`)
+  as the `trelix index` runs that wrote the cache; the command reads only those
+  variables and has no repository argument.
+- The next `trelix index` with the cache on re-embeds every chunk once and
+  refills the cache.
 
 ---
 

@@ -170,6 +170,7 @@ Step 3 above, for real — `trelix query` against trelix's own `retrieval/` + `g
 | Index stats | `trelix stats ./repo` |
 | Call graph for a symbol | `trelix call-graph ./repo AuthService.login` |
 | Build a knowledge graph | `trelix graph ./repo` |
+| Trim or delete the on-disk embedding cache | `trelix cache gc` / `trelix cache clear` |
 
 **Every query is answered without LLM synthesis by default.** Retrieval is fully offline — no data leaves your machine — as long as no chat credential and no `TRELIX_LLM_BASE_URL` is set. With either in the environment, retrieval draws a query plan from the LLM (one call per distinct query), which sends the query text; unset both, or set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero calls. Enable LLM synthesis for natural-language answers.
 

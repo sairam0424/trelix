@@ -16,16 +16,25 @@ NL failure modes (from GroUSE):
 
 Code-specific extensions (trelix):
   8. Symbol hallucination — function/class names not in codebase index
-  9. Stale line reference — answer cites line numbers inconsistent with index
-"""
+  9. Stale line reference — a cited chunk whose line range no longer fits the file on disk (counted as line_out_of_range in citation_statuses; lines are counted as the extractors count them, count("\\n") + 1)
+"""  # noqa: E501
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+from trelix.eval.synthesis_records import (
+    SynthesisRecord,
+    aggregate_synthesis_metrics,
+    failed_record,
+    scored_record,
+)
 from trelix.retrieval.synthesizer import Synthesizer
 
 if TYPE_CHECKING:
@@ -185,6 +194,72 @@ def evaluate_synthesis(
     )
 
 
+def _is_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_text_list(value: object) -> bool:
+    return isinstance(value, list) and all(_is_text(item) for item in value)
+
+
+# The synthesis golden's v2 fields: (name, accepts, what a refusal says). Only a field that is
+# present is checked, and `null` counts as present, as `trelix.eval.golden.validate_entry` does.
+_V2_FIELDS: tuple[tuple[str, Callable[[object], bool], str], ...] = (
+    ("answerable", lambda value: isinstance(value, bool), "must be true or false"),
+    ("gold_answer", _is_text, "must be a non-empty string"),
+    ("expected_citations", _is_text_list, "must be a list of non-empty strings"),
+)
+
+
+def validate_synthesis_entry(item: Mapping[str, object]) -> list[str]:
+    """Describe what is wrong with the v2 fields `item` carries; `[]` when they are fine.
+
+    `answerable` must be a JSON boolean, `gold_answer` a non-empty string and
+    `expected_citations` a list of non-empty strings (an empty list is fine). The fields the
+    harness has always read (`query`, `expected_answer_fragments`, `expected_symbols`) are not
+    looked at here: the loader stays as lenient about them as it always was.
+    """
+    return [
+        f'"{name}" {message}'
+        for name, accepts, message in _V2_FIELDS
+        if name in item and not accepts(item[name])
+    ]
+
+
+def _load_entries(path: Path) -> list[dict[str, Any]]:
+    """Every JSON object in the file, in order; raise once with every v2 problem found.
+
+    Today's leniency is kept: a blank line or one that is not JSON is skipped silently. A line
+    that is JSON but not an object is refused (it used to reach `entry.get` and crash the run),
+    and so is an object whose v2 field has the wrong type, each with its 1-based line number
+    over the FILE's lines.
+    """
+    entries: list[dict[str, Any]] = []
+    problems: list[str] = []
+    with open(path, encoding="utf-8") as handle:
+        for line_no, raw in enumerate(handle, start=1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict):
+                kind = type(item).__name__
+                problems.append(f"line {line_no}: expected a JSON object, got {kind}")
+                continue
+            problems.extend(f"line {line_no}: {p}" for p in validate_synthesis_entry(item))
+            entries.append(item)
+    if problems:
+        count = len(problems)
+        raise ValueError(
+            f"{path}: {count} unusable golden entr{'y' if count == 1 else 'ies'}:\n  "
+            + "\n  ".join(problems)
+        )
+    return entries
+
+
 class SynthesisEvalHarness:
     """
     Run a synthesis quality evaluation against a golden QA file.
@@ -194,11 +269,18 @@ class SynthesisEvalHarness:
           "query": "how does JWT validation work?",
           "relevant_files": ["src/auth/middleware.py"],
           "expected_answer_fragments": ["decode", "secret", "bearer"],
-          "expected_symbols": ["AuthMiddleware.verify", "jwt.decode"]
+          "expected_symbols": ["AuthMiddleware.verify", "jwt.decode"],
+          "answerable": true,
+          "gold_answer": "...",
+          "expected_citations": ["src/auth/middleware.py"]
         }
 
     Fields ``expected_answer_fragments`` and ``expected_symbols`` are optional —
     queries without them contribute only to n_queries count with score 1.0.
+    ``answerable`` (absent means true) says whether the repository answers the query; an
+    unanswerable query is counted and left out of the four means. ``gold_answer`` is
+    validated and stored, never scored. ``expected_citations`` (repo-relative paths) is
+    validated and stored; the next change in this series counts it.
     """
 
     def __init__(self, config: IndexConfig) -> None:
@@ -214,16 +296,19 @@ class SynthesisEvalHarness:
         """
         Evaluate synthesis quality across all queries in the golden file.
 
-        Returns aggregate metrics:
-            hallucination_rate: mean hallucination score (lower = better)
-            completeness:       mean completeness score (higher = better)
-            faithfulness:       mean faithfulness score (higher = better)
-            overall:            mean overall score
+        Returns `aggregate_synthesis_metrics` over `run_detailed`'s records:
+            hallucination_rate: mean hallucination score over answerable queries (lower = better)
+            completeness:       mean completeness score over answerable queries (higher = better)
+            faithfulness:       mean faithfulness score over answerable queries (higher = better)
+            overall:            mean overall score over answerable queries
             n_queries:          number of queries evaluated
+            unscoreable:        queries that raised; their four scores are placeholders
+            n_unanswerable:     queries marked unanswerable that did not raise
         """
-        import json
-        from pathlib import Path
+        return aggregate_synthesis_metrics(self.run_detailed(golden_path))
 
+    def run_detailed(self, golden_path: str) -> list[SynthesisRecord]:
+        """One record per golden line, in file order; `[]` for a file with no entries."""
         path = Path(golden_path)
         if not path.exists():
             # Refuse rather than report 0.0 — a missing file and a genuinely bad
@@ -233,25 +318,9 @@ class SynthesisEvalHarness:
             # catches with an actionable message.
             raise FileNotFoundError(f"Golden file not found: {golden_path}")
 
-        entries = []
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-
+        entries = _load_entries(path)
         if not entries:
-            return {
-                "hallucination_rate": 0.0,
-                "completeness": 0.0,
-                "faithfulness": 0.0,
-                "overall": 0.0,
-                "n_queries": 0.0,
-                "unscoreable": 0.0,
-            }
+            return []
 
         # Built once, outside the loop. Constructing it per entry re-initialised an LLM
         # client for every query in the golden file.
@@ -267,83 +336,55 @@ class SynthesisEvalHarness:
             retrieval_config=self._config.retrieval,
             llm_config=self._config.llm,
         )
+        return [
+            self._record(entry, position, synthesizer)
+            for position, entry in enumerate(entries, start=1)
+        ]
 
-        # Counted rather than inferred: a caller cannot otherwise tell a genuinely bad
-        # answer from an entry that could not be scored at all.
-        unscoreable = 0
-        hallucination_scores: list[float] = []
-        completeness_scores: list[float] = []
-        faithfulness_scores: list[float] = []
-        overall_scores: list[float] = []
-
-        for entry in entries:
-            query = entry.get("query", "")
-            expected_fragments = entry.get("expected_answer_fragments", [])
-            expected_symbols = entry.get("expected_symbols", [])
-
+    def _record(
+        self, entry: dict[str, Any], position: int, synthesizer: Synthesizer
+    ) -> SynthesisRecord:
+        """Retrieve, synthesize and score one line; a query that raises gives a failed record."""
+        query = entry.get("query", "")
+        expected_fragments = entry.get("expected_answer_fragments", [])
+        expected_symbols = entry.get("expected_symbols", [])
+        try:
+            context = self._retriever.retrieve(query)
+            retrieved_symbols = [
+                r.symbol.qualified_name
+                for r in context.results
+                if hasattr(r, "symbol") and r.symbol
+            ]
             try:
-                context = self._retriever.retrieve(query)
-                retrieved_symbols = [
-                    r.symbol.qualified_name
-                    for r in context.results
-                    if hasattr(r, "symbol") and r.symbol
-                ]
-
-                try:
-                    answer = synthesizer.synthesize(context)
-                except Exception as exc:
-                    # Still non-fatal — one flaky LLM call should not abort the run — but
-                    # no longer silent. An empty answer scores completeness and
-                    # faithfulness at 0.0, which is indistinguishable from a genuinely
-                    # bad answer, so the reader has to be told the difference.
-                    logger.warning(
-                        "Synthesis failed for query %r, scoring an empty answer: %s",
-                        query[:80],
-                        exc,
-                    )
-                    answer = ""
-
-                result = evaluate_synthesis(
-                    query=query,
-                    answer=answer,
-                    retrieved_context=getattr(context, "context_text", ""),
-                    retrieved_symbols=retrieved_symbols,
-                    expected_symbols=expected_symbols,
-                    expected_fragments=expected_fragments,
-                )
-                hallucination_scores.append(result.scores["hallucination"])
-                completeness_scores.append(result.scores["completeness"])
-                faithfulness_scores.append(result.scores["faithfulness"])
-                overall_scores.append(result.scores["overall"])
+                answer = synthesizer.synthesize(context)
             except Exception as exc:
-                # Reached when retrieval or scoring fails, not when the MODEL does — and
-                # the scores below are fabricated, not measured. hallucination=1.0 makes
-                # a broken index or a DB error read as "the model hallucinated
-                # everything", which is a false diagnosis of the wrong component. They
-                # are kept so a partial run still returns comparable aggregates, but the
-                # cause is now logged and the count is reported separately so the reader
-                # can tell how much of the result was measured at all.
+                # Still non-fatal — one flaky LLM call should not abort the run — but no longer
+                # silent. An empty answer scores completeness and faithfulness at 0.0, which is
+                # indistinguishable from a genuinely bad answer, so the reader has to be told.
                 logger.warning(
-                    "Could not score query %r (%s) — recording it as unscoreable; the "
-                    "hallucination/completeness/faithfulness figures for it are "
-                    "placeholders, not measurements",
-                    query[:80],
-                    exc,
+                    "Synthesis failed for query %r, scoring an empty answer: %s", query[:80], exc
                 )
-                unscoreable += 1
-                hallucination_scores.append(1.0)
-                completeness_scores.append(0.0)
-                faithfulness_scores.append(0.0)
-                overall_scores.append(0.0)
-
-        n = len(hallucination_scores)
-        return {
-            "hallucination_rate": sum(hallucination_scores) / n,
-            "completeness": sum(completeness_scores) / n,
-            "faithfulness": sum(faithfulness_scores) / n,
-            "overall": sum(overall_scores) / n,
-            "n_queries": float(n),
-            # Additive: the four figures above keep their names and meaning. A non-zero
-            # value here means that many of them are placeholders.
-            "unscoreable": float(unscoreable),
-        }
+                answer = ""
+            result = evaluate_synthesis(
+                query=query,
+                answer=answer,
+                retrieved_context=getattr(context, "context_text", ""),
+                retrieved_symbols=retrieved_symbols,
+                expected_symbols=expected_symbols,
+                expected_fragments=expected_fragments,
+            )
+            return scored_record(entry, position, result.scores)
+        except Exception as exc:
+            # Reached when retrieval or scoring fails, not when the MODEL does — and the
+            # record's scores are placeholders, not measurements: hallucination=1.0 would make
+            # a broken index read as "the model hallucinated everything". They are kept so a
+            # partial run still aggregates like a whole one, but the cause is logged and the
+            # record carries `error`, so a reader can tell how much was measured at all.
+            logger.warning(
+                "Could not score query %r (%s) — recording it as unscoreable; the "
+                "hallucination/completeness/faithfulness figures for it are "
+                "placeholders, not measurements",
+                query[:80],
+                exc,
+            )
+            return failed_record(entry, position, exc)

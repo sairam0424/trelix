@@ -751,7 +751,47 @@ several suite directories), and a committed suite (the first one lands with its 
 ## `golden_synthesis_sample.jsonl` — synthesis quality
 
 Input to `trelix eval-synthesis`, which scores answer faithfulness and completeness
-GroUSE-style rather than measuring retrieval.
+GroUSE-style rather than measuring retrieval. The sample has four lines: three answerable
+queries carrying `expected_citations`, and one unanswerable query.
+
+### Golden v2 fields for synthesis
+
+A line carries `query`, `expected_answer_fragments` and `expected_symbols` as before
+(`relevant_files` is not read by this harness) and may add:
+
+| Field | Allowed values | Meaning |
+|---|---|---|
+| `answerable` | `true`, `false`; absent means `true` | Whether the repository answers the query; the right answer to an unanswerable one is an `INSUFFICIENT_EVIDENCE:` line |
+| `gold_answer` | non-empty string | A reference answer, stored for a future judge and never scored |
+| `expected_citations` | list of non-empty repo-relative paths (may be empty) | The files a correct answer cites; validated and stored here, counted by the next change |
+
+A field present with another type (any of them `null`), or a line that is JSON but not an
+object, is refused with its line number and no query runs; a line that is not JSON is still
+skipped, as it always was.
+
+### What `trelix eval-synthesis` reports
+
+One record per golden line (`SynthesisEvalHarness.run_detailed`); the seven printed values
+are means and counts over those records:
+
+| Key | Over which records |
+|---|---|
+| `hallucination_rate`, `completeness`, `faithfulness`, `overall` | means over the records whose line is answerable; a record whose query raised keeps the placeholder scores (hallucination 1.0, the rest 0.0) and is included, so a v1 file (every line answerable) returns exactly the numbers the harness returned before records existed; 0.0 when there is none |
+| `n_queries` | every record |
+| `unscoreable` | records whose query raised in retrieval or scoring (a model failure is an empty answer, not an error) |
+| `n_unanswerable` | records whose line is unanswerable and whose query did not raise |
+
+Three v1 lines where the second query's retrieval raises and the other two answer with no
+hallucination: `hallucination_rate 0.3333`, `completeness 0.6667`, `unscoreable 1.0`,
+`n_unanswerable 0.0`, `n_queries 3.0`.
+
+`--per-query-out FILE` writes the records and the aggregate as JSON; `docs/CLI_REFERENCE.md`
+(`trelix eval-synthesis`) lists the document's keys and the record fields.
+
+`TRELIX_RETRIEVAL_PLAN_CACHE_FILE` applies to the retrieval half of every query, so two runs over
+a frozen plan retrieve the same context; the answers still come from the model, and on this path
+they are capped at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`,
+which has no `synthesis_max_tokens`) where plain `trelix ask` streams at 12,000: pre-existing.
 
 With `TRELIX_RETRIEVAL_CITATIONS=true` the synthesis prompt also asks the model to abstain with one
 line starting `INSUFFICIENT_EVIDENCE:` when the retrieved context does not answer the question.

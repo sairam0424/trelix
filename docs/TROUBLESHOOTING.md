@@ -773,7 +773,7 @@ Check your API tier and increase limits if needed (OpenAI: Platform → Settings
 
 **Symptom:** `trelix search "..."` takes more than 500 ms per query.
 
-**Cause — Large index:** The default SQLite-based vector store performs a linear scan for approximate nearest neighbor search. For very large repos (>100k chunks), this becomes a bottleneck.
+**Cause — Large index:** The default SQLite-based vector store is an exact flat scan: every query compares against every stored vector, so latency grows with rows x width. `trelix index` and `trelix stats` print a `Flat-scan advisory` once the index passes the measured threshold for its width — see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage).
 
 **Cause — Embedding latency:** If using a remote provider, each query requires an API round-trip to generate the query embedding.
 
@@ -782,7 +782,7 @@ Check your API tier and increase limits if needed (OpenAI: Platform → Settings
 Check index size:
 ```bash
 trelix stats ./repo
-# If chunks > 100,000, consider switching to Qdrant
+# A "Flat-scan advisory" line means the index is past the measured threshold for its width
 ```
 
 Switch to Qdrant for large indices (HNSW indexing, sub-millisecond queries). The backend is
