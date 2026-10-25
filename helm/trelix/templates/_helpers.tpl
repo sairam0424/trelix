@@ -173,3 +173,30 @@ Same indentation rule as trelix.storeEnv.
                   key: {{ .secretKey }}
             {{- end }}
 {{- end }}
+
+{{/*
+Host allow-list of the trelix-mcp container (TRELIX_MCP_ALLOWED_HOSTS): the release's Service
+names, which is what an in-cluster client puts in `Host`, plus mcp.allowedHosts. The `.svc`
+form is listed; the `.svc.cluster.local` one is not (add it through mcp.allowedHosts). The
+value is never exactly `*`, so the chart cannot turn the Host check off.
+*/}}
+{{- define "trelix.mcpAllowedHosts" -}}
+{{- $fullname := include "trelix.fullname" . -}}
+{{- $names := list $fullname (printf "%s.%s" $fullname .Release.Namespace) (printf "%s.%s.svc" $fullname .Release.Namespace) -}}
+{{- join "," (concat $names .Values.mcp.allowedHosts) -}}
+{{- end }}
+
+{{/*
+Refuse the two mcp.enabled values that cannot work. `helm template` and `helm install` fail
+on it; `helm lint` only logs the message and exits 0. Included at the top of deployment.yaml.
+*/}}
+{{- define "trelix.mcpChecks" -}}
+{{- if .Values.mcp.enabled }}
+{{- if not (or .Values.mcp.auth.token .Values.mcp.auth.existingSecretName) }}
+{{- fail "mcp.enabled needs mcp.auth.token or mcp.auth.existingSecretName: trelix-mcp binds 0.0.0.0 in the pod and exits 2 without a token" }}
+{{- end }}
+{{- if not .Values.persistence.enabled }}
+{{- fail "mcp.enabled needs persistence.enabled: trelix-mcp serves the repositories under persistence.mountPath and has nothing to serve without it" }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,3 +1,4 @@
+{{- include "trelix.mcpChecks" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -77,6 +78,62 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+        {{- if .Values.mcp.enabled }}
+        - name: trelix-mcp
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # The image's entrypoint is `trelix`; MCP over HTTP is the other console script. It
+          # serves the repositories under the PVC mount and binds 0.0.0.0 so the Service reaches it.
+          command: ["trelix-mcp"]
+          args: ["--transport", "http", "--host", "0.0.0.0", "--port", "{{ .Values.mcp.port }}", "--root", "{{ .Values.persistence.mountPath }}"]
+          ports:
+            - name: mcp
+              containerPort: {{ .Values.mcp.port }}
+              protocol: TCP
+          # GET /health is exempt from the Host check and from the token, so the kubelet's
+          # probe (Host: <pod-ip>:<port>, no credential) passes.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: mcp
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: mcp
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          env:
+            {{- include "trelix.storeEnv" . }}
+            {{- if .Values.mcp.auth.existingSecretName }}
+            - name: TRELIX_MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mcp.auth.existingSecretName }}
+                  key: {{ .Values.mcp.auth.existingSecretKey }}
+            {{- else }}
+            - name: TRELIX_MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "trelix.fullname" . }}
+                  key: TRELIX_MCP_AUTH_TOKEN
+            {{- end }}
+            - name: TRELIX_MCP_ALLOWED_HOSTS
+              value: {{ include "trelix.mcpAllowedHosts" . | quote }}
+            {{- include "trelix.extraEnv" . }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- with .Values.mcp.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
       {{- if .Values.persistence.enabled }}
       volumes:
         - name: data

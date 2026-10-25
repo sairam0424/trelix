@@ -351,6 +351,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   comma list, a URL, a wildcard, a blank) are refused (pass the port with `--port` and repeat
   `--allowed-host` for more than one; only `TRELIX_MCP_ALLOWED_HOSTS=*` turns the guard off) and
   `--host [::1]` binds `::1`. stdio with no flags is unchanged. See `docs/MCP_GUIDE.md` section 19.
+- **`docker compose --profile mcp up` and the Helm chart's `mcp.enabled` deploy
+  `trelix-mcp --transport http`.** `docker-compose.yml` gains an opt-in `trelix-mcp` service
+  (profile `mcp`, published on `127.0.0.1:8766` only, serving the `/repo` mount, with a
+  healthcheck on `/health`; the container exits 2 without `TRELIX_MCP_AUTH_TOKEN`); plain
+  `docker compose up` is unchanged. The chart gains `mcp.*` values, off by default, that add a
+  `trelix-mcp` container to the same pod serving the same PVC, a Service port `mcp`, a Secret key
+  and a Host allow-list of the release's Service names plus `mcp.allowedHosts`; it refuses to
+  render with `mcp.enabled` and no token, or without persistence. Default renders are unchanged
+  except the chart label (chart `version` 0.2.6 to 0.2.7). `helm upgrade --reuse-values` from
+  chart 0.2.6 reuses the old release's values, which lack `mcp`, and fails to render: use
+  `--reset-then-reuse-values`, or add `--set mcp.enabled=false`. The image must ship
+  `trelix-mcp --transport`; see `helm/trelix/README.md` and `docs/MCP_GUIDE.md` section 19.
 - **GenAI `chat` spans for every LLM call, behind `TRELIX_OTEL_ENABLED`** (roadmap C-8, requirement
   R-C6-02; PR 3 of 4). `build_chat_client()` returns the backend wrapped in a `TracedChatClient`
   (`src/trelix/llm/otel.py`) when the flag resolves true from the environment, and every

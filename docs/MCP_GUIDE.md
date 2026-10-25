@@ -1516,7 +1516,9 @@ caps them at 10,000 from `mcp` 2.3.0 (the 2.0.0 floor has no cap).
 `403` until it is added with `--allowed-host` or `TRELIX_MCP_ALLOWED_HOSTS`. Responses are
 `text/event-stream`: turn proxy buffering off and set the read timeout to at least the longest
 `index_codebase` you expect. TLS, `X-Forwarded-*` and CORS are the proxy's job; the server adds
-none.
+none. The Helm chart's `mcp.enabled` lists the release's Service names for you
+(`helm/trelix/README.md`); `docker compose --profile mcp up` allows only the loopback names until
+`TRELIX_MCP_ALLOWED_HOSTS` is set.
 
 ### Logging and health
 

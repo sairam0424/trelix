@@ -51,6 +51,48 @@ jobs:
         if: matrix.backend == 'sqlite'
         run: helm template test helm/trelix --set ingress.enabled=true
 
+      # trelix-mcp is optional and off by default: render it on (a chart-Secret token, then the
+      # existing-Secret path the README documents), render it off and check nothing of it is
+      # left, and check the two refusals, which `helm lint` does not exit non-zero on.
+      - name: Helm template (trelix-mcp enabled, backend=${{ matrix.backend }})
+        run: |
+          OUT=$(helm template test helm/trelix \
+            --set store.backend=${{ matrix.backend }} \
+            --set store.qdrant.apiKey=ci-test-placeholder \
+            --set mcp.enabled=true \
+            --set mcp.auth.token=ci-test-placeholder)
+          grep -qF 'value: "test-trelix,test-trelix.default,test-trelix.default.svc"' <<< "$OUT"
+          grep -qF 'args: ["--transport", "http", "--host", "0.0.0.0", "--port", "8766", "--root", "/data"]' <<< "$OUT"
+          grep -qF 'targetPort: mcp' <<< "$OUT"
+          OUT=$(helm template test helm/trelix \
+            --set store.backend=${{ matrix.backend }} \
+            --set store.qdrant.apiKey=ci-test-placeholder \
+            --set mcp.enabled=true \
+            --set mcp.auth.existingSecretName=ci-secret)
+          grep -qF 'name: ci-secret' <<< "$OUT"
+
+      - name: Helm template (mcp off renders no trelix-mcp, backend=${{ matrix.backend }})
+        run: |
+          OUT=$(helm template test helm/trelix \
+            --set store.backend=${{ matrix.backend }} \
+            --set store.qdrant.apiKey=ci-test-placeholder \
+            --set mcp.auth.token=ci-test-placeholder)
+          if grep -qiF mcp <<< "$OUT"; then
+            echo "::error::mcp.enabled is false but the render mentions mcp"; exit 1
+          fi
+
+      - name: Helm template refuses mcp.enabled without a token or a volume
+        if: matrix.backend == 'sqlite'
+        run: |
+          if ERR=$(helm template test helm/trelix --set mcp.enabled=true 2>&1); then
+            echo "::error::mcp.enabled rendered without a token"; exit 1
+          fi
+          grep -qF 'mcp.enabled needs mcp.auth.token or mcp.auth.existingSecretName' <<< "$ERR"
+          if ERR=$(helm template test helm/trelix --set mcp.enabled=true --set mcp.auth.token=ci-test-placeholder --set persistence.enabled=false 2>&1); then
+            echo "::error::mcp.enabled rendered without persistence"; exit 1
+          fi
+          grep -qF 'mcp.enabled needs persistence.enabled' <<< "$ERR"
+
   # ---------------------------------------------------------------------------
   # The `lint` job above only checks chart CORRECTNESS (does it lint, does it render,
   # does the image tag match appVersion) — it says nothing about the security posture of

@@ -381,6 +381,23 @@ different repo:
 REPO_PATH=/path/to/other/repo OPENAI_API_KEY=sk-... docker compose up
 ```
 
+The same file also defines an optional `trelix-mcp` service behind the `mcp` profile: the repo
+over MCP's Streamable HTTP transport, for a client that cannot spawn the `trelix-mcp` process.
+Plain `docker compose up` does not start it. The profile also starts the `trelix` REST service
+(`docker compose up trelix-mcp` starts only the MCP one, because naming a profiled service
+enables its profile):
+
+```bash
+TRELIX_MCP_AUTH_TOKEN=<secret> OPENAI_API_KEY=sk-... docker compose --profile mcp up
+```
+
+It publishes `127.0.0.1:8766` only and serves the same `/repo` (`--root /repo`). Its Host check
+accepts `localhost,127.0.0.1,[::1]`, so add the name a client uses to `TRELIX_MCP_ALLOWED_HOSTS`.
+Without a token the container exits 2 and names the variable. The image must ship
+`trelix-mcp --transport` (an older one exits at once on an argument error; check with
+`docker run --rm --entrypoint trelix-mcp <image> --help`). See
+[MCP_GUIDE section 19](MCP_GUIDE.md#19-streamable-http-transport).
+
 ### Image variants
 
 Two tags are published per release:
