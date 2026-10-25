@@ -429,6 +429,12 @@
       },
       "total_mutants": 8
     },
+    "store.scale_advisory": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/store/scale_advisory.py"
+      ]
+    },
     "store.vector": {
       "ceilings": {
         "no_tests": 0,

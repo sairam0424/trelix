@@ -879,6 +879,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   them, are placeholders until the owner's quiet run replaces this file. It is manual, not a
   test, and its scratch files need up to ~5 GB; the numbers describe that machine, not a
   guarantee.
+- **`trelix index` and `trelix stats` print a `Flat-scan advisory` when the sqlite store holds
+  more vectors than the measured threshold for the index's width.** The sqlite backend is an
+  exact flat scan (sqlite-vec has never shipped an HNSW or any other ANN index), so p95 search
+  latency grows with rows x width. The thresholds (p95 past 100 ms near 32,765 rows at 384
+  dimensions, 12,979 at 768 and 28,956 at 1024 on apple-m4-shared, measured on a shared
+  machine, so the thresholds are conservative; the nearest measured width at or above the
+  index's width applies, scaled above 1024) come from the committed benchmark report
+  `docs/reports/vector-search-bench-2026-10-07-apple-m4-shared.json`, and a test pins the table
+  to it. The line goes to stderr, names the file and `TRELIX_STORE_BACKEND=lance` or `qdrant`,
+  never changes the exit code (a corrupt recorded width of 0 or less is skipped, so `stats`
+  still exits 0), creates no `.trelix/`, prints only when the recorded width is a positive
+  number, and not on `qdrant`/`lance`. The docs that called the sqlite store an HNSW index or
+  named a 100k/500k threshold now say "exact flat scan" and point at the measured table
+  (CLI_REFERENCE, CONFIGURATION, GLOSSARY, FAQ, WHY_TRELIX, TROUBLESHOOTING, PROVIDERS); the
+  `TRELIX_STORE_HNSW*` settings (and the unaliased `hnsw_ef_construction`) are documented as
+  accepted and inert; the remaining sqlite-HNSW sentences are listed in the PR for a docs-only
+  follow-up.
 
 ### Changed
 - **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows
