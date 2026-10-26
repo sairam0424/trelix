@@ -43,6 +43,11 @@ Before setting `ingress.enabled: true`, put an authenticating layer in front
 `nginx.ingress.kubernetes.io/auth-*`, or an OAuth2-proxy sidecar/gateway).
 This chart does not automate that setup — only documents the requirement.
 
+The container reads the token once, when it starts, so after a rotation the old
+token stays valid until the pod restarts. A new `apiAuth.token` restarts the pod
+on `helm upgrade`; after you change the Secret behind `apiAuth.existingSecretName`
+run `kubectl rollout restart deployment/<fullname>`.
+
 ## Qdrant is external, not managed by this chart
 
 Setting `store.backend: qdrant` only configures trelix to *connect* to an
@@ -74,6 +79,11 @@ claude mcp add --transport http trelix http://127.0.0.1:8766/mcp --header "Autho
   `kubectl create secret generic my-mcp-token --from-literal=TRELIX_MCP_AUTH_TOKEN=<token>`:
   a trailing newline makes the token non-printable and the container exits 2. Every request
   except `GET /health` must carry it.
+- **Rotating the token.** The container reads the token once, when it starts, so the old
+  token stays valid until the pod restarts. With `mcp.auth.token`, `helm upgrade` restarts
+  the pod by itself: the chart hashes the Secret it owns into the pod template
+  (`checksum/secret`). With `mcp.auth.existingSecretName` the chart cannot see the Secret,
+  so after you change it run `kubectl rollout restart deployment/<fullname>`.
 - **Refusals.** `helm template` and `helm install` fail when `mcp.enabled` has no token, or
   when `persistence.enabled` is false (there is nothing to serve). `helm lint` reports it
   but exits 0.
@@ -126,7 +136,13 @@ Each of `store.qdrant`, `embedder.openai`, `embedder.voyage`,
 `embedder.cohere` supports either a plaintext `apiKey` (dev/local
 convenience — the chart creates one Secret from it) or
 `existingSecretName`/`existingSecretKey` pointing at a Secret you manage
-yourself. Set at most one of the two per credential.
+yourself. Set at most one of the two per credential. Containers read these
+once, when they start: changing a plaintext `apiKey` restarts the pod on
+`helm upgrade` (the chart hashes the Secret it owns into the pod template as
+`checksum/secret`), while a Secret you manage needs
+`kubectl rollout restart deployment/<fullname>` after you change it. The same
+goes for a Secret named in `extraSecretEnv`: the chart cannot see it either, so
+changing it never rolls the pod by itself.
 
 ## The two versions in `Chart.yaml`
 

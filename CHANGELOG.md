@@ -338,6 +338,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `tests/unit/test_observability_doc_pins.py` pins the sentence about when trelix installs its
   `MeterProvider` (on the first counted embedding provider call; never for `bge-code` or
   `nomic-code`) to the embedder code.
+- **The Helm chart rolls the pod when a Secret it manages changes.** The API token, the
+  `trelix-mcp` token and the Qdrant and embedder keys reach the containers as environment
+  variables, which a container reads once, when it starts. A `helm upgrade` with a new
+  `apiAuth.token`, `mcp.auth.token` or a plaintext `apiKey` updated the Secret but left the
+  Deployment unchanged (two `helm template` renders with different tokens gave a byte-identical
+  Deployment), so nothing rolled and the old token stayed valid until the pod restarted for
+  another reason.
+  The pod template now carries a `checksum/secret` annotation, the hash of the Secret the chart
+  renders, so that upgrade replaces the pod; nothing is written when every credential comes
+  from an `existingSecretName`. The chart cannot see a Secret it does not own: after changing
+  one, run `kubectl rollout restart deployment/<fullname>` (the chart README and the install
+  notes now say so for each token). When the chart does own a Secret, upgrading to this chart
+  version replaces the pod once, and so does a later change of the chart `version` alone,
+  because the Secret's `helm.sh/chart` label is part of the hash. Chart version 0.2.8.
 
 ### Added
 - **`trelix-mcp --transport http` serves MCP over Streamable HTTP** on `127.0.0.1:8766/mcp`
