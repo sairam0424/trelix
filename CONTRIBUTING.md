@@ -492,8 +492,11 @@ Two things that are **not** version sites, and must not be bumped with them:
   been raised on an unverified assumption about API usage. A floor that an import demands
   does move: `trelix-mcp` and both adapters import `trelix.core.index_check`, which the core
   ships from the release that contains the read-surface fix, so that release's PR raises the
-  three `trelix>=` floors to it (CI installs the core editable and cannot notice a missing
-  bump; an older core under a newer package fails on import). `trelix-mcp` alone also imports
+  three `trelix>=` floors to it (CI installs the core editable and cannot see a stale floor,
+  so `TestSatelliteCoreFloorsFollowTheCore` in `tests/unit/test_release_version_gate.py` fails
+  the PR that bumps the version without raising them; an older core under a newer package
+  fails: `trelix-mcp` at start-up, the two adapters at their first query, because they import
+  `require_index` inside the retrieval method). `trelix-mcp` alone also imports
   `trelix.core.confinement` (`resolve_allowed_roots`, `is_within_allowed_roots`), and its HTTP
   transport will import `trelix.api.request_guard.is_health_probe`; neither name is in a
   published core yet, so the next release's PR raises `trelix-mcp`'s `trelix>=` floor to that

@@ -31,8 +31,10 @@ Four concrete cases motivate the guards below:
 
 These tests pin the current, deliberate floors/ceilings so a future contributor loosening one
 (e.g. widening a version range during an unrelated dependency bump) gets a named, specific
-failure instead of silent re-exposure. The last guard reads `packages/trelix-mcp/pyproject.toml`
-instead: a floor that the code needs rather than one that avoids a CVE or a breaking major.
+failure instead of silent re-exposure. The fastmcp guard reads `packages/trelix-mcp/pyproject.toml`
+instead: a floor that the code needs rather than one that avoids a CVE or a breaking major. The
+two `dev` pins at the end (pytest, pytest-asyncio) are floors of that kind too: the releases that
+know the keys `[tool.pytest.ini_options]` sets.
 The sqlite-vec pair is the only pair in this file that also checks the INSTALLED package,
 deliberately: the requirement string says what pip may resolve, the installed check says what
 this venv runs, and a venv on another release must fail with the reason rather than skip.
@@ -190,4 +192,39 @@ def test_util_genai_floor_is_the_release_the_chat_spans_were_run_against() -> No
         "gen_ai.usage.cache_write.input_tokens name, both 1.2b0-only; verified against 1.2b0 on "
         "2026-10-07. Lower the floor only after re-running tests/unit/test_otel_llm_spans.py on "
         "the older release"
+    )
+
+
+def test_dev_pytest_floor_knows_the_strict_umbrella_key() -> None:
+    """`[tool.pytest.ini_options] strict = true` is a pytest 9 key (it switches on strict_config,
+    strict_markers, strict_xfail and strict_parametrization_ids together). On pytest 8 it is an
+    unknown key that only warns, so strict_config, strict_xfail and strict_parametrization_ids
+    (strict_markers stays on through addopts) would be silently inert while the comment above the
+    key says they are in force. Mutation: `pytest>=9.0` -> `pytest>=8.2.0`.
+    """
+    spec = _extra_dependency_specifier("dev", "pytest")
+    match = re.search(r">=\s*(\d+)\.(\d+)", spec)
+    assert match is not None, f"dev pytest specifier {spec!r} has no >=X.Y floor to check"
+    floor = tuple(int(x) for x in match.groups())
+    assert floor >= (9, 0), (
+        f"the dev extra declares {spec!r}, but pyproject.toml sets `strict = true`, which exists "
+        "from pytest 9.0 only; on an older pytest it is an ignored key and strict_xfail, "
+        "strict_config and strict_parametrization_ids stop applying. Lower the floor only "
+        "together with that key"
+    )
+
+
+def test_dev_pytest_asyncio_floor_knows_the_fixture_loop_scope_key() -> None:
+    """`asyncio_default_fixture_loop_scope` is read from pytest-asyncio 0.24; on 0.23 it is an
+    unknown key, so the explicit "function" scope the comment in pyproject.toml pins would be
+    ignored. Mutation: `pytest-asyncio>=0.24` -> `pytest-asyncio>=0.23.0`.
+    """
+    spec = _extra_dependency_specifier("dev", "pytest-asyncio")
+    match = re.search(r">=\s*(\d+)\.(\d+)", spec)
+    assert match is not None, f"dev pytest-asyncio specifier {spec!r} has no >=X.Y floor to check"
+    floor = tuple(int(x) for x in match.groups())
+    assert floor >= (0, 24), (
+        f"the dev extra declares {spec!r}, but pyproject.toml sets "
+        "`asyncio_default_fixture_loop_scope`, which pytest-asyncio reads from 0.24; on 0.23 the "
+        "key is ignored. Lower the floor only together with that key"
     )

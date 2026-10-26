@@ -26,6 +26,8 @@ from typing import Any
 
 import pytest
 import yaml
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RELEASE = _ROOT / ".github" / "workflows" / "release.yml"
@@ -178,6 +180,133 @@ class TestEveryVersionSiteIsChecked:
             "core `v*` tag (see docs/BACKWARDS_COMPATIBILITY.md, 'Why lockstep'), so all "
             "stamps move together. If you intend to break lockstep, change that policy "
             "first — this test encodes it deliberately."
+        )
+
+
+def _core_version() -> Version:
+    return Version(_dunder_version("src", "trelix", "__init__.py"))
+
+
+def _satellite_core_floor(satellite: str) -> Version:
+    """The X of the `trelix>=X` requirement in `packages/<satellite>/pyproject.toml`."""
+    with _ROOT.joinpath("packages", satellite, "pyproject.toml").open("rb") as handle:
+        dependencies = tomllib.load(handle)["project"]["dependencies"]
+    for dependency in dependencies:
+        requirement = Requirement(dependency)
+        if requirement.name != "trelix":
+            continue
+        floors = [Version(spec.version) for spec in requirement.specifier if spec.operator == ">="]
+        assert floors, f"{satellite} declares {dependency!r}, which has no `trelix>=X` floor"
+        return max(floors)
+    raise AssertionError(f"{satellite} has no `trelix` requirement in [project] dependencies")
+
+
+def _floor_may_be_carried(core: Version, floor: Version, needed: Version) -> bool:
+    """Before the core reaches `needed` any floor goes; from then on the floor must reach it."""
+    return core < needed or floor >= needed
+
+
+def _floor_is_installable(core: Version, floor: Version) -> bool:
+    """A floor above the core of the tree names a release that does not exist yet."""
+    return floor <= core
+
+
+@pytest.mark.parametrize(
+    ("core", "floor", "needed", "allowed"),
+    [
+        # develop today: core 3.4.3, old floors
+        ("3.4.3", "3.1.5", "3.4.4", True),
+        # the release PR bumped the version and skipped the floors: the case this guard is for
+        ("3.4.4", "3.1.5", "3.4.4", False),
+        ("3.4.4", "3.4.3", "3.4.4", False),
+        # the release PR did both
+        ("3.4.4", "3.4.4", "3.4.4", True),
+        # a later core with the floor at the needed release, and with a floor that fell behind
+        ("3.5.0", "3.4.4", "3.4.4", True),
+        ("3.5.0", "3.4.3", "3.4.4", False),
+        # a release candidate sorts before the final release, so the floor is not demanded yet
+        ("3.4.4rc1", "3.1.5", "3.4.4", True),
+    ],
+)
+def test_the_floor_rule_fires_exactly_when_the_core_reaches_the_needed_release(
+    core: str, floor: str, needed: str, allowed: bool
+) -> None:
+    assert _floor_may_be_carried(Version(core), Version(floor), Version(needed)) is allowed
+
+
+@pytest.mark.parametrize(
+    ("core", "floor", "installable"),
+    [
+        ("3.4.4", "3.4.4", True),
+        ("3.4.4", "3.4.3", True),
+        ("3.4.3", "3.4.3", True),
+        ("3.4.3", "3.4.4", False),
+        ("3.4.4", "3.5.0", False),
+    ],
+)
+def test_a_floor_above_the_core_of_the_tree_is_not_installable(
+    core: str, floor: str, installable: bool
+) -> None:
+    assert _floor_is_installable(Version(core), Version(floor)) is installable
+
+
+class TestSatelliteCoreFloorsFollowTheCore:
+    """A satellite's `trelix>=` floor must reach the first core release that has what it imports.
+
+    WHY THIS EXISTS. `trelix-mcp` and the two adapters import core names that are not in the last
+    published core, while their floors still name an older one (`trelix>=3.1.5`, `trelix>=3.0.0`).
+    `pip install -U trelix-mcp` on a machine that already has that core then keeps it, satisfies
+    the floor, and `trelix-mcp` exits 1 on start; an adapter fails at its first query, because it
+    imports the name inside the retrieval method. The floors are raised by the release PR
+    (CONTRIBUTING.md, docs/BACKWARDS_COMPATIBILITY.md), but CI installs the core editable, so
+    nothing noticed a release that skipped the bump. These tests are what notices.
+
+    HOW. The table below is written by hand: for each satellite, the first core release that has
+    every core name it imports. The first test asserts the floor reached that release, but only
+    once this tree's core version has (a satellite cannot name an unreleased core on develop: its
+    sdist would not install). The second asserts no floor is above the core version of the tree.
+    A release PR that bumps the version to the table's release without raising the floors fails
+    the first; a floor raised ahead of the version fails the second.
+
+    MAINTAINING IT. When a satellite starts importing a core name that the latest published core
+    lacks, raise its entry to the release that will ship the name.
+    """
+
+    # Published core 3.4.3 has none of these names (checked with `git cat-file -e v3.4.3:<path>`
+    # for the modules, and by reading v3.4.3's request_guard.py and federation/retriever.py):
+    #   trelix-mcp      trelix.core.index_check (server.py, resources.py), trelix.core.confinement
+    #                   (cli.py, confinement.py), trelix.api.request_guard.is_health_probe
+    #                   (http.py) and FederatedRetriever.unindexed_repos (server.py)
+    #   both adapters   trelix.core.index_check.require_index (retriever.py)
+    SATELLITE_MIN_CORE: dict[str, str] = {
+        "trelix-mcp": "3.4.4",
+        "trelix-langchain": "3.4.4",
+        "trelix-llama-index": "3.4.4",
+    }
+
+    @pytest.mark.parametrize("satellite", sorted(SATELLITE_MIN_CORE))
+    def test_the_floor_reaches_the_first_core_with_what_the_satellite_imports(
+        self, satellite: str
+    ) -> None:
+        floor = _satellite_core_floor(satellite)
+        core = _core_version()
+        needed = Version(self.SATELLITE_MIN_CORE[satellite])
+        assert _floor_may_be_carried(core, floor, needed), (
+            f"packages/{satellite}/pyproject.toml declares trelix>={floor}, but this tree is core "
+            f"{core} and {satellite} imports core names that first shipped in {needed}. An older "
+            f"core under the new {satellite} satisfies that floor and fails at run time. Raise "
+            f"the floor to trelix>={needed} in the same PR that bumps the version"
+        )
+
+    @pytest.mark.parametrize("satellite", sorted(SATELLITE_MIN_CORE))
+    def test_the_floor_is_not_above_the_core_the_tree_ships(self, satellite: str) -> None:
+        floor = _satellite_core_floor(satellite)
+        core = _core_version()
+        assert _floor_is_installable(core, floor), (
+            f"packages/{satellite}/pyproject.toml declares trelix>={floor}, above this tree's "
+            f"core {core}: that release does not exist yet, so the {satellite} sdist could not "
+            "be installed. Lower the floor, or raise it only in the release PR, together with "
+            "the version stamps"
         )
 
 
