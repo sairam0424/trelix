@@ -349,7 +349,7 @@ class EmbedderConfig(BaseSettings):
     voyage_model: str = Field(default="voyage-code-3", alias="TRELIX_EMBEDDER_VOYAGE_MODEL")
     voyage_dimensions: int = 1024
     # Matryoshka output dimension (voyage-code-3 supports 256/512/1024/2048).
-    # None = use full voyage_dimensions. Set smaller for faster HNSW search.
+    # None = use full voyage_dimensions. Set smaller for smaller vectors and a cheaper search.
     voyage_output_dimensions: int | None = None
 
     # ── Cohere (direct API — cohere.ClientV2, not the Bedrock envelope) ──────
@@ -464,8 +464,8 @@ class StoreConfig(BaseSettings):
 
     db_path: str = ".trelix/index.db"
 
-    # Accepted and inert: sqlite-vec has never shipped an HNSW (or any ANN) index, so the
-    # sqlite store is always an exact flat scan (store/vector.py). Public env names, kept.
+    # Accepted and inert: no stable sqlite-vec release has shipped an HNSW (or any ANN) index,
+    # so the sqlite store is always an exact flat scan (store/vector.py). Public env names, kept.
     hnsw: bool = Field(default=True, alias="TRELIX_STORE_HNSW")
     hnsw_m: int = Field(default=16, alias="TRELIX_STORE_HNSW_M")
     hnsw_ef_construction: int = 200

@@ -236,7 +236,7 @@ User Query
 
 ### Leg 1 — Vector (always active)
 
-**What it does:** Converts your query into a dense vector using the same embedding model used at index time, then searches over all chunk vectors — an exact flat scan on the default SQLite backend, or an Approximate Nearest Neighbor (ANN) search over a real HNSW index on the optional Qdrant backend (scales to 500k+ chunks).
+**What it does:** Converts your query into a dense vector using the same embedding model used at index time, then searches over all chunk vectors — an exact flat scan on the default SQLite backend, or an Approximate Nearest Neighbor (ANN) search over a real HNSW index on the optional Qdrant backend (for indexes past the flat-scan advisory threshold).
 
 **Why it matters:** This is the semantic leg. It finds code that *means the same thing* as your query even when no words match. "User credential verification" will find `authenticate_user()` even if neither word appears in the function.
 
@@ -1220,7 +1220,7 @@ TRELIX_EMBEDDER_PROVIDER=voyage trelix index ./my-repo
 ```
 Voyage AI's `voyage-code-3` is the best API-based code embedding model. The Matryoshka architecture means you can choose your dimension tradeoff:
 ```bash
-TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512  # 2× faster HNSW, minimal quality loss
+TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512  # smaller vectors, a cheaper vector search, minimal quality loss
 TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=1024 # full quality (default)
 ```
 
@@ -1237,17 +1237,17 @@ Bedrock-Cohere uses asymmetric retrieval: `search_document` at index time, `sear
 Voyage AI's `voyage-code-3` uses Matryoshka Representation Learning: the model trains a single embedding that can be truncated to any dimension without retraining. This means you can trade off quality vs. speed:
 
 ```bash
-# Full quality: 1024 dims, slower HNSW
+# Full quality: 1024 dims
 TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=1024
 
-# 2× faster HNSW, ~2% quality loss: 512 dims
+# Half the width of 1024, ~2% quality loss: 512 dims
 TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512
 
-# 4× faster HNSW, ~5% quality loss: 256 dims (very large repos only)
+# A quarter of the width, ~5% quality loss: 256 dims
 TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=256
 ```
 
-For repos under 100k chunks, stay at 1024. For larger repos where HNSW latency becomes noticeable, try 512.
+Stay at 1024 while the index is below the `Flat-scan advisory` threshold for its width ([CONFIGURATION.md § Storage](CONFIGURATION.md#storage)). Past it, the remedy is `TRELIX_STORE_BACKEND=lance` or `qdrant`. A narrower width makes each vector cheaper to scan on the default sqlite store but does not remove the flat scan, and the advisory applies the threshold of the nearest measured width at or above yours (the committed table is not monotonic, so a narrower width can fire the advisory earlier; see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage)).
 
 ### Changing providers (requires re-index)
 
@@ -1325,7 +1325,7 @@ trelix telemetry — ./my-repo — last 10 queries
 
 *Typical ranges:*
 - `grep+bm25`: 10–50ms
-- `vector`: 30–100ms (HNSW query)
+- `vector`: grows with index size on the default sqlite store (an exact flat scan); measured figures are in the benchmark linked from [CONFIGURATION.md § Storage](CONFIGURATION.md#storage)
 - `vector+bm25+grep` (RRF): 40–150ms
 - `+graph` (BFS expansion): add 50–200ms depending on graph size
 - `+reranker` (Cohere): add 300–800ms (network round trip)

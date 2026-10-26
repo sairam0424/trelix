@@ -32,7 +32,7 @@ claude mcp add trelix -- trelix-mcp
 
 1. **Hybrid search by default** — contextual embeddings + BM25 + grep fused via Reciprocal Rank Fusion; not just vector similarity, so keyword-precise queries (symbol names, error codes) work out of the box.
 2. **Call-graph expansion** — results are automatically enriched with callers, callees, and import edges so the LLM sees the full context of any code path, not just the nearest chunk.
-3. **Zero-infra** — ships with a single SQLite file (`.trelix/index.db`) using sqlite-vec HNSW; scales to Qdrant for >500k chunks with one env-var flip.
+3. **Zero-infra** — ships with a single SQLite file (`.trelix/index.db`) using sqlite-vec (an exact flat scan); `trelix index` and `trelix stats` print a Flat-scan advisory once the store outgrows it, and the optional LanceDB or Qdrant backend (`TRELIX_STORE_BACKEND=lance|qdrant`) takes over from there.
 
 ### Checklist
 

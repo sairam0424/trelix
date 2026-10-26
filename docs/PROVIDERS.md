@@ -110,7 +110,7 @@ VOYAGE_API_KEY=pa-...
 TRELIX_EMBEDDER_VOYAGE_MODEL=voyage-code-3   # default
 ```
 
-**Matryoshka dimensions** (smaller = faster HNSW search, slightly lower quality):
+**Matryoshka dimensions** (smaller = smaller vectors and a cheaper vector search, slightly lower quality):
 
 ```env
 # Reduce output dimension — 512 is a good quality/speed trade-off

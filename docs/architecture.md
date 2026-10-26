@@ -593,12 +593,12 @@ class BaseVectorStore(ABC):
 ```
 
 **`SQLiteVecStore`** (default):
-- `vec0` virtual table, always a flat scan (sqlite-vec has never shipped an ANN index under any release)
+- `vec0` virtual table, always a flat scan (no stable sqlite-vec release has shipped an ANN index)
 - Separate virtual tables for file summaries and sub-chunks
 
 **`QdrantVectorStore`**: cloud-ready, TRELIX_STORE_BACKEND=qdrant, supports named collections, IVF+HNSW, metadata filtering.
 
-**`LanceVectorStore`**: LanceDB, ARM-native HNSW, 3–5× faster insert at 100k+ chunks, memory-mapped storage, Apache Arrow format.
+**`LanceVectorStore`**: LanceDB, exact scan (trelix builds no index), 3–5× faster insert at 100k+ chunks, memory-mapped storage, Apache Arrow format.
 
 ### `DimensionGuard`
 

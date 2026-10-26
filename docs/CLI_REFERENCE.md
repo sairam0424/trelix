@@ -121,7 +121,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant connection URL |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
 | `TRELIX_STORE_BACKEND` | `sqlite` | Vector store backend: `sqlite` \| `qdrant` \| `lance` |
-| `TRELIX_STORE_HNSW` | `true` | **Inert.** Accepted for compatibility and read nowhere: the sqlite store is always an exact flat scan (sqlite-vec has never shipped an HNSW or any other ANN index). See [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) for the flat-scan advisory |
+| `TRELIX_STORE_HNSW` | `true` | **Inert.** Accepted for compatibility and read nowhere: the sqlite store is always an exact flat scan (no stable sqlite-vec release has shipped an HNSW or any other ANN index). See [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) for the flat-scan advisory |
 | `TRELIX_RETRIEVAL_MULTI_QUERY` | `false` | Multi-query expansion before retrieval |
 | `TRELIX_RETRIEVAL_MULTI_QUERY_COUNT` | `2` | Query variant count for multi-query expansion (1–4) |
 | `TRELIX_RETRIEVAL_SPARSE` | `false` | Enable SPLADE-Code sparse retrieval leg |

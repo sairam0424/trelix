@@ -1,11 +1,13 @@
 """
 LanceDB vector store backend.
 
-LanceDB 0.6+ provides ARM-native HNSW with zero SQLite dependency.
+LanceDB 0.6+ has zero SQLite dependency. trelix builds no index on the table, so a search is an
+exact scan, as with sqlite-vec.
 Validated 3-5x faster insert at >100k vectors vs sqlite-vec (vecdb-bench).
 
 Best for:
-    - Repos > 500k chunks (where sqlite-vec HNSW becomes memory-constrained)
+    - Repos past the sqlite flat-scan advisory threshold (see trelix.store.scale_advisory),
+      where the exact sqlite-vec scan gets slow
     - Apple Silicon and ARM servers (native SIMD)
     - Multi-repo deployments sharing a vector store
 

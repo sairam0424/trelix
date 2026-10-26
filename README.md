@@ -463,7 +463,7 @@ Markdown (heading sections), HTML (custom elements), CSS/SCSS
 > is unverified and the CoIR standing quoted for the upstream model is not substantiated by
 > this implementation. Do not use it as a quality baseline.
 
-> **voyage-code-3 Matryoshka:** Set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2× faster HNSW search with minimal quality loss.
+> **voyage-code-3 Matryoshka:** Set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for smaller vectors and a cheaper vector search, with minimal quality loss.
 
 ---
 
@@ -471,9 +471,9 @@ Markdown (heading sections), HTML (custom elements), CSS/SCSS
 
 | Backend | Best for | Install |
 |---------|----------|---------|
-| SQLite (default) | Repos up to ~100k chunks | included |
-| Qdrant | 500k+ chunks, multi-repo | trelix[qdrant] |
-| LanceDB | 100k+ chunks, ARM/Apple Silicon | trelix[lance] |
+| SQLite (default) | Indexes where `trelix index` and `trelix stats` print no `Flat-scan advisory` (exact flat scan; thresholds per embedding width in [docs/CONFIGURATION.md § Storage](docs/CONFIGURATION.md#storage)) | included |
+| Qdrant | Past the advisory threshold, multi-repo (HNSW index) | trelix[qdrant] |
+| LanceDB | Past the advisory threshold, ARM/Apple Silicon | trelix[lance] |
 
 ---
 
