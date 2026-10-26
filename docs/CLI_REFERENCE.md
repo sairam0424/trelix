@@ -1253,9 +1253,9 @@ prints their means, ratios and counts, and `--per-query-out` writes the records.
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
 | `--golden` | `-g` | string | `.trelix/golden_synthesis.jsonl` | Path to the golden JSONL file. |
-| `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. |
+| `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. Its directory must exist; this is checked before the run starts. |
 | `--replay` | | string | *(none)* | Score the recorded answers in this file: no synthesis call is made, but retrieval (the index, its LLM query planner, the query embedding) still runs. Cannot be combined with `--record`. |
-| `--record` | | string | *(none)* | After the run, write every answer the LLM produced to this file in the `--replay` format (mode 0600, written atomically). Cannot be combined with `--replay`. |
+| `--record` | | string | *(none)* | After the run, write every answer the LLM produced to this file in the `--replay` format (mode 0600, written atomically). Its directory must exist (checked before the run starts) and it cannot be the `--per-query-out` file. Cannot be combined with `--replay`. |
 
 #### Examples
 
@@ -1375,10 +1375,24 @@ unrelated and freezes query plans.
   key and network), and, for a non-local embedder, the embedding of the query.
   Freeze the planner with `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` for a repeatable
   pair (`eval-synthesis` has no `--plan-cache-file` flag).
+- `--record` and `--per-query-out` are checked once, before the run starts and
+  before the index is opened, because their files are written only after every
+  query has been paid for: the directory of each must already exist and be
+  writable, the path must not be a directory, and the two must be different
+  files (a relative and an absolute spelling, or a path through a symlinked
+  directory, can name the same file; the directories are compared once resolved,
+  so a hard link or a different letter case on a case-insensitive volume is not
+  recognised, and a symlink named as the file is replaced by the write, so it
+  and its target are two files). One
+  line per problem is printed, for example `--record:
+  directory /x/y does not exist` or `--record and --per-query-out must name
+  different files`, and the command exits `1`; the check creates nothing and
+  also applies to `--replay` runs.
 - `--record` and `--per-query-out` are written after the table, and both are
-  attempted: a file that cannot be written is reported (`Could not write the
-  replay file: ...` for this one) and ends the command with exit `1`, but never
-  costs the other file. Nothing is written for a golden file that is refused.
+  attempted: a file that cannot be written (the directory removed during the
+  run, say) is reported (`Could not write the replay file: ...` for this one)
+  and ends the command with exit `1`, but never costs the other file. Nothing
+  is written for a golden file that is refused.
 - A query whose retrieval raised in the live run has no recorded answer, so
   replaying that file is refused with the message above until the query is
   fixed, removed from the golden file, or given an answer by hand in the JSON.
@@ -1426,7 +1440,8 @@ unrelated and freezes query plans.
   cells) and `citations_total` and `citations_valid`, which only the file
   carries; `eval/README.md` defines each one. Exits `1` with a one-line
   error if the file cannot be written: the directory must exist, and the path
-  must name a file.
+  must name a file (both are checked before the run starts, see the first
+  `--record` note above).
 
 ---
 

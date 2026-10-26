@@ -2173,7 +2173,9 @@ tagged, so the model is never asked to cite or to abstain with `INSUFFICIENT_EVI
 `eval/README.md` for how each row is computed.
 
 The table is all that reaches stdout; add `--record FILE` to keep the answers and `--replay FILE` to
-score them again with no synthesis call (retrieval, including its planner, still runs).
+score them again with no synthesis call (retrieval, including its planner, still runs). The directory of
+`--record FILE` and of `--per-query-out FILE` must already exist, and the two cannot be the same file;
+both are checked before the run starts, not after it has been paid for.
 
 ### Python API
 
