@@ -351,18 +351,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   comma list, a URL, a wildcard, a blank) are refused (pass the port with `--port` and repeat
   `--allowed-host` for more than one; only `TRELIX_MCP_ALLOWED_HOSTS=*` turns the guard off) and
   `--host [::1]` binds `::1`. stdio with no flags is unchanged. See `docs/MCP_GUIDE.md` section 19.
-- **`docker compose --profile mcp up` and the Helm chart's `mcp.enabled` deploy
-  `trelix-mcp --transport http`.** `docker-compose.yml` gains an opt-in `trelix-mcp` service
-  (profile `mcp`, published on `127.0.0.1:8766` only, serving the `/repo` mount, with a
-  healthcheck on `/health`; the container exits 2 without `TRELIX_MCP_AUTH_TOKEN`); plain
-  `docker compose up` is unchanged. The chart gains `mcp.*` values, off by default, that add a
-  `trelix-mcp` container to the same pod serving the same PVC, a Service port `mcp`, a Secret key
-  and a Host allow-list of the release's Service names plus `mcp.allowedHosts`; it refuses to
-  render with `mcp.enabled` and no token, or without persistence. Default renders are unchanged
-  except the chart label (chart `version` 0.2.6 to 0.2.7). `helm upgrade --reuse-values` from
-  chart 0.2.6 reuses the old release's values, which lack `mcp`, and fails to render: use
-  `--reset-then-reuse-values`, or add `--set mcp.enabled=false`. The image must ship
-  `trelix-mcp --transport`; see `helm/trelix/README.md` and `docs/MCP_GUIDE.md` section 19.
+- **`trelix-mcp --transport http` has a real-socket end-to-end test**
+  (`tests/e2e/test_mcp_http_e2e.py`). It starts the installed `trelix-mcp` as a child process on a
+  free loopback port with a bearer token and one `--root`, waits for `GET /health`, and checks over
+  TCP that a missing or wrong token is `401` with `WWW-Authenticate: Bearer` and the wrong value is
+  never logged, that a foreign `Host` is `403`, that `fastmcp.Client` initializes and lists the 15
+  tools in both protocol eras, that a `repo_path` outside the root is refused, and that SIGTERM
+  exits 0. It needs no model and no network beyond 127.0.0.1, runs in CI's `e2e` job and in the
+  release smoke job against the built wheels, and skips where `trelix-mcp` is not on PATH. No
+  product change.
 - **GenAI `chat` spans for every LLM call, behind `TRELIX_OTEL_ENABLED`** (roadmap C-8, requirement
   R-C6-02; PR 3 of 4). `build_chat_client()` returns the backend wrapped in a `TracedChatClient`
   (`src/trelix/llm/otel.py`) when the flag resolves true from the environment, and every
@@ -540,26 +537,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `retrieval.citations` was re-measured on this tree: 155 mutants, 154 killed, 1 survived, so its
   `survived` ceiling moves `0` → `1` for one equivalent mutant (`and` → `or` in the `lines` guard
   of `citation_as_json`, where a `Citation` has both line fields set or both `None`).
-- **`trelix eval-synthesis` reads golden v2 lines and keeps one record per query** (fifth of six
-  changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not answer
-  the question; this one adds the schema, the records and the per-query file, and the stacked PR that
-  follows extends this bullet with the abstention and citation metrics over those records). A golden
+- **`trelix eval-synthesis` reads golden v2 lines, keeps one record per query and measures abstention
+  and citations** (fifth of six changes toward `trelix ask` answers that cite the retrieved code and
+  abstain when it does not answer the question; landed as two stacked PRs: the schema, the records and
+  the per-query file first, then the abstention and citation metrics over those records). A golden
   line may carry `answerable` (`true`/`false`; absent means `true`), `gold_answer` (a non-empty string,
-  stored and never scored) and `expected_citations` (a list of non-empty repo-relative paths, validated
-  and stored); a field of another type, or a line that is JSON but not an object, is refused with its
-  line number and no query runs (a non-object line used to crash the run). The harness keeps one
-  `SynthesisRecord` per line (`run_detailed`); the four GroUSE means run over the answerable records,
-  so the aggregate's keys are `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
-  `n_queries`, `unscoreable` and the new `n_unanswerable`, and the table gains the rows `Unanswerable
-  queries` and `Unscoreable queries` (that count existed and was never printed). A v1 file returns the
-  numbers it always did: three lines where the second query's retrieval raises still report
-  `hallucination_rate 0.3333` and `unscoreable 1.0`, because an errored record keeps its placeholder
-  scores inside the means. `--per-query-out FILE` writes `{"schema_version": 1, "harness": "synthesis",
-  "records": [...], "aggregate": {...}}` through the same hardened writer as `trelix eval` (sorted
-  keys, mode 0600, atomic; exit `1` if it cannot be written), each record with the eight fields `id`,
-  `query`, `answerable`, `hallucination`, `completeness`, `faithfulness`, `overall`, `error`. The
-  module docstring's ninth failure mode is now worded for `line_out_of_range`. Answers on this path are
-  capped at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`) while plain
+  stored and never scored) and `expected_citations` (a list of non-empty repo-relative paths, read as a
+  set); a field of another type, or a line that is JSON but not an object, is refused with its line
+  number and no query runs (a non-object line used to crash the run). The harness keeps one
+  `SynthesisRecord` per line (`run_detailed`) with fifteen fields: `id`, `query`, `answerable`, the
+  abstention facts `abstained` and `abstain_reason` (`no_results` when the retrieval found nothing,
+  `insufficient_evidence` when the answer opens with `INSUFFICIENT_EVIDENCE:`; derived from the
+  retrieval and the answer, never from the model's own flags), the four GroUSE scores, the citation
+  facts `citations_total`, `citations_valid`, `citation_statuses` (a count per `valid`, `file_missing`,
+  `line_out_of_range`, `unknown`), `expected_citations_hit` and `expected_citations_total` (a hit is an
+  expected path that a `valid` marker refers to), and `error`. Markers are verified only when the
+  retrieval tagged its blocks: with `TRELIX_RETRIEVAL_CITATIONS` off (the default) a `[C1]` in an
+  answer is noise, every citation count is 0 and the citation rows measure nothing; the prompt asks
+  for `INSUFFICIENT_EVIDENCE:` only for a tagged context too, so in practice only an empty retrieval
+  registers as an abstention and the two abstention rows measure little. Set the flag for the run
+  you measure. The four GroUSE means run over the answerable records; the aggregate's
+  sixteen keys are `hallucination_rate`, `completeness`, `faithfulness`, `overall`, `n_queries`,
+  `unscoreable`, `n_unanswerable`, and the ratios with their denominators beside them:
+  `abstention_precision` (unanswerable among the abstained, of `n_abstained`), `abstention_recall`
+  (abstained among the unanswerable, of `n_unanswerable`), `citation_validity` (mean per-answer
+  `citations_valid / citations_total`, of `n_cited_entries`), `citation_recall` (mean per-line
+  `expected_citations_hit / expected_citations_total`, of `n_expected_citation_entries`), plus the
+  sums `citations_total` and `citations_valid`; every ratio is `0.0` on a zero denominator, and a
+  record whose query raised is in `n_queries` and `unscoreable` and out of every abstention and
+  citation count, with its placeholder scores kept in the four means. The table gains the rows
+  `Abstention precision`, `Abstention recall`, `Citation validity` and `Citation recall`, each
+  `Direction` cell naming its denominator (`higher = better; of 2 abstained`), and the rows
+  `Unanswerable queries` and `Unscoreable queries` (that count existed and was never printed). A v1
+  file returns the numbers it always did: three lines where the second query's retrieval raises still
+  report `hallucination_rate 0.3333` and `unscoreable 1.0`, because an errored record keeps its
+  placeholder scores inside the means. `--per-query-out FILE` writes `{"schema_version": 1,
+  "harness": "synthesis", "records": [...], "aggregate": {...}}` through the same hardened writer as
+  `trelix eval` (sorted keys, `citation_statuses` included, mode 0600, atomic; exit `1` if it cannot
+  be written); `schema_version` stays 1, nothing having been released between the two halves. The
+  module docstring's ninth failure mode is now worded for `line_out_of_range`. `eval.synthesis_records`
+  joins `scripts/mutation.py`'s scope with its baseline regenerated. Answers on this path are capped
+  at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`) while plain
   `trelix ask` streams at 12,000: pre-existing, documented now.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
@@ -834,7 +852,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     or unreadable is a refusal, not a traceback; a `<name>.partial` beside an already-verified clone is
     refused with the same text as before a clone exists; and the README says a sidecar that is not
     valid JSON is a refusal while any other shape yields no labels.
-
 - **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
   llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
   bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
@@ -930,6 +947,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `TRELIX_STORE_HNSW*` settings (and the unaliased `hnsw_ef_construction`) are documented as
   accepted and inert; the remaining sqlite-HNSW sentences are listed in the PR for a docs-only
   follow-up.
+- **`docker compose --profile mcp up` and the Helm chart's `mcp.enabled` deploy
+  `trelix-mcp --transport http`.** `docker-compose.yml` gains an opt-in `trelix-mcp` service
+  (profile `mcp`, published on `127.0.0.1:8766` only, serving the `/repo` mount, with a
+  healthcheck on `/health`; the container exits 2 without `TRELIX_MCP_AUTH_TOKEN`); plain
+  `docker compose up` is unchanged. The chart gains `mcp.*` values, off by default, that add a
+  `trelix-mcp` container to the same pod serving the same PVC, a Service port `mcp`, a Secret key
+  and a Host allow-list of the release's Service names plus `mcp.allowedHosts`; it refuses to
+  render with `mcp.enabled` and no token, or without persistence. Default renders are unchanged
+  except the chart label (chart `version` 0.2.6 to 0.2.7). `helm upgrade --reuse-values` from
+  chart 0.2.6 reuses the old release's values, which lack `mcp`, and fails to render: use
+  `--reset-then-reuse-values`, or add `--set mcp.enabled=false`. The image must ship
+  `trelix-mcp --transport`; see `helm/trelix/README.md` and `docs/MCP_GUIDE.md` section 19.
+- **`trelix eval-synthesis` reads golden v2 lines and keeps one record per query** (fifth of six
+  changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not answer
+  the question; this one adds the schema, the records and the per-query file, and the stacked PR that
+  follows extends this bullet with the abstention and citation metrics over those records). A golden
+  line may carry `answerable` (`true`/`false`; absent means `true`), `gold_answer` (a non-empty string,
+  stored and never scored) and `expected_citations` (a list of non-empty repo-relative paths, validated
+  and stored); a field of another type, or a line that is JSON but not an object, is refused with its
+  line number and no query runs (a non-object line used to crash the run). The harness keeps one
+  `SynthesisRecord` per line (`run_detailed`); the four GroUSE means run over the answerable records,
+  so the aggregate's keys are `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
+  `n_queries`, `unscoreable` and the new `n_unanswerable`, and the table gains the rows `Unanswerable
+  queries` and `Unscoreable queries` (that count existed and was never printed). A v1 file returns the
+  numbers it always did: three lines where the second query's retrieval raises still report
+  `hallucination_rate 0.3333` and `unscoreable 1.0`, because an errored record keeps its placeholder
+  scores inside the means. `--per-query-out FILE` writes `{"schema_version": 1, "harness": "synthesis",
+  "records": [...], "aggregate": {...}}` through the same hardened writer as `trelix eval` (sorted
+  keys, mode 0600, atomic; exit `1` if it cannot be written), each record with the eight fields `id`,
+  `query`, `answerable`, `hallucination`, `completeness`, `faithfulness`, `overall`, `error`. The
+  module docstring's ninth failure mode is now worded for `line_out_of_range`. Answers on this path are
+  capped at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`) while plain
+  `trelix ask` streams at 12,000: pre-existing, documented now.
 
 ### Changed
 - **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows

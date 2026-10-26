@@ -763,7 +763,7 @@ A line carries `query`, `expected_answer_fragments` and `expected_symbols` as be
 |---|---|---|
 | `answerable` | `true`, `false`; absent means `true` | Whether the repository answers the query; the right answer to an unanswerable one is an `INSUFFICIENT_EVIDENCE:` line |
 | `gold_answer` | non-empty string | A reference answer, stored for a future judge and never scored |
-| `expected_citations` | list of non-empty repo-relative paths (may be empty) | The files a correct answer cites; validated and stored here, counted by the next change |
+| `expected_citations` | list of non-empty repo-relative paths (may be empty) | The files a correct answer cites, written with forward slashes and compared exactly as the index spells them (`./a.py` never matches `a.py`), read as a set (a repeated path counts once); a hit is one of them that a `valid` `[C#]` marker of the answer refers to (`expected_citations_hit` of `expected_citations_total`) |
 
 A field present with another type (any of them `null`), or a line that is JSON but not an
 object, is refused with its line number and no query runs; a line that is not JSON is still
@@ -771,22 +771,93 @@ skipped, as it always was.
 
 ### What `trelix eval-synthesis` reports
 
-One record per golden line (`SynthesisEvalHarness.run_detailed`); the seven printed values
-are means and counts over those records:
+One record per golden line (`SynthesisEvalHarness.run_detailed`); the sixteen aggregate values are
+means, ratios and counts over those records, every ratio with its denominator reported beside it:
 
-| Key | Over which records |
-|---|---|
-| `hallucination_rate`, `completeness`, `faithfulness`, `overall` | means over the records whose line is answerable; a record whose query raised keeps the placeholder scores (hallucination 1.0, the rest 0.0) and is included, so a v1 file (every line answerable) returns exactly the numbers the harness returned before records existed; 0.0 when there is none |
-| `n_queries` | every record |
-| `unscoreable` | records whose query raised in retrieval or scoring (a model failure is an empty answer, not an error) |
-| `n_unanswerable` | records whose line is unanswerable and whose query did not raise |
+| Key | Over which records | Meaning |
+|---|---|---|
+| `hallucination_rate`, `completeness`, `faithfulness`, `overall` | records whose line is answerable; a record whose query raised keeps the placeholder scores (hallucination 1.0, the rest 0.0) and is included, so a v1 file (every line answerable) returns exactly the numbers the harness returned before records existed | the four GroUSE-style means; 0.0 when no record is answerable |
+| `n_queries` | every record | lines evaluated |
+| `unscoreable` | records whose query raised in retrieval, verification or scoring (a model failure is an empty answer, not an error) | records standing on placeholders |
+| `n_unanswerable` | records whose line is unanswerable and whose query did not raise | the denominator of `abstention_recall` |
+| `n_abstained` | scored records whose answer abstained (`abstained` true) | the denominator of `abstention_precision` |
+| `abstention_precision` | the abstained records | the share whose line is unanswerable (a correct refusal), of `n_abstained` |
+| `abstention_recall` | the unanswerable records | the share whose answer abstained, of `n_unanswerable` |
+| `n_cited_entries` | scored records with at least one `[C#]` marker (`citations_total` > 0) | the denominator of `citation_validity` |
+| `citation_validity` | the cited records | mean per-answer `citations_valid / citations_total`, of `n_cited_entries` |
+| `n_expected_citation_entries` | scored records whose line has `expected_citations` | the denominator of `citation_recall` |
+| `citation_recall` | the records expecting citations | mean per-line `expected_citations_hit / expected_citations_total`, of `n_expected_citation_entries` |
+| `citations_total`, `citations_valid` | scored records | the sums of the per-record counts |
+
+Every ratio is `0.0` on a zero denominator, and the `n_*` key beside it says so. A record whose
+query raised is in `n_queries` and `unscoreable`, and out of every abstention and citation count
+and denominator, whatever its line said ("scored" above means it did not raise); its placeholder
+scores stay inside the four means.
+
+**How abstention is derived.** From the retrieval and the answer, never from the model's own flags:
+an empty retrieval gives `abstain_reason` `no_results` (the Synthesizer answers it with a notice and
+calls no model); an answer whose first non-blank characters are `INSUFFICIENT_EVIDENCE:` gives
+`insufficient_evidence`; anything else is an answer (`abstained` false). An abstention is still an
+answer to the four scores. An abstaining answerable line scores completeness `0.0` only when it
+lists `expected_answer_fragments` the abstention lacks; with no fragments it scores completeness
+`1.0`, so the four means flatter abstentions on such lines. The prompt asks for
+`INSUFFICIENT_EVIDENCE:` only when `TRELIX_RETRIEVAL_CITATIONS` is `true` (see the end of this
+section), so with the flag unset only `no_results` registers in practice and the abstention rows
+measure little: an `abstention_recall` of `0.0` then means the model was never asked to refuse.
+
+**How citations are counted.** Only when the retrieval tagged its blocks. With
+`TRELIX_RETRIEVAL_CITATIONS` unset (default `false`) no block is tagged, so `citations_total` is 0
+and the citation rows measure nothing; set it to `true` for the run you measure. With tags, every
+distinct `[C#]` marker of the answer is verified against the chunk it names and the file on disk,
+and the record keeps one count per status as `citation_statuses`; a marker the context never carried
+is `unknown`, so with the flag on an invented `[C9]` lowers `citation_validity`. `expected_citations`
+is read as a set, and a hit is an expected path that a `valid` marker refers to: a `file_missing`
+citation of an expected path is a miss.
+
+At least 15% of a set's questions should be unanswerable (`"answerable": false`), or the abstention
+metrics have nothing to measure: `n_unanswerable` is the recall denominator.
+
+**A worked example** (`tests/unit/test_synthesis_eval_metrics.py` runs it). Six lines, three of them
+unanswerable (`e3`, `e4`, `e6`); the tagged retrieval returns the same two valid chunks for every
+query; `e1` cites `[C1]` (valid, the expected path), `e2` cites `[C4]` (a file no longer in the
+repository, the expected path), `e3` abstains, `e4` cites `[C2]` (valid) and `[C9]` (no such tag),
+`e5` abstains although its line is answerable, `e6` cites `[C1]` and `[C2]`. Two abstentions, four
+cited answers, two lines expecting citations: `hallucination_rate 0.0`, `completeness 0.6667` (over
+`e1`, `e2`, `e5`), `n_queries 6`, `unscoreable 0`, `n_unanswerable 3`, `n_abstained 2`,
+`abstention_precision 0.5` (`e3` of `e3`, `e5`), `abstention_recall 0.3333` (`e3` of `e3`, `e4`,
+`e6`), `citation_validity 0.625` (1, 0, 0.5, 1 over `e1`, `e2`, `e4`, `e6`), `n_cited_entries 4`,
+`citation_recall 0.5` (1 of 1 for `e1`, 0 of 1 for `e2`), `n_expected_citation_entries 2`,
+`citations_total 6`, `citations_valid 4`.
 
 Three v1 lines where the second query's retrieval raises and the other two answer with no
 hallucination: `hallucination_rate 0.3333`, `completeness 0.6667`, `unscoreable 1.0`,
 `n_unanswerable 0.0`, `n_queries 3.0`.
 
 `--per-query-out FILE` writes the records and the aggregate as JSON; `docs/CLI_REFERENCE.md`
-(`trelix eval-synthesis`) lists the document's keys and the record fields.
+(`trelix eval-synthesis`) lists the document's keys. One record (`e4` of the example), as written:
+
+```json
+{
+  "abstain_reason": null,
+  "abstained": false,
+  "answerable": false,
+  "citation_statuses": {
+    "unknown": 1,
+    "valid": 1
+  },
+  "citations_total": 2,
+  "citations_valid": 1,
+  "completeness": 1.0,
+  "error": null,
+  "expected_citations_hit": 0,
+  "expected_citations_total": 0,
+  "faithfulness": 0.3333333333333333,
+  "hallucination": 0.0,
+  "id": "e4",
+  "overall": 0.8666666666666667,
+  "query": "g4"
+}
+```
 
 `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` applies to the retrieval half of every query, so two runs over
 a frozen plan retrieve the same context; the answers still come from the model, and on this path
@@ -799,8 +870,9 @@ GraphRAG answers (large contexts under the `openai` or `azure` embedder, reached
 `synthesize()` only) get the `[C#]` cite lines but not the abstention sentence, so they cannot
 abstain by protocol: an abstention count over such a run is structurally lower.
 
-When an answer's markers are verified (`trelix.retrieval.citations.verify_citations`; nothing in
-the eval reads them yet), `line_out_of_range` means the cited chunk ends past the file's line
+When an answer's markers are verified (`trelix.retrieval.citations.verify_citations`;
+`trelix eval-synthesis` verifies them per answer and reports the counts as `citation_statuses`),
+`line_out_of_range` means the cited chunk ends past the file's line
 count, where lines are counted as the extractors count them, `count("\n") + 1`: a newline-terminated
 7-line file has 8 lines and its Python `<module>` symbol spans `1-8`, so a whole-file citation on a
 fresh index is `valid`.

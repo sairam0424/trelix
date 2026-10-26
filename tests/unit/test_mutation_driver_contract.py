@@ -71,6 +71,7 @@ EXPECTED_SCOPE_KEYS = frozenset(
     {
         "compression.extractive",
         "eval.ndcg",
+        "eval.synthesis_records",
         "graph",
         "indexing.chunker",
         "indexing.embedding_cache",
@@ -116,6 +117,7 @@ EXPECTED_SCOPE_KEYS = frozenset(
 EXPECTED_SCOPE_WITNESS = {
     "compression.extractive": "src/trelix/compression/extractive.py",
     "eval.ndcg": "src/trelix/eval/ndcg.py",
+    "eval.synthesis_records": "src/trelix/eval/synthesis_records.py",
     "graph": "src/trelix/graph/builder.py",
     "indexing.chunker": "src/trelix/indexing/chunker.py",
     "indexing.embedding_cache": "src/trelix/indexing/embedding_cache.py",
@@ -163,6 +165,7 @@ EXPECTED_SCOPE_WITNESS = {
 EXPECTED_SCOPE_NON_WITNESS = {
     "compression.extractive": "src/trelix/eval/ndcg.py",
     "eval.ndcg": "src/trelix/retrieval/bm25.py",
+    "eval.synthesis_records": "src/trelix/eval/ndcg.py",
     "graph": "src/trelix/store/db.py",
     "indexing.chunker": "src/trelix/indexing/walker.py",
     "indexing.embedding_cache": "src/trelix/indexing/walker.py",

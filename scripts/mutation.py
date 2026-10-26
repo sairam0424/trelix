@@ -160,6 +160,7 @@ SCOPE: dict[str, tuple[str, ...]] = {
     "retrieval.bm25": ("src/trelix/retrieval/bm25.py",),
     "retrieval.citations": ("src/trelix/retrieval/citations.py",),
     "eval.ndcg": ("src/trelix/eval/ndcg.py",),
+    "eval.synthesis_records": ("src/trelix/eval/synthesis_records.py",),
     "store.db": ("src/trelix/store/db.py",),
     "store.vector": ("src/trelix/store/vector.py",),
     "store.dimension_guard": ("src/trelix/store/dimension_guard.py",),
