@@ -31,14 +31,17 @@ from typing import TYPE_CHECKING, Any
 
 from trelix.eval.synthesis_records import (
     SynthesisRecord,
+    abstain_reason_for,
     aggregate_synthesis_metrics,
     failed_record,
     scored_record,
 )
+from trelix.retrieval.citations import Citation, verify_citations
 from trelix.retrieval.synthesizer import Synthesizer
 
 if TYPE_CHECKING:
     from trelix.core.config import IndexConfig
+    from trelix.core.models import RetrievedContext
 
 logger = logging.getLogger("trelix.eval.synthesis")
 
@@ -260,6 +263,16 @@ def _load_entries(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _verified_citations(answer: str, context: RetrievedContext, repo_root: Path) -> list[Citation]:
+    """The answer's `[C#]` markers verified against the retrieval's sources and the files under
+    `repo_root`, only when the retrieval tagged its blocks: with `TRELIX_RETRIEVAL_CITATIONS` off
+    the prompt never asked for tags, so a marker in the answer is noise, not an `unknown` citation.
+    """
+    if not context.citation_sources:
+        return []
+    return verify_citations(answer, context.citation_sources, repo_root)
+
+
 class SynthesisEvalHarness:
     """
     Run a synthesis quality evaluation against a golden QA file.
@@ -280,7 +293,7 @@ class SynthesisEvalHarness:
     ``answerable`` (absent means true) says whether the repository answers the query; an
     unanswerable query is counted and left out of the four means. ``gold_answer`` is
     validated and stored, never scored. ``expected_citations`` (repo-relative paths) is
-    validated and stored; the next change in this series counts it.
+    counted: a hit is an expected path that a `valid` `[C#]` marker of the answer refers to.
     """
 
     def __init__(self, config: IndexConfig) -> None:
@@ -296,7 +309,7 @@ class SynthesisEvalHarness:
         """
         Evaluate synthesis quality across all queries in the golden file.
 
-        Returns `aggregate_synthesis_metrics` over `run_detailed`'s records:
+        Returns `aggregate_synthesis_metrics` over `run_detailed`'s records, sixteen keys:
             hallucination_rate: mean hallucination score over answerable queries (lower = better)
             completeness:       mean completeness score over answerable queries (higher = better)
             faithfulness:       mean faithfulness score over answerable queries (higher = better)
@@ -304,6 +317,19 @@ class SynthesisEvalHarness:
             n_queries:          number of queries evaluated
             unscoreable:        queries that raised; their four scores are placeholders
             n_unanswerable:     queries marked unanswerable that did not raise
+            n_abstained:        queries whose answer abstained (no results, or
+                                INSUFFICIENT_EVIDENCE:), none of them errored
+            abstention_precision: unanswerable share of the abstained, of n_abstained
+            abstention_recall:  abstained share of the unanswerable, of n_unanswerable
+            n_cited_entries:    answers with at least one [C#] marker
+            citation_validity:  mean per-answer citations_valid / citations_total, of
+                                n_cited_entries
+            n_expected_citation_entries: lines with expected_citations that did not raise
+            citation_recall:    mean per-line expected_citations_hit / expected_citations_total,
+                                of n_expected_citation_entries
+            citations_total, citations_valid: the summed per-record counts
+        Every ratio is 0.0 on a zero denominator; an errored query is in n_queries and
+        unscoreable only.
         """
         return aggregate_synthesis_metrics(self.run_detailed(golden_path))
 
@@ -336,15 +362,16 @@ class SynthesisEvalHarness:
             retrieval_config=self._config.retrieval,
             llm_config=self._config.llm,
         )
+        repo_root = Path(self._config.repo_path)
         return [
-            self._record(entry, position, synthesizer)
+            self._record(entry, position, synthesizer, repo_root)
             for position, entry in enumerate(entries, start=1)
         ]
 
     def _record(
-        self, entry: dict[str, Any], position: int, synthesizer: Synthesizer
+        self, entry: dict[str, Any], position: int, synthesizer: Synthesizer, repo_root: Path
     ) -> SynthesisRecord:
-        """Retrieve, synthesize and score one line; a query that raises gives a failed record."""
+        """Retrieve, synthesize, verify and score one line; a raising query is a failed record."""
         query = entry.get("query", "")
         expected_fragments = entry.get("expected_answer_fragments", [])
         expected_symbols = entry.get("expected_symbols", [])
@@ -358,13 +385,14 @@ class SynthesisEvalHarness:
             try:
                 answer = synthesizer.synthesize(context)
             except Exception as exc:
-                # Still non-fatal — one flaky LLM call should not abort the run — but no longer
-                # silent. An empty answer scores completeness and faithfulness at 0.0, which is
-                # indistinguishable from a genuinely bad answer, so the reader has to be told.
+                # Non-fatal (one flaky LLM call must not abort the run) but not silent: an empty
+                # answer scores like a genuinely bad one, so the reader has to be told.
                 logger.warning(
                     "Synthesis failed for query %r, scoring an empty answer: %s", query[:80], exc
                 )
                 answer = ""
+            abstain_reason = abstain_reason_for(bool(context.results), answer)
+            citations = _verified_citations(answer, context, repo_root)
             result = evaluate_synthesis(
                 query=query,
                 answer=answer,
@@ -373,13 +401,14 @@ class SynthesisEvalHarness:
                 expected_symbols=expected_symbols,
                 expected_fragments=expected_fragments,
             )
-            return scored_record(entry, position, result.scores)
+            return scored_record(
+                entry, position, result.scores, abstain_reason=abstain_reason, citations=citations
+            )
         except Exception as exc:
-            # Reached when retrieval or scoring fails, not when the MODEL does — and the
-            # record's scores are placeholders, not measurements: hallucination=1.0 would make
-            # a broken index read as "the model hallucinated everything". They are kept so a
-            # partial run still aggregates like a whole one, but the cause is logged and the
-            # record carries `error`, so a reader can tell how much was measured at all.
+            # Reached when retrieval, verification or scoring fails, not when the MODEL does; the
+            # record's placeholder scores are not measurements (hallucination=1.0 would make a
+            # broken index read as "the model hallucinated everything"), so the cause is logged
+            # and the record carries `error`, so a reader can tell how much was measured at all.
             logger.warning(
                 "Could not score query %r (%s) — recording it as unscoreable; the "
                 "hallucination/completeness/faithfulness figures for it are "

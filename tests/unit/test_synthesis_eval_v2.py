@@ -188,8 +188,10 @@ class TestRecordIds:
 
 
 def test_the_record_has_exactly_these_fields_in_this_order() -> None:
-    names = ["id", "query", "answerable", "hallucination", "completeness", "faithfulness"]
-    assert [f.name for f in dataclasses.fields(SynthesisRecord)] == [*names, "overall", "error"]
+    names = ["id", "query", "answerable", "abstained", "abstain_reason", "hallucination"]
+    names += ["completeness", "faithfulness", "overall", "citations_total", "citations_valid"]
+    names += ["citation_statuses", "expected_citations_hit", "expected_citations_total", "error"]
+    assert [f.name for f in dataclasses.fields(SynthesisRecord)] == names
 
 
 class TestTheAggregate:
