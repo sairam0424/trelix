@@ -30,11 +30,14 @@ The recorded-answers file (`--record`, `--replay`) is `{"schema_version": 1, "an
 answer}}`: one answer per golden query, keyed by the query text, and nothing else, so a replay
 derives every field of the record again from the answer, the retrieval and the golden line.
 `load_replay` refuses a file it cannot use with every problem found, as the other eval loaders do.
+`output_file_problems` is the check, made before a run is paid for, that `--record` and
+`--per-query-out` can be written and do not name one file.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -319,6 +322,64 @@ def write_replay_file(path: str, answers: Mapping[str, str]) -> str | None:
     replaced. The answers quote retrieved code, so the file is as sensitive as the index.
     """
     return write_outcome_file(path, replay_payload(answers))
+
+
+def _output_problem(flag: str, value: str) -> str | None:
+    """Why the file `flag` names (`value`) cannot be written, or None when it can be.
+
+    `os.path` calls rather than `Path` methods: they answer False for a path they cannot stat
+    where `Path.exists` raises. Nothing is created, so no probe file is left behind.
+    """
+    target = Path(value)
+    parent = target.parent
+    if os.path.isdir(target):
+        return f"{flag}: {target} is a directory; name the file itself"
+    if not os.path.exists(parent):
+        return f"{flag}: directory {parent} does not exist"
+    if not os.path.isdir(parent):
+        return f"{flag}: {parent} is not a directory"
+    if not os.access(parent, os.W_OK | os.X_OK):
+        return f"{flag}: cannot write in {parent}"
+    return None
+
+
+def _write_target(value: str) -> tuple[str, str]:
+    """The directory (symlinks resolved) and the name a write to `value` lands on. Only the
+    directory is resolved: `write_outcome_file` replaces a symlink at the name, it does not follow
+    it. `os.path.realpath` rather than `Path.resolve`, which raises on a symlink loop before
+    Python 3.13."""
+    path = Path(value)
+    return os.path.realpath(path.parent), path.name
+
+
+def _same_output_file(first: str, second: str) -> bool:
+    """Whether both paths name one file once relative and absolute spellings and symlinked
+    directories are resolved (neither file need exist yet). A symlink at the file name is replaced
+    by the write, not followed, so it and its target are two files. Equality is by resolved
+    directory and name, so a hard link, or one file spelled in two letter cases on a
+    case-insensitive volume, is not recognised."""
+    return _write_target(first) == _write_target(second)
+
+
+def output_file_problems(record: str | None, per_query_out: str | None) -> list[str]:
+    """What stops `--record` and `--per-query-out` from being written, one line per problem; `[]`
+    when both can be (or are not given).
+
+    Both files are written only after every golden query has been paid for, so the command asks
+    first. This is advisory: the write still reports a failure of its own, because the directory
+    can change while the run is going. Two paths that name one file are refused here, because
+    both writes would report success and the second would silently replace the first.
+    """
+    problems: list[str] = []
+    for flag, value in (("--record", record), ("--per-query-out", per_query_out)):
+        problem = None if value is None else _output_problem(flag, value)
+        if problem is not None:
+            problems.append(problem)
+    if problems or record is None or per_query_out is None:
+        return problems
+    if _same_output_file(record, per_query_out):
+        return ["--record and --per-query-out must name different files"]
+    return []
 
 
 def missing_replay_answers(queries: Sequence[str], answers: Mapping[str, str]) -> list[str]:

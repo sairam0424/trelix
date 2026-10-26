@@ -379,6 +379,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   notes now say so for each token). When the chart does own a Secret, upgrading to this chart
   version replaces the pod once, and so does a later change of the chart `version` alone,
   because the Secret's `helm.sh/chart` label is part of the hash. Chart version 0.2.8.
+- **`trelix eval-synthesis` checks `--record` and `--per-query-out` before the run starts.** Both
+  files were written only after every golden query had been answered, so a missing directory was
+  found after the run had been paid for and the recorded answers were lost, and when both flags
+  named one file the second write silently replaced the first. The command now exits `1` before the
+  index is opened, with one line per problem, when the directory of either file does not exist or
+  cannot be written to, when a path is a directory, or when the two flags name the same file (also
+  when one is written relative and the other absolute, or reached through a symlinked directory);
+  for example `--record: directory /x/y does not exist`. A `--replay` run gets the same check. The
+  write after the run is unchanged and still reports a failure.
 
 ### Added
 - **`trelix-mcp --transport http` serves MCP over Streamable HTTP** on `127.0.0.1:8766/mcp`

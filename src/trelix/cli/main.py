@@ -3562,6 +3562,23 @@ def _load_replay_answers(replay: str | None) -> dict[str, str] | None:
         raise typer.Exit(1) from exc
 
 
+def _check_synthesis_outputs(record: str | None, per_query_out: str | None) -> None:
+    """Exit 1, one line per problem and before anything is built or paid for, when `--record` or
+    `--per-query-out` cannot be written or both name one file; `eval-suite` checks its `--out` the
+    same way. Advisory: the write at the end of the run still reports a failure, because the
+    directory can change while the run is paid for."""
+    from trelix.eval.synthesis_records import output_file_problems
+
+    problems = output_file_problems(record, per_query_out)
+    for problem in problems:
+        # soft_wrap: one line per problem at any width, like `_print_verdict_line`.
+        err_console.print(
+            f"[red]{_safe_text(problem)}[/red]", emoji=False, highlight=False, soft_wrap=True
+        )
+    if problems:
+        raise typer.Exit(1)
+
+
 def _write_synthesis_outputs(
     records: Sequence[SynthesisRecord],
     metrics: Mapping[str, float],
@@ -3603,7 +3620,8 @@ def eval_synthesis(
             help=(
                 "Also write every query's scores and the aggregate to this JSON file "
                 "(schema_version 1), for comparing two runs query by query. The printed "
-                "results are the same with or without it."
+                "results are the same with or without it. Its directory must exist; this is "
+                "checked before the run starts."
             ),
         ),
     ] = None,
@@ -3628,8 +3646,9 @@ def eval_synthesis(
             help=(
                 "After the run, write every answer the LLM produced to this JSON file in the "
                 "--replay format (mode 0600, written atomically, an existing file replaced), "
-                "so the same answers can be scored again later. Cannot be combined with "
-                "--replay."
+                "so the same answers can be scored again later. Its directory must exist "
+                "(checked before the run starts) and it cannot be the --per-query-out file. "
+                "Cannot be combined with --replay."
             ),
         ),
     ] = None,
@@ -3648,6 +3667,7 @@ def eval_synthesis(
             "--replay and --record cannot be combined: a replay run produces no new answers "
             "to record."
         )
+    _check_synthesis_outputs(record, per_query_out)
     config = IndexConfig(repo_path=repo)
     answers = _load_replay_answers(replay)
     harness = SynthesisEvalHarness(config)
