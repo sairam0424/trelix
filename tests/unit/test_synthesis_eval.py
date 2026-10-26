@@ -331,6 +331,7 @@ class TestHarnessConstructsSynthesizerCorrectly:
             config.embedder,
             retrieval_config=config.retrieval,
             llm_config=config.llm,
+            stream_to_stdout=False,
         )
         assert synth is not None
 

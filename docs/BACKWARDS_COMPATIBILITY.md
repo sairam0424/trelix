@@ -177,7 +177,7 @@ does:
 |---------|--------|-----|
 | `trelix ask <repo> <question> --provider openai` (any non-local embedder; FLARE and agentic mode off) | an LLM answer written without any retrieved code, exit `0` | the notice line on stdout, exit `0`, no LLM call |
 | REST `GET /ask` | `data: <token>` frames of that answer, then `data: [DONE]` | `data: [trelix] No relevant code found — cannot synthesize an answer.` then `data: [DONE]`, no LLM call |
-| `trelix ask` with `TRELIX_RETRIEVAL_FLARE=true`; `trelix eval-synthesis` | the notice, no LLM call | unchanged |
+| `trelix ask` with `TRELIX_RETRIEVAL_FLARE=true` | the notice, no LLM call | unchanged |
 | `trelix ask --provider local` (context only) | the assembler's `No relevant code found.` | unchanged |
 | `trelix ask --provider openai` with no LLM key configured, whatever retrieval found | `Synthesis failed: LLM not configured` on stderr, exit `1` | unchanged: `stream()` checks the key before the retrieval result, as `synthesize()` always did |
 

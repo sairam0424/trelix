@@ -261,11 +261,57 @@ def test_cli_reference_architecture_and_contributing_name_the_trust_metrics() ->
     assert "`citations_total` and `citations_valid`, which only the file carries" in section
     assert "`Citation validity` reads `of 0 cited answers`" in section
     assert "`Citation recall` still reads `of N expecting citations`" in section
-    assert (
-        "| `eval-synthesis [repo]` | --golden/-g, --per-query-out | GroUSE synthesis scoring, "
-        "abstention and citation metrics |"
-    ) in (_REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8")
     assert "eval.synthesis_records" in (_REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+
+def test_cli_reference_documents_recorded_answers_under_eval_synthesis() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    start, end = text.index("### `trelix eval-synthesis`"), text.index("### `trelix eval-validate`")
+    section = _squash(text[start:end])
+
+    assert (
+        "trelix eval-synthesis [<repo_path>] --golden <file> [--per-query-out <file>] "
+        "[--replay <file> | --record <file>]" in section
+    )
+    assert "#### Recorded answers (`--record`, `--replay`)" in section
+    assert "`--replay` and `--record` cannot be combined (exit `2`, a usage error)" in section
+    assert "has no recorded answer" in section
+    assert "stdout is the results table only" in section
+    assert "`--replay`, which makes no synthesis call and builds no Synthesizer" in section
+    assert "`--replay` freezes the answers, not the retrieval" in section
+    assert "its LLM query planner, which calls the LLM up to once per query when one is" in section
+    assert "`TRELIX_RETRIEVAL_PLAN_CACHE_FILE` for a repeatable pair" in section
+    assert "never costs the other file" in section
+    assert "builds no LLM client" not in section
+    assert "needs no provider, key or network" not in section
+
+
+def test_eval_readme_has_the_recorded_answers_section() -> None:
+    text = (_REPO_ROOT / "eval/README.md").read_text(encoding="utf-8")
+    section = _squash(
+        text[text.index("## `golden_synthesis_sample.jsonl`") : text.index("## Related tooling")]
+    )
+
+    assert "### Recorded answers: --record and --replay" in section
+    assert "which replays frozen query plans; this replays the answers" in section
+    assert "It makes no synthesis call and builds no Synthesizer" in section
+    assert "and it is not an offline mode: retrieval is unchanged" in section
+    assert "zero LLM calls" not in section and "no LLM configuration" not in section
+
+
+def test_contributing_names_the_replay_functions() -> None:
+    text = (_REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    assert "(`load_replay`, `write_replay_file`)" in text
+
+
+def test_architecture_eval_synthesis_row_lists_the_flags() -> None:
+    text = (_REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+
+    assert (
+        "| `eval-synthesis [repo]` | --golden/-g, --per-query-out, --replay, --record | GroUSE "
+        "synthesis scoring, abstention and citation metrics |"
+    ) in text
 
 
 def test_the_sample_golden_has_four_valid_lines_the_last_unanswerable() -> None:

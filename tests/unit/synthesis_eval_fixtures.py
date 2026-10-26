@@ -1,6 +1,7 @@
 """Shared helpers for the synthesis eval v2 tests (not a test module; imported as
-``tests.unit.synthesis_eval_fixtures`` by test_synthesis_eval_v2.py, test_synthesis_eval_records.py
-and test_synthesis_eval_metrics.py; the next change in this series extends it, never duplicates it).
+``tests.unit.synthesis_eval_fixtures`` by test_synthesis_eval_v2.py, test_synthesis_eval_records.py,
+test_synthesis_eval_metrics.py, test_synthesis_eval_replay.py and test_cli_eval_synthesis_replay.py;
+extend it, never duplicate it).
 The constants here are INPUTS; every value a test compares against is a literal in the test."""
 
 from __future__ import annotations
@@ -8,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from tests.fixtures.citation_context import BEARER_BLOCK, VERIFY_BLOCK, bearer_result, verify_result
 from trelix.core.config import IndexConfig
@@ -74,15 +77,30 @@ def tagged_context(query: str) -> RetrievedContext:
 
 
 class StubRetriever:
-    """The verify context for every query (`tagged_context` when `tagged`); raises for the named."""
+    """The verify context for every query (`tagged_context` when `tagged`); an empty retrieval for
+    the queries in `empty_for` and a raised error for those in `raise_for`."""
 
-    def __init__(self, raise_for: frozenset[str] = frozenset(), tagged: bool = False) -> None:
+    def __init__(
+        self,
+        raise_for: frozenset[str] = frozenset(),
+        tagged: bool = False,
+        empty_for: frozenset[str] = frozenset(),
+    ) -> None:
         self.raise_for = raise_for
         self.tagged = tagged
+        self.empty_for = empty_for
         self.calls = 0
 
     def retrieve(self, query: str) -> RetrievedContext:
         self.calls += 1
+        if query in self.empty_for:
+            return RetrievedContext(
+                query=query,
+                results=[],
+                context_text="No relevant code found.",
+                total_tokens=0,
+                citation_sources=(),
+            )
         if query in self.raise_for:
             raise RuntimeError("index is unreadable")
         if self.tagged:
@@ -114,6 +132,23 @@ def make_harness(tmp_path: Path, retriever: StubRetriever) -> SynthesisEvalHarne
     harness._config = IndexConfig(repo_path=str(tmp_path))
     harness._retriever = retriever
     return harness
+
+
+def install_stub_harness(
+    monkeypatch: pytest.MonkeyPatch, retriever: StubRetriever
+) -> list[IndexConfig]:
+    """Make `SynthesisEvalHarness(config)` a harness over `retriever` (no database is opened), for
+    tests that go through the CLI. Returns the configs it was built with, one per construction."""
+    built: list[IndexConfig] = []
+
+    def stub_init(self: SynthesisEvalHarness, config: IndexConfig) -> None:
+        built.append(config)
+        self._config = config
+        self._retriever = retriever
+        self.last_answers = {}
+
+    monkeypatch.setattr(SynthesisEvalHarness, "__init__", stub_init)
+    return built
 
 
 def make_record(**overrides: Any) -> SynthesisRecord:
