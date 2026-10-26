@@ -121,10 +121,13 @@ def test_http_flags_reach_run(
     assert kwargs["path"] == "/mcp"
     assert kwargs["stateless_http"] is stateless
     assert kwargs["host_origin_protection"] is False
-    assert [(m.cls, m.kwargs) for m in kwargs["middleware"]] == [
-        (RequestGuardMiddleware, {"allowed_hosts": frozenset({"localhost", "127.0.0.1", "::1"})}),
-        (BearerTokenMiddleware, {"token": "t0k"}),
-    ]
+    guard, bearer = kwargs["middleware"]
+    assert (guard.cls, sorted(guard.kwargs)) == (
+        RequestGuardMiddleware,
+        ["allowed_hosts", "cross_site_detail", "rejection_detail"],
+    )
+    assert guard.kwargs["allowed_hosts"] == frozenset({"localhost", "127.0.0.1", "::1"})
+    assert (bearer.cls, bearer.kwargs) == (BearerTokenMiddleware, {"token": "t0k"})
     assert log in caplog.text
 
 

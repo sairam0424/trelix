@@ -54,6 +54,12 @@ CORE_TOOL_NAMES = frozenset(
 )
 
 
+def _plain(text: str) -> str:
+    """Python 3.14 colours argparse help when FORCE_COLOR or PYTHON_COLORS is set; the assertions
+    read the words, so the escape codes that split `--tools` from `{core,full}` are dropped."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_server_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give each test a private copy of what `--tools core` changes; monkeypatch restores it.
@@ -248,9 +254,21 @@ def test_tools_flag_without_a_value_is_a_usage_error(
     assert "expected one argument" in capsys.readouterr().err
 
 
+def test_plain_drops_colour_codes_and_keeps_the_words() -> None:
+    """Feed `_plain` the escape codes Python 3.14 puts in coloured help, on any interpreter."""
+    coloured = (
+        "  \x1b[1;36m--tools\x1b[0m \x1b[1;33m{core,full}\x1b[0m  \x1b[32m'full' (default)\x1b[0m"
+    )
+
+    assert _plain(coloured) == "  --tools {core,full}  'full' (default)"
+
+
 def test_help_documents_the_tools_flag(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # Ask for colour so Python 3.14 prints the escape codes whatever the CI environment sets;
+    # older Pythons ignore the variable and print plain help.
+    monkeypatch.setenv("PYTHON_COLORS", "1")
     monkeypatch.setattr("sys.argv", ["trelix-mcp", "--help"])
     monkeypatch.setattr(server_module.mcp, "run", MagicMock())
 
@@ -258,6 +276,6 @@ def test_help_documents_the_tools_flag(
         server_module.main()
 
     assert exc_info.value.code == 0
-    out = capsys.readouterr().out
+    out = _plain(capsys.readouterr().out)
     assert "--tools {core,full}" in out
     assert "'full' (default)" in out

@@ -37,14 +37,13 @@ UNAUTHORIZED = (
     "(or TRELIX_API_AUTH_TOKEN)."
 )
 REJECTION = (
-    "Request rejected: the Host or Origin header is not allowed for this trelix server. "
-    "If the hostname is legitimate, add it to TRELIX_API_ALLOWED_HOSTS (comma-separated). "
-    "Set TRELIX_API_ALLOWED_HOSTS=* to disable this check."
+    "Request rejected: the Host or Origin header is not allowed for this trelix-mcp server. "
+    "If the hostname is legitimate, add it to TRELIX_MCP_ALLOWED_HOSTS (comma-separated) or "
+    "pass --allowed-host (repeatable)."
 )
 CROSS_SITE = (
-    "Request rejected: this trelix server refuses cross-site browser requests. Call it "
-    "from a page served from the same host as the API, or set "
-    "TRELIX_API_ALLOWED_HOSTS=* to disable this check."
+    "Request rejected: this trelix-mcp server refuses cross-site browser requests. Call it "
+    "from a page served from the same host as this server."
 )
 HOST = ("host", "127.0.0.1:8766")
 EVIL_HOST = ("host", "evil.example")
@@ -138,7 +137,7 @@ async def test_401_logs_no_header_value(caplog: pytest.LogCaptureFixture) -> Non
         await raw(_guarded, "POST", "/mcp", headers=[HOST, ("authorization", "Bearer nope")])
     records = [r for r in caplog.records if r.name == LOGGER]
     assert [(r.levelname, r.getMessage()) for r in records] == [
-        ("WARNING", "Rejected POST /mcp: missing or invalid bearer token")
+        ("WARNING", "Rejected POST '/mcp': missing or invalid bearer token")
     ]
     assert "nope" not in caplog.text
 
@@ -147,6 +146,23 @@ async def test_401_logs_no_header_value(caplog: pytest.LogCaptureFixture) -> Non
         await raw(_guarded, "POST", "/" + "a" * 2000, headers=[HOST])
     (record,) = [r for r in caplog.records if r.name == LOGGER]
     assert len(record.getMessage()) < 300
+
+
+async def test_401_log_escapes_a_newline_in_the_path(caplog: pytest.LogCaptureFixture) -> None:
+    """uvicorn unquotes the path, so `/mcp%0d%0a...` reaches the middleware with a real CR LF; the
+    log must show it escaped inside quotes, on one line, not as a second forged record.
+
+    MUTATION: log `str(scope.get("path") or "")[:100]` again (two lines, the second a forged
+    `Accepted POST /mcp: admin login ok`).
+    """
+    forged = "/mcp\r\nWARNING trelix_mcp.http: Accepted POST /mcp: admin login ok"
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        await raw(_guarded, "POST", forged, headers=[HOST])
+    (record,) = [r for r in caplog.records if r.name == LOGGER]
+    assert record.getMessage() == (
+        "Rejected POST '/mcp\\r\\nWARNING trelix_mcp.http: Accepted POST /mcp: admin login ok': "
+        "missing or invalid bearer token"
+    )
 
 
 def _throwaway_app(tmp_path: Path, *, stateful: bool = False) -> Any:

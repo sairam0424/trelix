@@ -94,6 +94,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   unchanged.
 
 ### Fixed
+- **`trelix-mcp --transport http` no longer lets a request path forge a log record, and its 403
+  names the variable it reads.** The warning for a request refused by the bearer check wrote the
+  path as the server had decoded it, so a request for `/mcp%0aWARNING%20...` put a newline in the
+  log and a second, forged record after it. The path is now logged in quotes with control
+  characters escaped and cut at 100 characters, as the Host/Origin guard already logs a hostile
+  header (`Rejected POST '/mcp': missing or invalid bearer token`). The guard's 403 bodies named
+  `TRELIX_API_ALLOWED_HOSTS` and suggested `*`, but `trelix-mcp` reads that variable only when
+  `TRELIX_MCP_ALLOWED_HOSTS` is unset, and `docker-compose.yml` and the Helm chart always set the
+  MCP one: following the message changed nothing and told the operator to switch the check off.
+  The Host/Origin 403 of `trelix-mcp` now names `TRELIX_MCP_ALLOWED_HOSTS` and `--allowed-host`,
+  its cross-site 403 no longer names the REST variable, and neither suggests `*`. The REST API's
+  bodies are unchanged.
 - **`trelix-mcp` keeps at most `TRELIX_MCP_RETRIEVER_CACHE_SIZE` (default 8) Retrievers; the least
   recently used is dropped, not closed.** The cache had no bound, and each entry may hold an
   embedding model (`local` provider). A value that is not an integer of at least 1 stops the

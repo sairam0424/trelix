@@ -1497,12 +1497,13 @@ are `*`: it accepts `localhost`, `127.0.0.1`, `::1`, the bind address when it is
 (`0.0.0.0` and `::` are accepted only when listed), every `--allowed-host` and the variable's
 names. A request under another `Host`, or with an `Origin` it does not allow (`null` included),
 answers `403` with
-`{"detail": "Request rejected: the Host or Origin header is not allowed for this trelix server. If the hostname is legitimate, add it to TRELIX_API_ALLOWED_HOSTS (comma-separated). Set TRELIX_API_ALLOWED_HOSTS=* to disable this check."}`,
+`{"detail": "Request rejected: the Host or Origin header is not allowed for this trelix-mcp server. If the hostname is legitimate, add it to TRELIX_MCP_ALLOWED_HOSTS (comma-separated) or pass --allowed-host (repeatable)."}`,
 and `Sec-Fetch-Site: cross-site` answers `403` with
-`{"detail": "Request rejected: this trelix server refuses cross-site browser requests. Call it from a page served from the same host as the API, or set TRELIX_API_ALLOWED_HOSTS=* to disable this check."}`.
-The 403 text names `TRELIX_API_ALLOWED_HOSTS` because the check is the REST API's. `trelix-mcp`
-reads `TRELIX_MCP_ALLOWED_HOSTS` first and falls back to `TRELIX_API_ALLOWED_HOSTS` only when the
-MCP variable is unset or blank; when both are set, only the MCP one counts, including `*`.
+`{"detail": "Request rejected: this trelix-mcp server refuses cross-site browser requests. Call it from a page served from the same host as this server."}`.
+The REST API's own 403 bodies name `TRELIX_API_ALLOWED_HOSTS` and say to set it to `*` to turn the
+check off. `trelix-mcp` words its two bodies for its own settings and never suggests `*`: it reads
+`TRELIX_MCP_ALLOWED_HOSTS` first and falls back to `TRELIX_API_ALLOWED_HOSTS` only when the MCP
+variable is unset or blank; when both are set, only the MCP one counts, including `*`.
 
 Tool calls. A `repo_path` (or `federation_add_repo`'s `path`) outside every root answers
 `isError: true` with `repo_path is not inside an allowed repository root` (section 8). The

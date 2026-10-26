@@ -226,7 +226,7 @@ class TestTrelixMcpOverARealSocket:
         assert '"protocolVersion"' in accepted.text
         assert re.search(r'"name":\s*"trelix"', accepted.text)
         log = server.log.read_text(encoding="utf-8", errors="replace")
-        assert "Rejected POST /mcp: missing or invalid bearer token" in log
+        assert "Rejected POST '/mcp': missing or invalid bearer token" in log
         assert _WRONG_VALUE not in log
 
     def test_a_foreign_host_is_403_even_with_the_token(self, server: _Server) -> None:

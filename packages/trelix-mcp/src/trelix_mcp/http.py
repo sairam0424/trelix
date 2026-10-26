@@ -12,10 +12,11 @@ allow-list. ``trelix-mcp`` reads ``TRELIX_MCP_ALLOWED_HOSTS`` first and falls ba
 ``TRELIX_API_ALLOWED_HOSTS`` only when the MCP variable is unset or blank; when both are set,
 only the MCP one counts, including ``*``.
 
-The Host/Origin guard is the REST API's ``RequestGuardMiddleware``, so the 403 bodies are the
-REST guard's and name ``TRELIX_API_ALLOWED_HOSTS``. The bearer check is this module's own
-raw-ASGI ``BearerTokenMiddleware``: a 401 with ``WWW-Authenticate: Bearer`` and a fixed body,
-``GET``/``HEAD`` ``/health`` exempt. The guard is always the outer of the two.
+The Host/Origin guard is the REST API's ``RequestGuardMiddleware`` with this module's own 403
+bodies, which name ``TRELIX_MCP_ALLOWED_HOSTS`` and ``--allowed-host`` (the REST texts name
+``TRELIX_API_ALLOWED_HOSTS``, which is read only when the MCP variable is unset). The bearer check
+is this module's own raw-ASGI ``BearerTokenMiddleware``: a 401 with ``WWW-Authenticate: Bearer``
+and a fixed body, ``GET``/``HEAD`` ``/health`` exempt. The guard is always the outer of the two.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from trelix.api.request_guard import (
     HEALTH_PATH,
     LOOPBACK_HOSTS,
     RequestGuardMiddleware,
+    bounded_repr,
     is_health_probe,
     loopback_bind_allowed_hosts,
     normalise_host,
@@ -55,7 +57,6 @@ API_ALLOWED_HOSTS_ENV = "TRELIX_API_ALLOWED_HOSTS"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
 DEFAULT_PATH = "/mcp"
-_MAX_LOGGED_CHARS = 100
 _WS_POLICY_VIOLATION = 1008
 
 # Fixed on purpose: it names the fix and never echoes what the client sent.
@@ -63,6 +64,18 @@ UNAUTHORIZED_DETAIL = (
     "Invalid or missing bearer token. Send Authorization: Bearer <token> or "
     "X-Trelix-Api-Key: <token> matching the server's TRELIX_MCP_AUTH_TOKEN "
     "(or TRELIX_API_AUTH_TOKEN)."
+)
+
+# The guard's 403 texts for this server, fixed on purpose like the 401 above: they name the
+# variable and flag that apply here and never suggest `*`, which would turn the whole guard off.
+HOST_REJECTION_DETAIL = (
+    "Request rejected: the Host or Origin header is not allowed for this trelix-mcp server. "
+    "If the hostname is legitimate, add it to TRELIX_MCP_ALLOWED_HOSTS (comma-separated) or "
+    "pass --allowed-host (repeatable)."
+)
+CROSS_SITE_DETAIL = (
+    "Request rejected: this trelix-mcp server refuses cross-site browser requests. Call it "
+    "from a page served from the same host as this server."
 )
 
 _Scope = MutableMapping[str, Any]
@@ -289,7 +302,7 @@ class BearerTokenMiddleware:
         _log.warning(
             "Rejected %s %s: missing or invalid bearer token",
             scope.get("method", scope["type"]),
-            str(scope.get("path") or "")[:_MAX_LOGGED_CHARS],
+            bounded_repr(scope.get("path")),
         )
         await _reject(scope, send)
 
@@ -298,7 +311,14 @@ def asgi_middleware(settings: HttpSettings) -> list[Middleware]:
     """The guard first (outermost), then the bearer check; each only when it applies."""
     layers: list[Middleware] = []
     if settings.guard_hosts is not None:
-        layers.append(Middleware(RequestGuardMiddleware, allowed_hosts=settings.guard_hosts))
+        layers.append(
+            Middleware(
+                RequestGuardMiddleware,
+                allowed_hosts=settings.guard_hosts,
+                rejection_detail=HOST_REJECTION_DETAIL,
+                cross_site_detail=CROSS_SITE_DETAIL,
+            )
+        )
     if settings.token is not None:
         layers.append(Middleware(BearerTokenMiddleware, token=settings.token))
     return layers
