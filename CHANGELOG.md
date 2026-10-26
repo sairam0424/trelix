@@ -351,6 +351,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   comma list, a URL, a wildcard, a blank) are refused (pass the port with `--port` and repeat
   `--allowed-host` for more than one; only `TRELIX_MCP_ALLOWED_HOSTS=*` turns the guard off) and
   `--host [::1]` binds `::1`. stdio with no flags is unchanged. See `docs/MCP_GUIDE.md` section 19.
+- **`trelix-mcp --transport http` has a real-socket end-to-end test**
+  (`tests/e2e/test_mcp_http_e2e.py`). It starts the installed `trelix-mcp` as a child process on a
+  free loopback port with a bearer token and one `--root`, waits for `GET /health`, and checks over
+  TCP that a missing or wrong token is `401` with `WWW-Authenticate: Bearer` and the wrong value is
+  never logged, that a foreign `Host` is `403`, that `fastmcp.Client` initializes and lists the 15
+  tools in both protocol eras, that a `repo_path` outside the root is refused, and that SIGTERM
+  exits 0. It needs no model and no network beyond 127.0.0.1, runs in CI's `e2e` job and in the
+  release smoke job against the built wheels, and skips where `trelix-mcp` is not on PATH. No
+  product change.
 - **GenAI `chat` spans for every LLM call, behind `TRELIX_OTEL_ENABLED`** (roadmap C-8, requirement
   R-C6-02; PR 3 of 4). `build_chat_client()` returns the backend wrapped in a `TracedChatClient`
   (`src/trelix/llm/otel.py`) when the flag resolves true from the environment, and every
