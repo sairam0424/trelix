@@ -26,8 +26,9 @@ from http_support import INIT_BODY, asgi_factory, build_app, raw, serving
 
 pytestmark = [pytest.mark.disable_socket, pytest.mark.timeout(60)]
 
-TOKEN_ENV = {"TRELIX_MCP_AUTH_TOKEN": "t0k"}
-AUTH = ("authorization", "Bearer t0k")
+_PLACEHOLDER = "NOT-A-REAL-CREDENTIAL-transport-placeholder-do-not-use"
+TOKEN_ENV = {"TRELIX_MCP_AUTH_TOKEN": _PLACEHOLDER}
+AUTH = ("authorization", f"Bearer {_PLACEHOLDER}")
 UNAUTHORIZED = (
     "Invalid or missing bearer token. Send Authorization: Bearer <token> or "
     "X-Trelix-Api-Key: <token> matching the server's TRELIX_MCP_AUTH_TOKEN "
@@ -202,7 +203,7 @@ async def test_bearer_through_the_wired_app(app: Any) -> None:
             app, "POST", "/mcp", headers=_headers(AUTH), body=INIT_BODY.encode()
         )
         assert status == 200
-        api_key = _headers(("x-trelix-api-key", "t0k"))
+        api_key = _headers(("x-trelix-api-key", _PLACEHOLDER))
         status, _, _ = await raw(app, "POST", "/mcp", headers=api_key, body=INIT_BODY.encode())
         assert status == 200
 
