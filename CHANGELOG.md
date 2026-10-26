@@ -579,6 +579,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   joins `scripts/mutation.py`'s scope with its baseline regenerated. Answers on this path are capped
   at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`) while plain
   `trelix ask` streams at 12,000: pre-existing, documented now.
+- **`trelix eval-synthesis --record` and `--replay`: score recorded answers without a synthesis call** (sixth and
+  last of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does
+  not answer the question). `--record FILE` writes every answer the run produced as
+  `{"schema_version": 1, "answers": {query: answer}}` (ASCII-escaped, sorted keys, mode 0600, atomic,
+  an existing file replaced). The file is written after the table, together with `--per-query-out`:
+  both are attempted, a failure of either is reported (`Could not write the replay file: ...`, `Could not
+  write per-query results: ...`) and is exit `1`, so a bad `--per-query-out` path cannot cost the
+  recorded answers of a paid run. `--replay FILE` scores those answers again: no synthesis call is
+  made and no Synthesizer is built, but retrieval is unchanged. It needs the index, runs its LLM
+  query planner (up to a call per query when an LLM is configured; set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`
+  on the live run too and the replay reads the plans back) and, for a non-local embedder, embeds the
+  query. Abstention, citation verification and scoring are the live run's code path, so a replay of a
+  run's own recorded answers reproduces its records and aggregate exactly when no query's retrieval
+  failed, no golden query repeats and retrieval returns the same context (tested on the six-line
+  example of `eval/README.md` and on a v1 file, with a stub retriever), and a scoring change can be
+  measured on frozen answers instead of a fresh sample. A file that cannot be used (over 20 MB, not
+  JSON, another `schema_version`, a non-string answer, an unknown key) is refused with every problem
+  on one line before the index is opened, and a golden query the file lacks stops the run before any
+  query (`replay file has no answer for 2 queries: 'a', 'b'`); both are exit `1`,
+  and the two flags together are a usage error, exit `2`. Answers are keyed by the query text, so two
+  identical golden queries share one. A query whose retrieval raised has no answer to record, so
+  `--record` leaves it out and replaying that file is refused until the query is fixed, removed or
+  answered by hand in the JSON (recording `""` would score an invented answer against a retrieval that
+  may now succeed). These are recorded answers, unrelated to `trelix eval-suite`'s replay of frozen
+  query plans.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
@@ -1100,6 +1125,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   500-line limit with the `is_enabled_from_env()` and `handler_from_env()` helpers the LLM factory
   uses. No behaviour change; the metrics tests (`tests/unit/test_otel_metrics*.py`) were not touched
   by the move.
+- **`trelix eval-synthesis` prints the results table only.** The answers used to stream to stdout as
+  each query was synthesised (the Synthesizer's live token stream, the path `trelix ask` uses), ahead of
+  the table, with the `[trelix] ...` notices; they no longer do. A script that read answers from that
+  stream uses `--record`. A run with no LLM configured logs one warning instead of one notice per
+  query, so a table of zeros still says why.
 
 ## [3.4.3] — 2026-10-04
 

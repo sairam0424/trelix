@@ -1235,7 +1235,7 @@ reports the same. See `eval/README.md`.
 #### Synopsis
 
 ```
-trelix eval-synthesis [<repo_path>] --golden <file> [--per-query-out <file>]
+trelix eval-synthesis [<repo_path>] --golden <file> [--per-query-out <file>] [--replay <file> | --record <file>]
 ```
 
 #### Description
@@ -1254,6 +1254,8 @@ prints their means, ratios and counts, and `--per-query-out` writes the records.
 |--------|-------|------|---------|-------------|
 | `--golden` | `-g` | string | `.trelix/golden_synthesis.jsonl` | Path to the golden JSONL file. |
 | `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. |
+| `--replay` | | string | *(none)* | Score the recorded answers in this file: no synthesis call is made, but retrieval (the index, its LLM query planner, the query embedding) still runs. Cannot be combined with `--record`. |
+| `--record` | | string | *(none)* | After the run, write every answer the LLM produced to this file in the `--replay` format (mode 0600, written atomically). Cannot be combined with `--replay`. |
 
 #### Examples
 
@@ -1325,11 +1327,61 @@ worked example of `eval/README.md`):
 Each `Direction` cell of the four ratio rows names the denominator the ratio
 ran over, so a `0.5000` is never read without its sample size.
 
+#### Recorded answers (`--record`, `--replay`)
+
+`--record` keeps the answers a run produced, and `--replay` scores them again
+against the same index with no synthesis call, so a scoring change can be
+measured on frozen answers instead of on a fresh sample:
+
+```bash
+trelix eval-synthesis . -g eval/golden_synthesis_sample.jsonl --record /tmp/answers.json
+trelix eval-synthesis . -g eval/golden_synthesis_sample.jsonl --replay /tmp/answers.json
+```
+
+The file is `{"schema_version": 1, "answers": {"<golden query>": "<answer>"}}`
+(ASCII-escaped JSON with sorted keys, mode 0600, written atomically through a
+temporary file beside the target; an existing file is replaced). On `--replay`:
+
+- the file is at most 20 MB, has exactly those two keys, and every value of
+  `answers` is a string (an empty answer is fine); every problem found is
+  reported on one line, `Evaluation failed: replay file: ...`, exit `1`, before
+  the index is opened;
+- every golden query must have an answer, else `Evaluation failed: replay file
+  has no answer for N queries: ...` (the first five are named) and exit `1`
+  before any query runs;
+- answers are keyed by the query text, so two identical golden queries share one
+  answer: the later live answer is the one recorded.
+
+`--replay` and `--record` cannot be combined (exit `2`, a usage error): a replay
+run produces no new answers to record. A replay of a run's own recorded answers
+gives the same table and the same records as that run when no query's retrieval
+failed, no golden query repeats and retrieval returns the same context (see the
+`--replay` note below). These are recorded answers; `trelix eval-suite`'s replay is
+unrelated and freezes query plans.
+
 #### Notes
 
 - `<repo_path>` defaults to `.` if omitted.
 - Requires a configured LLM provider (synthesis makes real LLM calls) —
-  unlike `trelix eval`, which only exercises retrieval.
+  unlike `trelix eval`, which only exercises retrieval — except with
+  `--replay`, which makes no synthesis call and builds no Synthesizer (retrieval
+  is another matter: see the `--replay` note below).
+- stdout is the results table only: the answers are not echoed as they stream;
+  `--record` keeps them. A run with no LLM configured logs one warning (every
+  answer then scores as empty) instead of printing a notice per query.
+- `--replay` freezes the answers, not the retrieval: it needs the index, and
+  retrieval runs as in a live run. That includes its LLM query planner, which
+  calls the LLM up to once per query when one is configured (that needs its provider,
+  key and network), and, for a non-local embedder, the embedding of the query.
+  Freeze the planner with `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` for a repeatable
+  pair (`eval-synthesis` has no `--plan-cache-file` flag).
+- `--record` and `--per-query-out` are written after the table, and both are
+  attempted: a file that cannot be written is reported (`Could not write the
+  replay file: ...` for this one) and ends the command with exit `1`, but never
+  costs the other file. Nothing is written for a golden file that is refused.
+- A query whose retrieval raised in the live run has no recorded answer, so
+  replaying that file is refused with the message above until the query is
+  fixed, removed from the golden file, or given an answer by hand in the JSON.
 - A missing golden file prints `Golden file not found: <path>` and exits `1`;
   a file with only blank or non-JSON lines prints the all-zero table and
   exits `0`.

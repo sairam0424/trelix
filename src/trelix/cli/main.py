@@ -53,6 +53,8 @@ if TYPE_CHECKING:
     from trelix.eval.harness import QueryRecord
     from trelix.eval.suite_prepare import PreparedSuite
     from trelix.eval.suite_run import SuiteRun
+    from trelix.eval.synthesis import SynthesisEvalHarness
+    from trelix.eval.synthesis_records import SynthesisRecord
     from trelix.indexing.embedding_cache import EmbeddingCache
     from trelix.indexing.indexer import Indexer
     from trelix.retrieval.retriever import Retriever
@@ -3545,6 +3547,49 @@ def _synthesis_table(metrics: Mapping[str, float]) -> Table:
     return table
 
 
+def _load_replay_answers(replay: str | None) -> dict[str, str] | None:
+    """The answers `--replay` names (None without it); an unusable file ends the command here,
+    before any index is opened."""
+    if replay is None:
+        return None
+    from trelix.eval._loading import ProblemsError
+    from trelix.eval.synthesis_records import load_replay
+
+    try:
+        return load_replay(Path(replay))
+    except ProblemsError as exc:
+        _print_error("Evaluation failed", exc)
+        raise typer.Exit(1) from exc
+
+
+def _write_synthesis_outputs(
+    records: Sequence[SynthesisRecord],
+    metrics: Mapping[str, float],
+    per_query_out: str | None,
+    record: str | None,
+    harness: SynthesisEvalHarness,
+) -> None:
+    """Write the files `--per-query-out` and `--record` ask for. Both are attempted, so a path that
+    cannot be written never costs the other file (the recorded answers are the paid part of a
+    run); each failure is reported, and any failure ends the command with exit 1.
+    `harness.last_answers` is read only for `--record`."""
+    from trelix.eval.synthesis_records import write_replay_file, write_synthesis_per_query_file
+
+    failed = False
+    if per_query_out is not None:
+        error = write_synthesis_per_query_file(per_query_out, records, metrics)
+        if error is not None:
+            _print_error("Could not write per-query results", error)
+            failed = True
+    if record is not None:
+        error = write_replay_file(record, harness.last_answers)
+        if error is not None:
+            _print_error("Could not write the replay file", error)
+            failed = True
+    if failed:
+        raise typer.Exit(1)
+
+
 @app.command("eval-synthesis")
 def eval_synthesis(
     repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
@@ -3562,19 +3607,52 @@ def eval_synthesis(
             ),
         ),
     ] = None,
+    replay: Annotated[
+        str | None,
+        typer.Option(
+            "--replay",
+            help=(
+                "Score the answers recorded in this JSON file: no synthesis call is made. "
+                "Retrieval is unchanged, so the repository must be indexed, its LLM query "
+                "planner still runs when an LLM is configured (freeze it with "
+                "TRELIX_RETRIEVAL_PLAN_CACHE_FILE) and a non-local embedder still embeds the "
+                "query. The file must hold an answer for every golden query (a missing one "
+                "stops the run before any query, exit 1). Cannot be combined with --record."
+            ),
+        ),
+    ] = None,
+    record: Annotated[
+        str | None,
+        typer.Option(
+            "--record",
+            help=(
+                "After the run, write every answer the LLM produced to this JSON file in the "
+                "--replay format (mode 0600, written atomically, an existing file replaced), "
+                "so the same answers can be scored again later. Cannot be combined with "
+                "--replay."
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """Evaluate synthesis quality against a golden QA file (GroUSE-style)."""
+    """Evaluate synthesis quality against a golden QA file (GroUSE-style).
+
+    Prints the results table and nothing else on stdout: the answers are not echoed as they
+    stream; `--record` keeps them.
+    """
     from trelix.core.config import IndexConfig
     from trelix.eval.synthesis import SynthesisEvalHarness
-    from trelix.eval.synthesis_records import (
-        aggregate_synthesis_metrics,
-        write_synthesis_per_query_file,
-    )
+    from trelix.eval.synthesis_records import aggregate_synthesis_metrics
 
+    if replay is not None and record is not None:
+        raise typer.BadParameter(
+            "--replay and --record cannot be combined: a replay run produces no new answers "
+            "to record."
+        )
     config = IndexConfig(repo_path=repo)
+    answers = _load_replay_answers(replay)
     harness = SynthesisEvalHarness(config)
     try:
-        records = harness.run_detailed(golden)
+        records = harness.run_detailed(golden, replay=answers)
     except FileNotFoundError:
         console.print(f"[red]Golden file not found: {_safe_text(golden)}[/red]")
         console.print("Create a golden_synthesis.jsonl with lines like:")
@@ -3590,11 +3668,7 @@ def eval_synthesis(
     # Pure, so outside the `try`: a failure here is a bug, not an evaluation failure.
     metrics = aggregate_synthesis_metrics(records)
     console.print(_synthesis_table(metrics))
-    if per_query_out is not None:
-        error = write_synthesis_per_query_file(per_query_out, records, metrics)
-        if error is not None:
-            _print_error("Could not write per-query results", error)
-            raise typer.Exit(1)
+    _write_synthesis_outputs(records, metrics, per_query_out, record, harness)
 
 
 def _reject_nan(value: float) -> float:

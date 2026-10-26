@@ -34,10 +34,12 @@ from trelix.eval.synthesis_records import (
     abstain_reason_for,
     aggregate_synthesis_metrics,
     failed_record,
+    missing_replay_answers,
+    missing_replay_message,
     scored_record,
 )
 from trelix.retrieval.citations import Citation, verify_citations
-from trelix.retrieval.synthesizer import Synthesizer
+from trelix.retrieval.synthesizer import NOT_CONFIGURED_MESSAGE, Synthesizer
 
 if TYPE_CHECKING:
     from trelix.core.config import IndexConfig
@@ -273,6 +275,23 @@ def _verified_citations(answer: str, context: RetrievedContext, repo_root: Path)
     return verify_citations(answer, context.citation_sources, repo_root)
 
 
+def _answer_for(
+    query: str, context: RetrievedContext, source: Synthesizer | Mapping[str, str]
+) -> str:
+    """The answer to score for `query`: the recorded one when `source` is the replay's answers,
+    else the Synthesizer's. A synthesis that raises is non-fatal (one flaky LLM call must not
+    abort the run) but not silent: an empty answer scores like a bad one, so it is logged."""
+    if isinstance(source, Mapping):
+        return source[query]
+    try:
+        return source.synthesize(context)
+    except Exception as exc:
+        logger.warning(
+            "Synthesis failed for query %r, scoring an empty answer: %s", query[:80], exc
+        )
+        return ""
+
+
 class SynthesisEvalHarness:
     """
     Run a synthesis quality evaluation against a golden QA file.
@@ -301,6 +320,8 @@ class SynthesisEvalHarness:
         # what stopped mypy --strict from noticing that this IndexConfig was being handed
         # to Synthesizer, which takes an EmbedderConfig.
         self._config = config
+        # The answer each query of the last run got, for `--record`; see `run_detailed`.
+        self.last_answers: dict[str, str] = {}
         from trelix.retrieval.retriever import Retriever
 
         self._retriever = Retriever(config)
@@ -333,8 +354,18 @@ class SynthesisEvalHarness:
         """
         return aggregate_synthesis_metrics(self.run_detailed(golden_path))
 
-    def run_detailed(self, golden_path: str) -> list[SynthesisRecord]:
-        """One record per golden line, in file order; `[]` for a file with no entries."""
+    def run_detailed(
+        self, golden_path: str, *, replay: Mapping[str, str] | None = None
+    ) -> list[SynthesisRecord]:
+        """One record per golden line, in file order; `[]` for a file with no entries.
+
+        `replay` (query -> answer, from `load_replay`) scores those recorded answers instead of
+        asking the model. It freezes the answers, not the retrieval: the index and the planner
+        still run (freeze the plans with `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` for a repeatable
+        pair). `last_answers` holds, per call, the answer of each query whose retrieval
+        succeeded; a query whose retrieval raised has none.
+        """
+        self.last_answers = {}
         path = Path(golden_path)
         if not path.exists():
             # Refuse rather than report 0.0 — a missing file and a genuinely bad
@@ -348,30 +379,66 @@ class SynthesisEvalHarness:
         if not entries:
             return []
 
-        # Built once, outside the loop. Constructing it per entry re-initialised an LLM
-        # client for every query in the golden file.
-        #
-        # The argument shape matters and was wrong: Synthesizer takes an EmbedderConfig
-        # first, and with llm_config=None it falls into a shim that reads
-        # `config.provider`. Passing the IndexConfig raised AttributeError on every call,
-        # which the swallow below turned into an empty answer — so every query scored
-        # against `""` and `overall` was a constant. This mirrors the construction
-        # `trelix ask` uses.
-        synthesizer = Synthesizer(
-            self._config.embedder,
-            retrieval_config=self._config.retrieval,
-            llm_config=self._config.llm,
-        )
+        if replay is not None:
+            return self._replayed(entries, replay)
+
+        synthesizer = self._build_synthesizer()
         repo_root = Path(self._config.repo_path)
         return [
             self._record(entry, position, synthesizer, repo_root)
             for position, entry in enumerate(entries, start=1)
         ]
 
+    def _build_synthesizer(self) -> Synthesizer:
+        """The live run's Synthesizer, built once outside the loop: constructing it per entry
+        re-initialised an LLM client for every query in the golden file.
+
+        The argument shape matters and was wrong: Synthesizer takes an EmbedderConfig first, and
+        with llm_config=None it falls into a shim that reads `config.provider`. Passing the
+        IndexConfig raised AttributeError on every call, which the swallow in `_answer_for` turned
+        into an empty answer, so every query scored against `""` and `overall` was a constant.
+        This mirrors the construction `trelix ask` uses. Silent on stdout, so that
+        `eval-synthesis` prints its table only (`--record` keeps the answers).
+        """
+        synthesizer = Synthesizer(
+            self._config.embedder,
+            retrieval_config=self._config.retrieval,
+            llm_config=self._config.llm,
+            stream_to_stdout=False,
+        )
+        if not synthesizer.is_configured:
+            # The per-query notice is silent now; a table of zeros must not be silent about why.
+            logger.warning(
+                "No LLM is configured, so every answer will score as empty: %s",
+                NOT_CONFIGURED_MESSAGE,
+            )
+        return synthesizer
+
+    def _replayed(
+        self, entries: list[dict[str, Any]], replay: Mapping[str, str]
+    ) -> list[SynthesisRecord]:
+        """Score `replay`'s answers: no Synthesizer is built, and a golden query the mapping
+        lacks stops the run here, before any query."""
+        missing = missing_replay_answers([e.get("query", "") for e in entries], replay)
+        if missing:
+            raise ValueError(missing_replay_message(missing))
+        repo_root = Path(self._config.repo_path)
+        return [
+            self._record(entry, position, replay, repo_root)
+            for position, entry in enumerate(entries, start=1)
+        ]
+
     def _record(
-        self, entry: dict[str, Any], position: int, synthesizer: Synthesizer, repo_root: Path
+        self,
+        entry: dict[str, Any],
+        position: int,
+        source: Synthesizer | Mapping[str, str],
+        repo_root: Path,
     ) -> SynthesisRecord:
-        """Retrieve, synthesize, verify and score one line; a raising query is a failed record."""
+        """Retrieve, answer, verify and score one line; a raising query is a failed record.
+
+        `source` is the live Synthesizer or, under replay, the recorded answers.
+        """
         query = entry.get("query", "")
         expected_fragments = entry.get("expected_answer_fragments", [])
         expected_symbols = entry.get("expected_symbols", [])
@@ -382,15 +449,8 @@ class SynthesisEvalHarness:
                 for r in context.results
                 if hasattr(r, "symbol") and r.symbol
             ]
-            try:
-                answer = synthesizer.synthesize(context)
-            except Exception as exc:
-                # Non-fatal (one flaky LLM call must not abort the run) but not silent: an empty
-                # answer scores like a genuinely bad one, so the reader has to be told.
-                logger.warning(
-                    "Synthesis failed for query %r, scoring an empty answer: %s", query[:80], exc
-                )
-                answer = ""
+            answer = _answer_for(query, context, source)
+            self.last_answers[query] = answer
             abstain_reason = abstain_reason_for(bool(context.results), answer)
             citations = _verified_citations(answer, context, repo_root)
             result = evaluate_synthesis(

@@ -877,6 +877,45 @@ count, where lines are counted as the extractors count them, `count("\n") + 1`: 
 7-line file has 8 lines and its Python `<module>` symbol spans `1-8`, so a whole-file citation on a
 fresh index is `valid`.
 
+### Recorded answers: --record and --replay
+
+```bash
+trelix eval-synthesis . -g golden_synthesis.jsonl --record answers.json   # a live run, answers kept
+trelix eval-synthesis . -g golden_synthesis.jsonl --replay answers.json   # the same answers, no synthesis call
+```
+
+`--record FILE` writes every answer a run produced as `{"schema_version": 1, "answers": {"<golden
+query>": "<answer>"}}`; `--replay FILE` scores those answers again against the same index. It makes
+no synthesis call and builds no Synthesizer, so a change to the scoring (a metric, a citation rule)
+is measured on identical answers instead of on a fresh sample. They are unrelated to `trelix
+eval-suite`, which replays frozen query plans; this replays the answers. The two flags cannot be
+combined (a usage error), and stdout is the results table only, with or without them.
+
+What a replay freezes is the answers, not the retrieval, and it is not an offline mode: retrieval is
+unchanged, so the repository must be indexed, the LLM query planner still calls the LLM up to once per
+query when one is configured (it needs that provider, key and network), and a non-local embedder
+still embeds the query. `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` (which freezes the retrieval half of every
+query, as above) removes the planner's calls and makes two replays retrieve the same context: set it
+on the live run too, which records the plans, and the replay reads them back. A replay of a run's
+own recorded answers gives the same records and the same aggregate as that run when no golden query
+repeats and retrieval returns the same context (deterministic metrics only, no judge), including
+`abstained`, `abstain_reason` and the citation counts, which are derived again from the answer, the
+retrieval and the golden line. A recorded answer is subject to the same 2,048-token cap noted above.
+
+Limits to know:
+
+- Answers are keyed by the query text, so two identical golden queries share one answer: the later
+  live answer is the one recorded, and a replay gives it to both.
+- A query whose retrieval raised in the live run has no answer, so `--record` leaves it out, and
+  replaying that file stops before any query with `replay file has no answer for 1 query: '...'`
+  (exit 1) until the query is fixed, removed from the golden file, or answered by hand in the JSON.
+  Recording `""` instead would score an invented empty answer against a retrieval that may now
+  succeed. A query whose synthesis raised is recorded as `""`, which is what it was scored with.
+- The file holds answers that quote retrieved code, so it is as sensitive as the index: it is
+  written with mode 0600, atomically, and an existing file is replaced.
+- At most 20 MB, exactly the two keys above, every answer a string; every problem found is reported
+  at once.
+
 ## Related tooling
 
 `scripts/measure_index_hygiene.py` answers a different question from `trelix eval`: not

@@ -2172,6 +2172,9 @@ The four ratio rows read `0.0000` in this run because `TRELIX_RETRIEVAL_CITATION
 tagged, so the model is never asked to cite or to abstain with `INSUFFICIENT_EVIDENCE:`. See
 `eval/README.md` for how each row is computed.
 
+The table is all that reaches stdout; add `--record FILE` to keep the answers and `--replay FILE` to
+score them again with no synthesis call (retrieval, including its planner, still runs).
+
 ### Python API
 
 ```python

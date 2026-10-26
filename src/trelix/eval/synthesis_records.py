@@ -25,18 +25,32 @@ records existed; an errored record counts in `n_queries` and `unscoreable` only;
 
 Records are compared with `==` and serialised with `asdict`, never hashed or put in a set: the
 dataclass is frozen for immutability, and its `dict` field makes `hash()` raise.
+
+The recorded-answers file (`--record`, `--replay`) is `{"schema_version": 1, "answers": {query:
+answer}}`: one answer per golden query, keyed by the query text, and nothing else, so a replay
+derives every field of the record again from the answer, the retrieval and the golden line.
+`load_replay` refuses a file it cannot use with every problem found, as the other eval loaders do.
 """
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
+from trelix.eval._loading import ProblemsError, clip, read_text_capped, show
 from trelix.retrieval.citations import AbstainReason, Citation, is_abstention
 from trelix.review.outcome_file import write_outcome_file
 
 _PER_QUERY_SCHEMA_VERSION = 1
+REPLAY_SCHEMA_VERSION = 1
+# Answers quote retrieved code and a long run holds many, but 20 MB is thousands of them.
+MAX_REPLAY_BYTES = 20 * 1024 * 1024
+_REPLAY_KEYS = frozenset({"schema_version", "answers"})
+# How many missing queries the refusal names before it counts the rest.
+_MISSING_LISTED = 5
 # The same cut as `trelix eval`'s records: long enough to read, short enough for a table.
 _ERROR_CHARS = 200
 
@@ -233,3 +247,89 @@ def write_synthesis_per_query_file(
         "aggregate": dict(aggregate),
     }
     return write_outcome_file(path, payload)
+
+
+class ReplayError(ProblemsError):
+    """A recorded-answers file that cannot be used, with every problem found (`problems`)."""
+
+
+def _answers_problems(doc: Mapping[str, object]) -> list[str]:
+    if "answers" not in doc:
+        return ['replay file: "answers" is missing']
+    answers = doc["answers"]
+    if not isinstance(answers, dict):
+        return ['replay file: "answers" must be an object mapping each golden query to its answer']
+    return [
+        f'replay file: "answers"[{show(query)}] must be a string (got {show(answer)})'
+        for query, answer in answers.items()
+        if not isinstance(answer, str)
+    ]
+
+
+def _replay_problems(doc: object) -> list[str]:
+    """Everything wrong with a parsed recorded-answers document, in a fixed order: the
+    `schema_version`, then `answers`, then any other key; `[]` when it is usable."""
+    if not isinstance(doc, dict):
+        return ["replay file: the top level is not an object"]
+    problems: list[str] = []
+    if "schema_version" not in doc:
+        problems.append('replay file: "schema_version" is missing')
+    else:
+        version = doc["schema_version"]
+        # `True == 1` in Python, and a JSON `true` is not a version.
+        if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+            problems.append(f'replay file: "schema_version" must be 1 (got {show(version)})')
+    problems.extend(_answers_problems(doc))
+    problems.extend(
+        f"replay file: unsupported key {show(key)}" for key in sorted(doc.keys() - _REPLAY_KEYS)
+    )
+    return problems
+
+
+def load_replay(path: Path) -> dict[str, str]:
+    """The answers `path` records, keyed by golden query. Raises `ReplayError`, naming every
+    problem, for a file that cannot be read, is not JSON or does not have the document's shape.
+
+    An empty `answers` object is fine, and so is an empty answer. The file is read at most
+    `MAX_REPLAY_BYTES` large.
+    """
+    try:
+        text = read_text_capped(path, MAX_REPLAY_BYTES)
+    except (OSError, ValueError) as exc:
+        raise ReplayError([f"replay file: cannot read the file: {exc}"]) from exc
+    try:
+        doc = json.loads(text)
+    except (ValueError, RecursionError) as exc:
+        raise ReplayError([f"replay file: not valid JSON ({clip(str(exc))})"]) from exc
+    problems = _replay_problems(doc)
+    if problems:
+        raise ReplayError(problems)
+    return dict(doc["answers"])
+
+
+def replay_payload(answers: Mapping[str, str]) -> dict[str, object]:
+    """The document `--record` writes for `answers`, which `load_replay` reads back."""
+    return {"schema_version": REPLAY_SCHEMA_VERSION, "answers": dict(answers)}
+
+
+def write_replay_file(path: str, answers: Mapping[str, str]) -> str | None:
+    """Write `answers` to `path` as a recorded-answers document; return an error message, or None.
+
+    Through `write_outcome_file`, like `--per-query-out`: mode 0600, atomic, an existing file
+    replaced. The answers quote retrieved code, so the file is as sensitive as the index.
+    """
+    return write_outcome_file(path, replay_payload(answers))
+
+
+def missing_replay_answers(queries: Sequence[str], answers: Mapping[str, str]) -> list[str]:
+    """The golden `queries` that `answers` has no entry for, in golden order, each once."""
+    return list(dict.fromkeys(query for query in queries if query not in answers))
+
+
+def missing_replay_message(missing: Sequence[str]) -> str:
+    """`replay file has no answer for N queries: 'a', 'b', ...`, naming the first five."""
+    count = len(missing)
+    listed = ", ".join(show(query) for query in missing[:_MISSING_LISTED])
+    if count > _MISSING_LISTED:
+        listed += f", ... and {count - _MISSING_LISTED} more"
+    return f"replay file has no answer for {count} {'query' if count == 1 else 'queries'}: {listed}"
