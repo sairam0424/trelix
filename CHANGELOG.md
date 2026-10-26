@@ -65,6 +65,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `hatchling`, the build backend, which stays unpinned in `pyproject.toml`: a `[build-system]` pin
   would bind every downstream build of the sdist (an accepted trade-off). A test fails when either
   tool goes back to a range or to no version.
+- **The `trelix-mcp` federation tools no longer overwrite a file that is not a repository
+  registry.** `config_path` was confined to `~/.config/trelix/` and `<cwd>/.trelix/` but not to
+  registry files. `RepoRegistry.load` reads any file it cannot parse (`.trelix/index.db`, the
+  operator's env file) as an empty registry that keeps the path, and `federation_add_repo` or
+  `federation_remove_repo` then saved registry JSON over it, so any MCP client could destroy it: an
+  agent over stdio (a prompt-injected one included) and, over the HTTP transport, a client holding
+  the bearer token. A `config_path` now needs a name ending in `.json` and a file that is
+  missing, empty, or a JSON object with a `repos` list; anything else answers
+  `config_path is not a repository registry` on all four federation tools and is never written. The
+  first `federation_add_repo` still creates a missing file.
+- **`federation_remove_repo` writes the registry only when it removed an entry.** An unregistered
+  alias used to rewrite the file (reformatted, or created if it was absent). It still answers
+  `removed: false` with `error: null`, and now writes nothing.
+- **With `--root` or `TRELIX_ALLOWED_REPO_ROOTS`, `federation_list_repos` and
+  `federation_remove_repo` stay inside the roots too.** The roots already confine every
+  `repo_path`, the path of `federation_add_repo` and what `federation_search_all` searches; the
+  registry tools now follow. `federation_list_repos` lists and counts only the entries inside the
+  roots, and every response carries `repos_outside_roots` (how many were left out), the key
+  `federation_search_all` reports. `federation_remove_repo` answers an alias whose repository is
+  outside the roots exactly like an unregistered one and writes nothing. The entries stay in the
+  file, and without roots nothing changes (no new key).
+- **A refused federation `config_path` no longer names the server's directories.** The refusal
+  carried the two allowed directories (under the home and the working directory) and the resolved
+  path in the result. It is now one of two fixed texts, `config_path is not inside an allowed config
+  directory` or `config_path is not a repository registry`; the detail goes to the server log as a
+  warning (escaped, cut to 100 characters). The `error` key and the rest of each result are
+  unchanged.
 
 ### Fixed
 - **`trelix-mcp` keeps at most `TRELIX_MCP_RETRIEVER_CACHE_SIZE` (default 8) Retrievers; the least

@@ -65,6 +65,7 @@ from trelix_mcp.budget import (  # noqa: E402
     truncate_body,
 )
 from trelix_mcp.confinement import (  # noqa: E402
+    LOGGED_VALUE_CHARS,
     REFUSAL,
     RepoConfinementMiddleware,
     entries_inside_roots,
@@ -914,8 +915,49 @@ def _outside_roots_key(outside: int) -> dict[str, int]:
 
 
 class ConfigPathNotAllowedError(ValueError):
-    """Raised when a caller-supplied federation config_path resolves outside
-    every allowlisted root."""
+    """Raised when a caller-supplied federation config_path is refused: it resolves outside
+    every allowlisted directory, or the file there is not a repository registry."""
+
+
+# The whole refusal, like confinement.REFUSAL: no path, no directory name. The resolved value and
+# the allowed directories go to the operator log only.
+CONFIG_PATH_DIRECTORY_REFUSAL = "config_path is not inside an allowed config directory"
+CONFIG_PATH_REGISTRY_REFUSAL = "config_path is not a repository registry"
+
+
+def _config_path_refusal(message: str, resolved: Path, detail: str) -> ConfigPathNotAllowedError:
+    """The error to raise for a refused config_path; `message` is all the client learns.
+
+    `resolved` is caller input: `%r` escapes newlines and quotes, and the cut keeps a pasted file
+    from flooding the log, as for `RepoConfinementMiddleware._refuse_if_outside`.
+    """
+    _log.warning("Refused config_path=%r: %s", str(resolved)[:LOGGED_VALUE_CHARS], detail)
+    return ConfigPathNotAllowedError(message)
+
+
+def _is_registry_file(path: Path) -> bool:
+    """True when `path` may be loaded and then saved as a repository registry.
+
+    That is a name ending in `.json` whose file is missing (the first add creates it), empty, or a
+    JSON object with a `repos` list. `RepoRegistry.load` reads any other existing file as an empty
+    registry that keeps the path, so the next `save()` would overwrite it (`index.db`, the operator
+    env file) with registry JSON: such a file is refused instead.
+    """
+    if not path.name.endswith(".json"):
+        return False
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):  # unreadable, a directory, or not text
+        return False
+    if not text:
+        return True
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and isinstance(data.get("repos"), list)
 
 
 def _confine_federation_config_path(config_path: str | None) -> str | None:
@@ -936,8 +978,14 @@ def _confine_federation_config_path(config_path: str | None) -> str | None:
       closest available analog to "the repo-local .trelix/" the docstring
       already promises)
 
+    The file there must also be a registry (see `_is_registry_file`): a name
+    ending in .json that is missing, empty, or a JSON object with a `repos`
+    list. An existing file of any other kind is never loaded as an empty
+    registry and overwritten.
+
     Returns None unchanged (the RepoRegistry default). Raises
-    ConfigPathNotAllowedError if config_path resolves outside both roots.
+    ConfigPathNotAllowedError, carrying a fixed text, if config_path resolves
+    outside both roots or is not a registry; the detail goes to the log only.
     A blank config_path is a ToolError like every other blank argument:
     Path("").resolve() is the process cwd, and the refusal would otherwise
     name that directory and the allowed roots, none of which the caller passed.
@@ -949,12 +997,23 @@ def _confine_federation_config_path(config_path: str | None) -> str | None:
         "config_path",
         "a path inside ~/.config/trelix or <cwd>/.trelix, or omit it for the default registry",
     )
-    resolved = Path(config_path).resolve()
+    try:
+        resolved = Path(config_path).resolve()
+    except (OSError, ValueError, RuntimeError):
+        # A NUL byte or a symlink loop: the same fixed refusal, not the exception's own text.
+        raise _config_path_refusal(
+            CONFIG_PATH_DIRECTORY_REFUSAL, Path(config_path), "cannot be resolved"
+        ) from None
     allowed_roots = [_DEFAULT_CONFIG.parent, Path.cwd() / ".trelix"]
     if not any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots):
-        raise ConfigPathNotAllowedError(
-            f"config_path must resolve inside one of {[str(r) for r in allowed_roots]}, "
-            f"got {resolved}"
+        raise _config_path_refusal(
+            CONFIG_PATH_DIRECTORY_REFUSAL,
+            resolved,
+            f"outside the allowed config directories {[str(root) for root in allowed_roots]}",
+        )
+    if not _is_registry_file(resolved):
+        raise _config_path_refusal(
+            CONFIG_PATH_REGISTRY_REFUSAL, resolved, "not a .json repository registry"
         )
     return str(resolved)
 
@@ -963,26 +1022,34 @@ def _confine_federation_config_path(config_path: str | None) -> str | None:
 def federation_list_repos(config_path: str | None = None) -> dict[str, Any]:
     """List all repos registered for federated (multi-repo) search.
 
+    When the server runs with --root or TRELIX_ALLOWED_REPO_ROOTS, a
+    registered repo outside those roots is not listed or counted, and every
+    response carries repos_outside_roots (how many were left out).
+
     Args:
-        config_path: Optional path to a custom repos.json. Must resolve
-            inside ~/.config/trelix/ or <cwd>/.trelix/. Defaults to
+        config_path: Optional path to a custom repos.json. Must be a .json
+            registry file (missing, empty or already a registry) inside
+            ~/.config/trelix/ or <cwd>/.trelix/. Defaults to
             ~/.config/trelix/repos.json.
 
     Returns:
         {"repos": [{"alias": str, "path": str, "weight": float}, ...],
          "count": int, "error": str|None}
+        With --root or TRELIX_ALLOWED_REPO_ROOTS set, every response also has
+        "repos_outside_roots": int.
     """
     _log.info("federation_list_repos config_path=%r", config_path)
     try:
         confined_path = _confine_federation_config_path(config_path)
     except ConfigPathNotAllowedError as exc:
-        return {"repos": [], "count": 0, "error": str(exc)}
+        return {"repos": [], "count": 0, "error": str(exc), **_outside_roots_key(0)}
     registry = RepoRegistry.load(confined_path)
-    entries = registry.list()
+    entries, outside = entries_inside_roots(registry.list(), _allowed_roots)
     return {
         "repos": [{"alias": e.alias, "path": e.path, "weight": e.weight} for e in entries],
         "count": len(entries),
         "error": None,
+        **_outside_roots_key(outside),
     }
 
 
@@ -1007,8 +1074,9 @@ def federation_add_repo(
         path: Absolute path to the repo root.
         weight: RRF weight multiplier (default 1.0; higher = ranked higher
             in federation_search_all's fused results).
-        config_path: Optional path to a custom repos.json. Must resolve
-            inside ~/.config/trelix/ or <cwd>/.trelix/.
+        config_path: Optional path to a custom repos.json. Must be a .json
+            registry file (missing, empty or already a registry) inside
+            ~/.config/trelix/ or <cwd>/.trelix/.
 
     Returns:
         {"added": bool, "alias": str, "path": str, "error": str|None}
@@ -1035,10 +1103,16 @@ def federation_add_repo(
 def federation_remove_repo(alias: str, config_path: str | None = None) -> dict[str, Any]:
     """Unregister a repo from federated search by alias.
 
+    When the server runs with --root or TRELIX_ALLOWED_REPO_ROOTS, a
+    registered repo outside those roots cannot be removed: its alias is
+    answered exactly like an unregistered one, and the registry file is not
+    written.
+
     Args:
         alias: The alias to remove. No-op (removed=False) if not registered.
-        config_path: Optional path to a custom repos.json. Must resolve
-            inside ~/.config/trelix/ or <cwd>/.trelix/.
+        config_path: Optional path to a custom repos.json. Must be a .json
+            registry file (missing, empty or already a registry) inside
+            ~/.config/trelix/ or <cwd>/.trelix/.
 
     Returns:
         {"removed": bool, "alias": str, "error": str|None}
@@ -1050,10 +1124,12 @@ def federation_remove_repo(alias: str, config_path: str | None = None) -> dict[s
     except ConfigPathNotAllowedError as exc:
         return {"removed": False, "alias": alias, "error": str(exc)}
     registry = RepoRegistry.load(confined_path)
-    existed = any(e.alias == alias for e in registry.list())
+    visible, _ = entries_inside_roots(registry.list(), _allowed_roots)
+    if not any(e.alias == alias for e in visible):
+        return {"removed": False, "alias": alias, "error": None}
     registry.remove(alias)
     registry.save()
-    return {"removed": existed, "alias": alias, "error": None}
+    return {"removed": True, "alias": alias, "error": None}
 
 
 @mcp.tool()

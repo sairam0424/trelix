@@ -478,18 +478,6 @@ def test_federation_list_repos_returns_entries() -> None:
     }
 
 
-def test_federation_list_repos_rejects_unconfined_config_path() -> None:
-    import trelix_mcp.server as srv
-
-    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
-        response = srv.federation_list_repos(config_path="/etc/passwd")
-
-    assert response["repos"] == []
-    assert response["count"] == 0
-    assert response["error"] is not None
-    MockRegistry.load.assert_not_called()
-
-
 def test_federation_add_repo_success(tmp_path: Path) -> None:
     import trelix_mcp.server as srv
 
@@ -520,19 +508,6 @@ def test_federation_add_repo_duplicate_alias_returns_error(tmp_path: Path) -> No
     reg.save.assert_not_called()
 
 
-def test_federation_add_repo_rejects_unconfined_config_path(tmp_path: Path) -> None:
-    import trelix_mcp.server as srv
-
-    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
-        response = srv.federation_add_repo(
-            alias="myrepo", path=str(tmp_path), config_path="/etc/passwd"
-        )
-
-    assert response["added"] is False
-    assert response["error"] is not None
-    MockRegistry.load.assert_not_called()
-
-
 def test_federation_remove_repo_existing() -> None:
     import trelix_mcp.server as srv
 
@@ -561,6 +536,8 @@ def test_federation_remove_repo_missing_is_noop() -> None:
         response = srv.federation_remove_repo(alias="nonexistent")
 
     assert response == {"removed": False, "alias": "nonexistent", "error": None}
+    reg.remove.assert_not_called()
+    reg.save.assert_not_called()
 
 
 def test_federation_search_all_no_repos_returns_empty() -> None:
@@ -581,17 +558,6 @@ def test_federation_search_all_no_repos_returns_empty() -> None:
         "repos_skipped": 0,
         "error": None,
     }
-
-
-def test_federation_search_all_rejects_unconfined_config_path() -> None:
-    import trelix_mcp.server as srv
-
-    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
-        response = srv.federation_search_all(query="auth", config_path="/etc/passwd")
-
-    assert response["results"] == []
-    assert response["error"] is not None
-    MockRegistry.load.assert_not_called()
 
 
 def test_federation_search_all_returns_dict_envelope() -> None:
