@@ -250,6 +250,17 @@ key is added. One consumer can be confined without asking for it: `trelix-mcp` o
 `TRELIX_ALLOWED_REPO_ROOTS` from the process environment; if you export it for `trelix serve`, the
 VS Code extension's server is confined to the same roots.
 
+### Additive: `trelix-mcp --transport http`
+
+`trelix-mcp` accepts `--transport stdio|http` and, for `http`, `--host`, `--port`, `--path`,
+`--allowed-host`, `--stateful` and `--allow-unauthenticated`, and reads `TRELIX_MCP_AUTH_TOKEN`
+(fallback `TRELIX_API_AUTH_TOKEN`) and `TRELIX_MCP_ALLOWED_HOSTS` (fallback
+`TRELIX_API_ALLOWED_HOSTS`). The stdio default is byte-identical: `mcp.run(transport="stdio")`
+once, no middleware, unmasked error texts, and the six HTTP-only flags are a usage error on stdio
+rather than ignored. No tool name, parameter or result changes on either transport; the masked
+text `Error calling tool '<name>'` for an unexpected exception exists only over HTTP, where a
+`ToolError` text is unchanged.
+
 ### v3.3.0 Breaking Changes
 
 The following deprecated item was removed in v3.3.0. Its `AliasChoices`/`DeprecationWarning` backward-compat shim had been active since v2.4.0.

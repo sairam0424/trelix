@@ -30,7 +30,7 @@ None of this exists in the existing code-search tooling available today.
 **What it does:** The entire index — vectors, BM25, call graph, import graph, file summaries — lives in a single SQLite file (`.trelix/index.db`) using WAL mode, FTS5, and sqlite-vec HNSW. No Docker, no Redis, no Postgres, no cloud account required.
 
 **Implementation:**
-- sqlite-vec HNSW provides O(log n) approximate nearest neighbor search inside a stock SQLite file
+- sqlite-vec provides exact nearest-neighbour search (a flat scan) inside a stock SQLite file; `trelix index` and `trelix stats` advise a larger backend once the measured threshold for the index's width is passed
 - FTS5 provides BM25 over symbol names, qualified names, docstrings, bodies, and LLM-generated context summaries
 - Call graph, import graph, and type edges stored as normalized SQLite tables — no graph database needed
 - Everything under `.trelix/` — gitignore it or commit it, your choice
@@ -182,12 +182,12 @@ commercial use pick `local` (Apache 2.0), `voyage`, or `bedrock-cohere`.
 
 ### 8. MCP-Native — 6 Tools, 3 Resources, 3 Prompts
 
-**What it does:** `trelix-mcp` is a first-class MCP server that exposes Trelix retrieval to any MCP client (Claude Code, Cursor, Windsurf, Continue.dev). It speaks stdio transport and integrates in two commands.
+**What it does:** `trelix-mcp` is a first-class MCP server that exposes Trelix retrieval to any MCP client (Claude Code, Cursor, Windsurf, Continue.dev). It speaks stdio (default) or Streamable HTTP (`--transport http`) and integrates in two commands.
 
 **MCP tools:**
 
 ```
-trelix-mcp (stdio transport)
+trelix-mcp (stdio or Streamable HTTP transport)
   ├── search_code(query, repo_path, k=10, cursor=0)                              → {results, next_cursor, total_available}
   ├── index_codebase(repo_path, provider)                                         → dict (stats) + progress notifications
   ├── get_symbol(qualified_name, repo_path)                                       → dict | None
@@ -260,7 +260,7 @@ retrieve → synthesize
 
 | Capability | Trelix | GitHub Copilot Workspace | Cursor | Sourcegraph Cody | pgvector DIY | OpenAI File Search |
 |------------|--------|--------------------------|--------|------------------|--------------|-------------------|
-| **Vector search** | ✅ HNSW sqlite-vec | ✅ cloud | ✅ cloud | ✅ cloud | ✅ Postgres | ✅ cloud |
+| **Vector search** | ✅ sqlite-vec (exact flat scan) | ✅ cloud | ✅ cloud | ✅ cloud | ✅ Postgres | ✅ cloud |
 | **BM25 keyword search** | ✅ FTS5 | ❌ | partial | ✅ | manual | ❌ |
 | **Exact/regex grep** | ✅ | ❌ | partial | ✅ | ❌ | ❌ |
 | **Call-graph expansion** | ✅ 3-priority resolution | ❌ | partial | partial | ❌ | ❌ |
@@ -398,7 +398,7 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 | FederatedRetriever with TTL cache (~90% hit rate) | Advanced taint analysis (Semgrep integration GA) |
 | 20-language Tree-sitter AST parsing | Hosted cloud index option |
 | 6 LLM backends + LiteLLM 100+ providers | |
-| MCP server (15 tools, stdio transport) | |
+| MCP server (15 tools, stdio or Streamable HTTP) | |
 | Extended thinking on Anthropic synthesis (`TRELIX_LLM_THINKING_ENABLED`, opt-in) | |
 | Model-aware context budget derived from the LLM's real context window (opt-in) | |
 | SeleCom query-conditioned context compression (opt-in, result-lossless) | |

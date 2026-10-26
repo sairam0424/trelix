@@ -3,11 +3,11 @@
 The middleware is driven as raw ASGI around a two-line echo app, and then inside a throwaway
 `FastMCP("throwaway")` whose `http_app(**http_app_kwargs(settings))` is built directly, so the
 Host/Origin guard, the bearer check and the MCP endpoint are seen in their real order. Nothing
-here touches `trelix_mcp.server`, which does not wire this module yet. Every expected value is a
-literal written here (the 401 and 403 bodies are copied in, never imported); the one import used
-as an expected value is `trelix_mcp.__version__`, the package's identity. This package's tests
-are governed by packages/trelix-mcp/pyproject.toml (no socket ban, no timeout), so the markers
-below supply both.
+here touches `trelix_mcp.server`; the wired server is test_http_transport.py's. Every expected
+value is a literal written here (the 401 and 403 bodies are copied in, never imported); the one
+import used as an expected value is `trelix_mcp.__version__`, the package's identity. This
+package's tests are governed by packages/trelix-mcp/pyproject.toml (no socket ban, no timeout), so
+the markers below supply both.
 """
 
 from __future__ import annotations

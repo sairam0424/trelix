@@ -470,8 +470,9 @@ pip install trelix-mcp
 source .venv/bin/activate
 pip install trelix-mcp
 
-# Verify the binary is on PATH. trelix-mcp accepts only --help, --version,
-# --tools core|full and --root PATH — invoking it with no arguments starts the stdio server.
+# Verify the binary is on PATH. trelix-mcp accepts only --help, --version, --tools core|full,
+# --root PATH and the HTTP flags --transport stdio|http, --host, --port, --path, --allowed-host,
+# --stateful and --allow-unauthenticated — invoking it with no arguments starts the stdio server.
 which trelix-mcp
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 ```
@@ -772,7 +773,7 @@ Check your API tier and increase limits if needed (OpenAI: Platform → Settings
 
 **Symptom:** `trelix search "..."` takes more than 500 ms per query.
 
-**Cause — Large index:** The default SQLite-based vector store performs a linear scan for approximate nearest neighbor search. For very large repos (>100k chunks), this becomes a bottleneck.
+**Cause — Large index:** The default SQLite-based vector store is an exact flat scan: every query compares against every stored vector, so latency grows with rows x width. `trelix index` and `trelix stats` print a `Flat-scan advisory` once the index passes the measured threshold for its width — see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage).
 
 **Cause — Embedding latency:** If using a remote provider, each query requires an API round-trip to generate the query embedding.
 
@@ -781,7 +782,7 @@ Check your API tier and increase limits if needed (OpenAI: Platform → Settings
 Check index size:
 ```bash
 trelix stats ./repo
-# If chunks > 100,000, consider switching to Qdrant
+# A "Flat-scan advisory" line means the index is past the measured threshold for its width
 ```
 
 Switch to Qdrant for large indices (HNSW indexing, sub-millisecond queries). The backend is

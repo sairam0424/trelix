@@ -834,6 +834,10 @@ def index(
     if stats.get("errors"):
         table.add_row("[red]Errors[/red]", f"[red]{stats['errors']}[/red]")
     console.print(table)
+    # Stub Indexers in tests/unit/test_cli_batch_api_flags.py, test_prune.py and
+    # test_prune_refusal_steps.py set no embedder; the advisory never decides this exit code.
+    embedder = getattr(indexer, "embedder", None)
+    _print_flat_scan_advisory(config, getattr(embedder, "dimension", None))
 
     if prune:
         # The DELETIONS run after the index — a prune wants the freshest possible view of
@@ -2057,6 +2061,7 @@ def stats(
     table.add_row("DB size", f"{db_size_kb:.1f} KB")
     console.print(table)
     _print_coverage_remedy(coverage, repo, config)
+    _print_flat_scan_advisory(config, coverage.dimension)
 
     _print_provenance(provenance, commits_since(config, provenance.git_commit))
     if drift_report is not None:
@@ -2258,6 +2263,53 @@ def _print_coverage_remedy(coverage: _VectorCoverage, repo: str, config: IndexCo
             f"scratch — remove {' and '.join(_vector_store_locations(config))}, then "
             f"[bold]trelix index {_safe_text(repo)}[/bold] — to renumber `chunks` from 1."
         )
+
+
+def _sqlite_vector_rows(config: IndexConfig) -> int | None:
+    """Rows in the sqlite-vec table, or None when they cannot be counted.
+
+    A missing or unreadable index, or one with no `chunk_embeddings` table yet, means "no
+    advisory", never an error. `config.db_path_resolved` rather than `db_path_absolute`
+    because a read helper must not create `.trelix/` (see `_require_index`; `_vector_coverage`
+    predates `db_path_resolved`). The count is sentinel-inclusive on purpose: a flat scan pays
+    for every row, sentinels included, and this is the same number as
+    `SQLiteVectorStore.count()`.
+    """
+    try:
+        conn = _readonly_vec_conn(config.db_path_resolved)
+    except Exception:
+        return None
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()[0])
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def _print_flat_scan_advisory(config: IndexConfig, dimension: int | None) -> None:
+    """Tell the operator, on stderr, when the sqlite store has outgrown a flat scan.
+
+    Never changes the exit code: a non-zero status on a read command broke CI twice (see
+    `tests/unit/test_cli_closed_stdout.py`). Every real index state is an early return
+    (another backend, an unrecorded or non-positive width, an unreadable file, no table), and
+    there is no exception handler here on purpose, so a programming error surfaces in the
+    tests instead of being swallowed.
+    """
+    if str(getattr(config.store, "backend", "sqlite")) != "sqlite":
+        return
+    if not isinstance(dimension, int) or dimension < 1:
+        return
+    rows = _sqlite_vector_rows(config)
+    if rows is None:
+        return
+
+    from trelix.store.scale_advisory import flat_scan_advisory
+
+    message = flat_scan_advisory(rows, dimension)
+    if message is None:
+        return
+    err_console.print(f"[yellow]{_safe_text(message)}[/yellow]")
 
 
 def _print_provenance(provenance: IndexProvenance, behind: int | None) -> None:

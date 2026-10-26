@@ -70,6 +70,7 @@ from trelix_mcp.confinement import (  # noqa: E402
     entries_inside_roots,
     inside_roots,
 )
+from trelix_mcp.http import register_health_route  # noqa: E402
 from trelix_mcp.subscriptions import SubscriptionLimitExceeded, SubscriptionRegistry  # noqa: E402
 from trelix_mcp.tool_metadata import (  # noqa: E402
     LISTING_CACHE_SCOPE,
@@ -86,6 +87,9 @@ mcp = FastMCP(
     cache_scope=LISTING_CACHE_SCOPE,
     transforms=[ToolMetadata()],
 )
+# `GET /health` for `--transport http`; custom routes are read only by `http_app`, so stdio is
+# unaffected. Registered here, before any tool, so the route exists however the app is built.
+register_health_route(mcp)
 _log = logging.getLogger("trelix_mcp")
 
 # Retriever construction is the expensive part of every tool call that uses

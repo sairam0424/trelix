@@ -1,9 +1,9 @@
 """The HTTP pieces of trelix-mcp: settings, a bearer-token check and a ``/health`` route.
 
-Nothing wires them yet. A later change gives ``server.main()`` a ``--transport http`` flag
-that calls ``resolve_http_settings`` once, ``register_health_route(mcp)`` at import and
-``mcp.run(**run_kwargs(settings))``; until then ``trelix-mcp`` serves stdio only and this
-module is importable but idle.
+``trelix_mcp.cli`` wires them: ``trelix-mcp --transport http`` calls ``resolve_http_settings``
+once and ``mcp.run(**run_kwargs(settings))``, and ``server.py`` calls
+``register_health_route(mcp)`` at import. Over stdio (the default) this module is importable but
+idle: custom routes are read only by ``http_app``.
 
 Every setting is read from the ``environ`` mapping the caller passes, never a ``.env`` or
 ``OPERATOR_ENV_FILE``: ``TRELIX_MCP_AUTH_TOKEN`` (fallback ``TRELIX_API_AUTH_TOKEN``) is the
@@ -35,6 +35,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from trelix.api.request_guard import (
+    ALLOW_ALL,
     HEALTH_PATH,
     LOOPBACK_HOSTS,
     RequestGuardMiddleware,
@@ -101,6 +102,11 @@ def _is_specific(name: str) -> bool:
         return True
 
 
+def url_host(bind: str) -> str:
+    """The bare bind address as a URL authority host: an IPv6 literal in brackets."""
+    return f"[{bind}]" if ":" in bind else bind
+
+
 def _check_port(port: int) -> None:
     if not 1 <= port <= 65535:
         raise HttpConfigError(f"--port must be between 1 and 65535, got {port}")
@@ -111,9 +117,17 @@ def _check_path(path: str) -> None:
         raise HttpConfigError(f"--path must start with / and cannot be /health, got {path!r}")
 
 
+def _has_port(host: str) -> bool:
+    """``example.com:9000`` or ``[::1]:8766``; an unbracketed IPv6 literal never carries one."""
+    if host.startswith("["):
+        return "]:" in host
+    return host.count(":") == 1
+
+
 def _bind_name(host: str) -> str:
+    """The allow-list entry for the bind host; a port belongs to ``--port`` and is refused."""
     name = normalise_host(host)
-    if name is None:
+    if name is None or _has_port(host):
         raise HttpConfigError(
             f"--host must be a hostname or IP address, optionally in brackets, got {host!r}"
         )
@@ -135,6 +149,22 @@ def _token_from(environ: Mapping[str, str]) -> str | None:
 def _guard_hosts(
     name: str, allowed_hosts: Sequence[str], environ: Mapping[str, str]
 ) -> frozenset[str] | None:
+    # The normaliser would drop a `*` flag with a warning that names the REST variable and keep
+    # the guard on; refusing it sends the operator to the one switch that turns the guard off.
+    if any(host.strip() == ALLOW_ALL for host in allowed_hosts):
+        raise HttpConfigError(
+            f"--allowed-host {ALLOW_ALL} is not accepted; set {ALLOWED_HOSTS_ENV}={ALLOW_ALL} to "
+            "turn the guard off"
+        )
+    # The same trap for every other entry the normaliser would drop (a comma list, a URL, a
+    # wildcard, a blank): the server would start with the loopback names only and a warning that
+    # names a variable the operator never set. The variable keeps drop-with-a-warning.
+    for host in allowed_hosts:
+        if normalise_host(host) is None:
+            raise HttpConfigError(
+                "--allowed-host must be one hostname or IP address, optionally in brackets "
+                f"(repeat the flag for more), got {host!r}"
+            )
     explicit = [*LOOPBACK_HOSTS, *([name] if _is_specific(name) else []), *allowed_hosts]
     env_hosts = first_env(environ, ALLOWED_HOSTS_ENV, API_ALLOWED_HOSTS_ENV)
     guard_hosts = resolve_allowed_hosts(explicit, env_hosts[1] if env_hosts else None)
@@ -156,11 +186,12 @@ def resolve_http_settings(
     roots: Sequence[Path],
     environ: Mapping[str, str],
 ) -> HttpSettings:
-    """Validate the HTTP flags and environment in the order port, path, roots, host, token and
-    the loopback rule; raise ``HttpConfigError`` with a fixed text."""
-    host = host or DEFAULT_HOST
+    """Validate the HTTP flags and environment in the order port, path, roots, host, token, the
+    loopback rule and ``--allowed-host``; raise ``HttpConfigError`` with a fixed text. Only an
+    omitted flag (``None``) takes the default: ``--host ""`` is refused like any other bad host."""
+    host = DEFAULT_HOST if host is None else host
     port = DEFAULT_PORT if port is None else port
-    path = path or DEFAULT_PATH
+    path = DEFAULT_PATH if path is None else path
     _check_port(port)
     _check_path(path)
     if not roots:
@@ -169,6 +200,8 @@ def resolve_http_settings(
             "tool call names a repository path and paths outside these roots are refused"
         )
     name = _bind_name(host)
+    # uvicorn binds the bare address: getaddrinfo refuses `[::1]` and accepts `::1`.
+    bind = name if host.startswith("[") else host
     token = _token_from(environ)
     loopback = loopback_bind_allowed_hosts(host) is not None
     if token is None and not loopback and not allow_unauthenticated:
@@ -181,11 +214,11 @@ def resolve_http_settings(
         _log.warning(
             "Serving MCP over HTTP on %s:%s with no token: every tool is open to anyone who "
             "can reach this port (--allow-unauthenticated)",
-            host,
+            url_host(bind),
             port,
         )
     return HttpSettings(
-        host=host,
+        host=bind,
         port=port,
         path=path,
         stateless=not stateful,

@@ -7,6 +7,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ## [Unreleased]
 
 ### Security
+- **`trelix-mcp --transport http` is guarded from the first release that serves it.** DNS
+  rebinding and drive-by browser requests: the REST API's Host/Origin check is always on (loopback
+  names, a specific bind address, `--allowed-host`, `TRELIX_MCP_ALLOWED_HOSTS` with fallback
+  `TRELIX_API_ALLOWED_HOSTS`; `*` turns it off with a warning; FastMCP's own guard and the SDK's
+  DNS-rebinding check stay off so there is one allow-list). A reachable port: a bearer token
+  (`TRELIX_MCP_AUTH_TOKEN`, fallback `TRELIX_API_AUTH_TOKEN`; `hmac.compare_digest`, a fixed 401
+  body with `WWW-Authenticate: Bearer`, no header value logged) is required for any non-loopback
+  bind unless `--allow-unauthenticated`. Path escape: at least one `--root` or
+  `TRELIX_ALLOWED_REPO_ROOTS` is required (exit 2 without), so every `repo_path` a remote client
+  names is confined. Information leak: an exception a tool did not expect answers
+  `Error calling tool '<name>'` with no path or traceback; stdio keeps its unmasked texts.
 - **The advisory `zizmor` job now reports no findings** (`zizmor 1.30.1` over `.github/`: one
   informational and three high before; two ignored with reasons now). It stays advisory.
   - *Fixed, `cache-poisoning` (twice).* `release.yml` publishes to PyPI, and its `test` and
@@ -329,6 +340,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `nomic-code`) to the embedder code.
 
 ### Added
+- **`trelix-mcp --transport http` serves MCP over Streamable HTTP** on `127.0.0.1:8766/mcp`
+  (stateless; both the 2025-11-25 and 2026-07-28 protocol eras), with the Host/Origin guard always
+  on, a bearer token from `TRELIX_MCP_AUTH_TOKEN` (fallback `TRELIX_API_AUTH_TOKEN`) when set,
+  unauthenticated `GET /health`, masked unexpected errors, and a start-up error (exit 2) for a
+  non-loopback bind without a token or for no `--root`. New flags `--transport stdio|http`,
+  `--host`, `--port`, `--path`, `--allowed-host`, `--stateful` and `--allow-unauthenticated` (the
+  last six are `--transport http` only and a usage error on stdio); a port in `--host`, a blank
+  `--host` or `--path`, and an `--allowed-host` that is `*` or not one hostname or IP address (a
+  comma list, a URL, a wildcard, a blank) are refused (pass the port with `--port` and repeat
+  `--allowed-host` for more than one; only `TRELIX_MCP_ALLOWED_HOSTS=*` turns the guard off) and
+  `--host [::1]` binds `::1`. stdio with no flags is unchanged. See `docs/MCP_GUIDE.md` section 19.
+- **`trelix-mcp --transport http` has a real-socket end-to-end test**
+  (`tests/e2e/test_mcp_http_e2e.py`). It starts the installed `trelix-mcp` as a child process on a
+  free loopback port with a bearer token and one `--root`, waits for `GET /health`, and checks over
+  TCP that a missing or wrong token is `401` with `WWW-Authenticate: Bearer` and the wrong value is
+  never logged, that a foreign `Host` is `403`, that `fastmcp.Client` initializes and lists the 15
+  tools in both protocol eras, that a `repo_path` outside the root is refused, and that SIGTERM
+  exits 0. It needs no model and no network beyond 127.0.0.1, runs in CI's `e2e` job and in the
+  release smoke job against the built wheels, and skips where `trelix-mcp` is not on PATH. No
+  product change.
 - **GenAI `chat` spans for every LLM call, behind `TRELIX_OTEL_ENABLED`** (roadmap C-8, requirement
   R-C6-02; PR 3 of 4). `build_chat_client()` returns the backend wrapped in a `TracedChatClient`
   (`src/trelix/llm/otel.py`) when the flag resolves true from the environment, and every
@@ -877,6 +908,46 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   details (`exception:NotFoundError`, `prompt_truncated`, `exception:APIConnectionError`, ...).
   Linked from `docs/README.md`, the user guide, the FAQ and TROUBLESHOOTING.md; the three warnings
   that already pointed at it now resolve.
+- **A sqlite-vec flat-scan benchmark and its first committed report.**
+  `python scripts/bench_vector_search.py` builds a `vec0` table per (dimension, rows) cell from
+  seeded unit vectors, times `k`-nearest queries after a warm-up and writes warm p50/p95/p99,
+  insert rate, file size, platform (OS, Python, SQLite, sqlite-vec, numpy, CPU count, load
+  averages, free scratch disk) and, per width, the row count where p95 passes 100 ms
+  (interpolated between measured sizes, or extrapolated and flagged). The report
+  `docs/reports/vector-search-bench-2026-10-07-apple-m4-shared.json` was measured on
+  apple-m4-shared (Apple M4, 10 CPUs, macOS 27.0.1 / Darwin 27.0.0 arm64, Python 3.12.12,
+  SQLite 3.50.4, sqlite-vec 0.1.9, load average 23.9 at start): p95 passes 100 ms near 32,765
+  rows at 384 dimensions, 12,979 at 768 and 28,956 at 1024, measured on a shared machine, so the
+  thresholds are conservative. The 768 value sits below both neighbours, which an exact flat
+  scan (cost proportional to rows x width) cannot produce: its 10k-row cell absorbed a load
+  spike (inserts ran at 1,512 rows/s against 22,729 at 384 and 3,403 at 1024, and its p95 was
+  4.5x its p50 where the other two 10k cells were at 2.3x). The whole grid is load-dominated,
+  not just that cell: the three 100k-row p95s are 334 / 345 / 335 ms across 384 / 768 / 1024
+  where a flat scan predicts 1 : 2 : 2.67, and a quiet one-off taken while designing the
+  script (same Python, SQLite and sqlite-vec; 384 x 100k read 45 ms where this run read
+  334 ms) put the crossings near 220,000 / 53,000 / 41,000 rows, so the 384 value is the
+  furthest from a quiet reading (0.15x), 768 next (0.24x) and 1024 nearest (0.71x). All three
+  crossings, and the three literals the flat-scan advisory (`feat/flat-scan-advisory`) pins to
+  them, are placeholders until the owner's quiet run replaces this file. It is manual, not a
+  test, and its scratch files need up to ~5 GB; the numbers describe that machine, not a
+  guarantee.
+- **`trelix index` and `trelix stats` print a `Flat-scan advisory` when the sqlite store holds
+  more vectors than the measured threshold for the index's width.** The sqlite backend is an
+  exact flat scan (sqlite-vec has never shipped an HNSW or any other ANN index), so p95 search
+  latency grows with rows x width. The thresholds (p95 past 100 ms near 32,765 rows at 384
+  dimensions, 12,979 at 768 and 28,956 at 1024 on apple-m4-shared, measured on a shared
+  machine, so the thresholds are conservative; the nearest measured width at or above the
+  index's width applies, scaled above 1024) come from the committed benchmark report
+  `docs/reports/vector-search-bench-2026-10-07-apple-m4-shared.json`, and a test pins the table
+  to it. The line goes to stderr, names the file and `TRELIX_STORE_BACKEND=lance` or `qdrant`,
+  never changes the exit code (a corrupt recorded width of 0 or less is skipped, so `stats`
+  still exits 0), creates no `.trelix/`, prints only when the recorded width is a positive
+  number, and not on `qdrant`/`lance`. The docs that called the sqlite store an HNSW index or
+  named a 100k/500k threshold now say "exact flat scan" and point at the measured table
+  (CLI_REFERENCE, CONFIGURATION, GLOSSARY, FAQ, WHY_TRELIX, TROUBLESHOOTING, PROVIDERS); the
+  `TRELIX_STORE_HNSW*` settings (and the unaliased `hnsw_ef_construction`) are documented as
+  accepted and inert; the remaining sqlite-HNSW sentences are listed in the PR for a docs-only
+  follow-up.
 
 ### Changed
 - **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows

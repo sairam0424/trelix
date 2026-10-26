@@ -121,7 +121,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant connection URL |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
 | `TRELIX_STORE_BACKEND` | `sqlite` | Vector store backend: `sqlite` \| `qdrant` \| `lance` |
-| `TRELIX_STORE_HNSW` | `true` | Enable HNSW index (sqlite-vec ≥ 0.1.6) |
+| `TRELIX_STORE_HNSW` | `true` | **Inert.** Accepted for compatibility and read nowhere: the sqlite store is always an exact flat scan (sqlite-vec has never shipped an HNSW or any other ANN index). See [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) for the flat-scan advisory |
 | `TRELIX_RETRIEVAL_MULTI_QUERY` | `false` | Multi-query expansion before retrieval |
 | `TRELIX_RETRIEVAL_MULTI_QUERY_COUNT` | `2` | Query variant count for multi-query expansion (1–4) |
 | `TRELIX_RETRIEVAL_SPARSE` | `false` | Enable SPLADE-Code sparse retrieval leg |
@@ -245,6 +245,9 @@ With the on-disk embedding cache on (`TRELIX_EMBEDDING_CACHE_ENABLED=true`, see
 [CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time)) the table adds a
 `Chunks from cache` row — the chunks served from the cache instead of the
 provider — whenever that count is above zero.
+On the `sqlite` backend it also prints a `Flat-scan advisory` on stderr when the index
+holds more vectors than the measured threshold for its width (see
+[CONFIGURATION.md § Storage](CONFIGURATION.md#storage)); the exit code is unchanged.
 
 #### Options
 
@@ -279,6 +282,10 @@ trelix index . --verbose
 - Languages indexed by default: Python, JavaScript, TypeScript, TSX, Go, Rust,
   Java, Kotlin, Ruby, C/C++, C#, Razor, Markdown, JSON, YAML, TOML, HTML, CSS.
   Files larger than 500 KB are skipped.
+- On the `sqlite` backend, a `Flat-scan advisory` line on stderr means the store holds more
+  vectors than the measured threshold for its width, so the exact flat scan is slow enough to
+  matter. It never changes the exit code; `TRELIX_STORE_BACKEND=lance` or `qdrant` is the
+  remedy. See [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) for the thresholds.
 
 #### Pruning files that no longer exist (`--prune`)
 
@@ -730,6 +737,12 @@ trelix stats /path/to/large-repo
   deleted, because the default ignore list contains `packages` for .NET NuGet output.
   The walk settings are recorded at index time and any difference is named in the
   output, so this is now detectable rather than silent.
+- **The `Flat-scan advisory` line prints after the coverage rows**, on stderr, on the `sqlite`
+  backend when the index records its embedding width and holds more vectors than the measured
+  threshold for that width (see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage)). It
+  never prints when the width is `not recorded` or not a positive number, never changes the
+  exit code, and reads the row count read-only, so it creates no `.trelix/` (the promise
+  under [Exit codes](#exit-codes)).
 
 ---
 

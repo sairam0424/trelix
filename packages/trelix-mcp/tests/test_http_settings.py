@@ -1,10 +1,10 @@
 """`trelix_mcp.http` settings: what `resolve_http_settings` returns, raises and logs.
 
-The module is not wired into `server.py` yet (a later change adds `--transport http`), so these
-tests drive it directly and none touches `trelix_mcp.server`. Every expected value is a literal
-written here: the error and log texts are copied in, never imported. This package's tests are
-governed by packages/trelix-mcp/pyproject.toml (no socket ban, no timeout), so the markers below
-supply both.
+These tests drive the module directly and none touches `trelix_mcp.server`; what reaches
+`mcp.run` through `trelix-mcp --transport http` is test_server_cli_http.py's. Every expected value
+is a literal written here: the error and log texts are copied in, never imported. This package's
+tests are governed by packages/trelix-mcp/pyproject.toml (no socket ban, no timeout), so the
+markers below supply both.
 """
 
 from __future__ import annotations
@@ -49,10 +49,22 @@ E3_HIGH = "--port must be between 1 and 65535, got 70000"
 E7_MCP = "the token in TRELIX_MCP_AUTH_TOKEN must be printable ASCII"
 E7_API = "the token in TRELIX_API_AUTH_TOKEN must be printable ASCII"
 E8 = "--host must be a hostname or IP address, optionally in brackets, got 'not a host!'"
+E8_PORT = "--host must be a hostname or IP address, optionally in brackets, got 'example.com:9000'"
+E8_BRACKET_PORT = (
+    "--host must be a hostname or IP address, optionally in brackets, got '[::1]:8766'"
+)
+E8_BLANK = "--host must be a hostname or IP address, optionally in brackets, got ''"
+E4_BLANK = "--path must start with / and cannot be /health, got ''"
+E9 = "--allowed-host * is not accepted; set TRELIX_MCP_ALLOWED_HOSTS=* to turn the guard off"
+E10 = (
+    "--allowed-host must be one hostname or IP address, optionally in brackets (repeat the flag "
+    "for more), got {}"
+)
 W1 = (
-    "Serving MCP over HTTP on 0.0.0.0:8766 with no token: every tool is open to anyone who can "
+    "Serving MCP over HTTP on {}:8766 with no token: every tool is open to anyone who can "
     "reach this port (--allow-unauthenticated)"
 )
+W1_V4 = W1.format("0.0.0.0")  # noqa: S104
 W2 = "Host/Origin guard is OFF (allowed hosts set to *)"
 W3_DEFAULT = "Host/Origin guard is ON (allowed hosts: 127.0.0.1, ::1, localhost)"
 
@@ -106,6 +118,13 @@ def test_defaults_and_loopback_open(tmp_path: Path, caplog: pytest.LogCaptureFix
         ("LOCALHOST", [], {}, LOOPBACK),
         # Python's ipaddress rejects the shorthand, so 127.1 is a hostname to this check.
         ("127.1", [], TOKEN_SET, LOOPBACK | {"127.1"}),
+        # Unlike `--host`, an `--allowed-host` keeps the guard's own leniency: a port, a bracket
+        # and upper case normalise instead of being refused. MUTATION: `_bind_name(host)` as the
+        # per-entry check in `_guard_hosts`.
+        (None, ["Mcp.Example:9000", "[::2]"], {}, LOOPBACK | {"mcp.example", "::2"}),
+        # The variable keeps the REST behaviour: an invalid entry is dropped (with a WARNING), the
+        # valid ones stay and the server starts. MUTATION: run the per-entry check on `env_hosts`.
+        (None, [], {MCP_HOSTS: "a.example,http://x.example,*.y"}, LOOPBACK | {"a.example"}),
         # TRELIX_API_ALLOWED_HOSTS is read only when the MCP variable is unset or blank (B12).
         (None, [], {MCP_HOSTS: "", API_HOSTS: "b.example"}, LOOPBACK | {"b.example"}),
         (None, [], {MCP_HOSTS: "b.example", API_HOSTS: "*"}, LOOPBACK | {"b.example"}),
@@ -183,11 +202,18 @@ def test_nonloopback_requires_token(tmp_path: Path, caplog: pytest.LogCaptureFix
         settings = _settings(tmp_path, host="0.0.0.0", allow_unauthenticated=True)  # noqa: S104
     assert settings.token is None
     assert [m.cls for m in asgi_middleware(settings)] == [RequestGuardMiddleware]
-    assert [msg for level, msg in _logged(caplog) if level == "WARNING"] == [W1]
+    assert [msg for level, msg in _logged(caplog) if level == "WARNING"] == [W1_V4]
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=LOGGER):
         settings = _settings(tmp_path, host="::1")
     assert settings.token is None
+    assert [msg for level, msg in _logged(caplog) if level == "WARNING"] == []
+    # A non-loopback bind WITH a token is the correct deployment and must not warn.
+    # MUTATION: `if token is None and not loopback:` -> `if not loopback:` in resolve_http_settings.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        settings = _settings(tmp_path, host="0.0.0.0", environ=TOKEN_SET)  # noqa: S104
+    assert settings.token == "t"
     assert [msg for level, msg in _logged(caplog) if level == "WARNING"] == []
     # A loopback bind never warns, flag or not: W1 is about exposure and nothing is exposed.
     caplog.clear()
@@ -195,6 +221,28 @@ def test_nonloopback_requires_token(tmp_path: Path, caplog: pytest.LogCaptureFix
         settings = _settings(tmp_path, host="127.0.0.1", allow_unauthenticated=True)
     assert settings.token is None
     assert [msg for level, msg in _logged(caplog) if level == "WARNING"] == []
+
+
+@pytest.mark.parametrize(
+    ("host", "shown"),
+    [
+        ("::", "[::]"),
+        ("[::]", "[::]"),
+        ("2001:db8::1", "[2001:db8::1]"),
+        ("mcp.internal", "mcp.internal"),
+    ],
+    ids=["bare-any", "bracketed-any", "bare-global", "hostname"],
+)
+def test_the_no_token_warning_reads_as_a_url_authority(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, host: str, shown: str
+) -> None:
+    """An IPv6 bind is logged bracketed whatever the spelling (`::` and `[::]` are the same bind),
+    a hostname is not. MUTATIONS: log `host` instead of `url_host(bind)` in `resolve_http_settings`
+    (`::` reads as `:::8766`, `2001:db8::1` as `2001:db8::1:8766`); `url_host` always bracketing
+    (the hostname row)."""
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        _settings(tmp_path, host=host, allow_unauthenticated=True)
+    assert [msg for level, msg in _logged(caplog) if level == "WARNING"] == [W1.format(shown)]
 
 
 @pytest.mark.parametrize(
@@ -206,6 +254,25 @@ def test_nonloopback_requires_token(tmp_path: Path, caplog: pytest.LogCaptureFix
         ({"path": "/health"}, "--path must start with / and cannot be /health, got '/health'"),
         ({"roots": ()}, E1),
         ({"host": "not a host!", "environ": TOKEN_SET}, E8),
+        # A port belongs to --port: `host:port` is refused, not split (uvicorn would fail to bind).
+        ({"host": "example.com:9000", "environ": TOKEN_SET}, E8_PORT),
+        ({"host": "[::1]:8766"}, E8_BRACKET_PORT),
+        # Only an omitted flag (None) takes the default: `--host "$H"` with H unset must not bind
+        # loopback without a word. MUTATION: `host or DEFAULT_HOST` / `path or DEFAULT_PATH`.
+        ({"host": "", "environ": TOKEN_SET}, E8_BLANK),
+        ({"path": ""}, E4_BLANK),
+        # Only the variable's `*` turns the guard off; the flag's is refused, not dropped.
+        ({"allowed_hosts": ["*"]}, E9),
+        ({"allowed_hosts": ["a.example", " * "]}, E9),
+        # Any other entry the REST normaliser would drop is refused too, not dropped with a warning
+        # that names TRELIX_API_ALLOWED_HOSTS. The flag is repeatable, so a comma list is the likely
+        # typo. MUTATION: delete the `for host in allowed_hosts` check in `_guard_hosts`.
+        ({"allowed_hosts": ["mcp.internal,mcp.example"]}, E10.format("'mcp.internal,mcp.example'")),
+        ({"allowed_hosts": [""]}, E10.format("''")),
+        ({"allowed_hosts": ["http://x.example"]}, E10.format("'http://x.example'")),
+        ({"allowed_hosts": ["*.x.example"]}, E10.format("'*.x.example'")),
+        # Every entry is checked, not the first: MUTATION: `allowed_hosts[:1]` in the loop.
+        ({"allowed_hosts": ["a.example", "bad host"]}, E10.format("'bad host'")),
         # The port is checked before the roots.
         ({"port": 70000, "roots": ()}, E3_HIGH),
     ],
@@ -223,6 +290,16 @@ def test_only_the_exact_health_path_is_refused(tmp_path: Path) -> None:
     refused with E4 although only `/health` itself is the probe)."""
     assert _settings(tmp_path, path="/healthz").path == "/healthz"
     assert _settings(tmp_path, path="/health/mcp").path == "/health/mcp"
+
+
+def test_bracketed_ipv6_binds_the_bare_address(tmp_path: Path) -> None:
+    """`--host [::1]` binds `::1`: uvicorn hands the host to getaddrinfo, which refuses the
+    brackets, while the allow-list entry (`::1`) is the same either way. MUTATION: `host=host`
+    instead of `host=bind` in `resolve_http_settings`."""
+    settings = _settings(tmp_path, host="[::1]")
+    assert (settings.host, settings.guard_hosts) == ("::1", LOOPBACK)
+    assert _settings(tmp_path, host="::1").host == "::1"
+    assert _settings(tmp_path, host="LOCALHOST").host == "LOCALHOST"
 
 
 def test_port_bounds_are_inclusive(tmp_path: Path) -> None:

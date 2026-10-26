@@ -164,6 +164,7 @@ SCOPE: dict[str, tuple[str, ...]] = {
     "store.db": ("src/trelix/store/db.py",),
     "store.vector": ("src/trelix/store/vector.py",),
     "store.dimension_guard": ("src/trelix/store/dimension_guard.py",),
+    "store.scale_advisory": ("src/trelix/store/scale_advisory.py",),
     "graph": ("src/trelix/graph/*",),
     "compression.extractive": ("src/trelix/compression/extractive.py",),
 }
