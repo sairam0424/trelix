@@ -1183,6 +1183,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   the table, with the `[trelix] ...` notices; they no longer do. A script that read answers from that
   stream uses `--record`. A run with no LLM configured logs one warning instead of one notice per
   query, so a table of zeros still says why.
+- **The `dev` extra now requires `pytest>=9.0` and `pytest-asyncio>=0.24`** (it accepted
+  `pytest>=8.2.0` and `pytest-asyncio>=0.23.0`). The test configuration in `pyproject.toml` sets
+  `strict = true`, a pytest 9 key, and `asyncio_default_fixture_loop_scope`, which pytest-asyncio
+  reads from 0.24. On the older releases both are ignored (pytest only warns about an unknown
+  key), so strict xfails, strict config parsing and unique parametrization ids were not enforced.
+  `pip install -e ".[dev]"` already resolves newer releases, and
+  `tests/unit/test_dependency_floor_guards.py` pins both floors. Nothing changes for a default
+  install: the extra is for contributors.
 
 ## [3.4.3] — 2026-10-04
 
