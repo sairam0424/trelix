@@ -18,7 +18,9 @@ the refused value at WARNING (`Rejected http '/mcp': Host header not allowed: 'e
 which an operator shipping stderr to a shared sink must know. Uvicorn's access lines reach stdout,
 not the stderr stream section 18's wrapper captures; `0.0.0.0` and `::` are refused as a `Host`
 only until listed; and the idle timeout has an environment variable but a default that depends on
-the `fastmcp` version, while the session cap is `mcp` 2.3.0's.
+the `fastmcp` version, while the session cap is `mcp` 2.3.0's. Of the two 403 bodies, only the
+Host/Origin one names `TRELIX_MCP_ALLOWED_HOSTS` and `--allowed-host`; the cross-site one names
+neither, and SECURITY.md and the changelog must say so instead of crediting both.
 """
 
 from __future__ import annotations
@@ -139,6 +141,34 @@ def test_the_wildcard_binds_are_refused_as_host_only_until_listed(document: str)
     variable) admits that `Host`, so neither document may say "never"."""
     text = (_ROOT / document).read_text(encoding="utf-8")
     assert "(`0.0.0.0` and `::` are accepted only when listed)" in text
+
+
+@pytest.mark.parametrize(
+    ("document", "sentence"),
+    [
+        pytest.param(
+            "SECURITY.md",
+            "Its Host/Origin 403 names `TRELIX_MCP_ALLOWED_HOSTS` and `--allowed-host` (not the "
+            "REST API's variable), its cross-site 403 does not name the REST variable either, and "
+            "neither suggests `*`.",
+            id="security",
+        ),
+        pytest.param(
+            "CHANGELOG.md",
+            "its cross-site 403 no longer names the REST variable",
+            id="changelog",
+        ),
+    ],
+)
+def test_only_the_host_origin_403_is_credited_with_the_mcp_allow_list_hint(
+    document: str, sentence: str
+) -> None:
+    """`HOST_REJECTION_DETAIL` names the variable and the flag; `CROSS_SITE_DETAIL` is a fixed text
+    that names neither (docs/MCP_GUIDE.md quotes both). A sentence saying that both 403 bodies name
+    them over-claims, so an operator who gets the cross-site refusal would look for a hint that is
+    not there. Whitespace is collapsed, so re-wrapping the paragraph does not fail the pin."""
+    text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
+    assert sentence in text
 
 
 def test_the_sessions_paragraph_scopes_the_idle_timeout_to_the_fastmcp_version() -> None:

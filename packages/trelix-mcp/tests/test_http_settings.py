@@ -321,8 +321,11 @@ def test_run_kwargs_are_explicit(tmp_path: Path) -> None:
         "json_response": False,
         "host_origin_protection": False,
     }
-    assert [(m.cls, m.kwargs) for m in kwargs["middleware"]] == [
-        (RequestGuardMiddleware, {"allowed_hosts": frozenset({"localhost", "127.0.0.1", "::1"})}),
-        (BearerTokenMiddleware, {"token": "t0k"}),
-    ]
+    guard, bearer = kwargs["middleware"]
+    assert (guard.cls, sorted(guard.kwargs)) == (
+        RequestGuardMiddleware,
+        ["allowed_hosts", "cross_site_detail", "rejection_detail"],
+    )
+    assert guard.kwargs["allowed_hosts"] == frozenset({"localhost", "127.0.0.1", "::1"})
+    assert (bearer.cls, bearer.kwargs) == (BearerTokenMiddleware, {"token": "t0k"})
     assert http_app_kwargs(_settings(tmp_path, stateful=True))["stateless_http"] is False

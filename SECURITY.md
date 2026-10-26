@@ -143,8 +143,9 @@ HTTP on `127.0.0.1:8766/mcp` and is guarded from its first release:
   (unless the allowed hosts are `*`), with `localhost`, `127.0.0.1`, `::1`, the bind address when
   it is a specific one (`0.0.0.0` and `::` are accepted only when listed), every `--allowed-host`
   and `TRELIX_MCP_ALLOWED_HOSTS` (fallback `TRELIX_API_ALLOWED_HOSTS`). FastMCP's own guard and the
-  MCP SDK's DNS-rebinding check are off, so there is exactly one allow-list and its 403 bodies are
-  the REST API's.
+  MCP SDK's DNS-rebinding check are off, so there is exactly one allow-list. Its Host/Origin 403
+  names `TRELIX_MCP_ALLOWED_HOSTS` and `--allowed-host` (not the REST API's variable), its
+  cross-site 403 does not name the REST variable either, and neither suggests `*`.
 - **A bearer token for anything beyond loopback.** `TRELIX_MCP_AUTH_TOKEN` (fallback
   `TRELIX_API_AUTH_TOKEN`), process environment only, never argv or a `.env`. Every request but
   `GET`/`HEAD /health` must carry `Authorization: Bearer <token>` or `X-Trelix-Api-Key: <token>`;

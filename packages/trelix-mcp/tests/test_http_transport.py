@@ -35,14 +35,13 @@ UNAUTHORIZED = (
     "(or TRELIX_API_AUTH_TOKEN)."
 )
 REJECTION = (
-    "Request rejected: the Host or Origin header is not allowed for this trelix server. "
-    "If the hostname is legitimate, add it to TRELIX_API_ALLOWED_HOSTS (comma-separated). "
-    "Set TRELIX_API_ALLOWED_HOSTS=* to disable this check."
+    "Request rejected: the Host or Origin header is not allowed for this trelix-mcp server. "
+    "If the hostname is legitimate, add it to TRELIX_MCP_ALLOWED_HOSTS (comma-separated) or "
+    "pass --allowed-host (repeatable)."
 )
 CROSS_SITE = (
-    "Request rejected: this trelix server refuses cross-site browser requests. Call it "
-    "from a page served from the same host as the API, or set "
-    "TRELIX_API_ALLOWED_HOSTS=* to disable this check."
+    "Request rejected: this trelix-mcp server refuses cross-site browser requests. Call it "
+    "from a page served from the same host as this server."
 )
 MASKED = "Error calling tool 'search_code'"
 REFUSAL = "repo_path is not inside an allowed repository root"
