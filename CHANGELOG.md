@@ -852,7 +852,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     or unreadable is a refusal, not a traceback; a `<name>.partial` beside an already-verified clone is
     refused with the same text as before a clone exists; and the README says a sidecar that is not
     valid JSON is a refusal while any other shape yields no labels.
-
 - **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
   llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
   bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
@@ -948,6 +947,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `TRELIX_STORE_HNSW*` settings (and the unaliased `hnsw_ef_construction`) are documented as
   accepted and inert; the remaining sqlite-HNSW sentences are listed in the PR for a docs-only
   follow-up.
+- **`docker compose --profile mcp up` and the Helm chart's `mcp.enabled` deploy
+  `trelix-mcp --transport http`.** `docker-compose.yml` gains an opt-in `trelix-mcp` service
+  (profile `mcp`, published on `127.0.0.1:8766` only, serving the `/repo` mount, with a
+  healthcheck on `/health`; the container exits 2 without `TRELIX_MCP_AUTH_TOKEN`); plain
+  `docker compose up` is unchanged. The chart gains `mcp.*` values, off by default, that add a
+  `trelix-mcp` container to the same pod serving the same PVC, a Service port `mcp`, a Secret key
+  and a Host allow-list of the release's Service names plus `mcp.allowedHosts`; it refuses to
+  render with `mcp.enabled` and no token, or without persistence. Default renders are unchanged
+  except the chart label (chart `version` 0.2.6 to 0.2.7). `helm upgrade --reuse-values` from
+  chart 0.2.6 reuses the old release's values, which lack `mcp`, and fails to render: use
+  `--reset-then-reuse-values`, or add `--set mcp.enabled=false`. The image must ship
+  `trelix-mcp --transport`; see `helm/trelix/README.md` and `docs/MCP_GUIDE.md` section 19.
+- **`trelix eval-synthesis` reads golden v2 lines and keeps one record per query** (fifth of six
+  changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not answer
+  the question; this one adds the schema, the records and the per-query file, and the stacked PR that
+  follows extends this bullet with the abstention and citation metrics over those records). A golden
+  line may carry `answerable` (`true`/`false`; absent means `true`), `gold_answer` (a non-empty string,
+  stored and never scored) and `expected_citations` (a list of non-empty repo-relative paths, validated
+  and stored); a field of another type, or a line that is JSON but not an object, is refused with its
+  line number and no query runs (a non-object line used to crash the run). The harness keeps one
+  `SynthesisRecord` per line (`run_detailed`); the four GroUSE means run over the answerable records,
+  so the aggregate's keys are `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
+  `n_queries`, `unscoreable` and the new `n_unanswerable`, and the table gains the rows `Unanswerable
+  queries` and `Unscoreable queries` (that count existed and was never printed). A v1 file returns the
+  numbers it always did: three lines where the second query's retrieval raises still report
+  `hallucination_rate 0.3333` and `unscoreable 1.0`, because an errored record keeps its placeholder
+  scores inside the means. `--per-query-out FILE` writes `{"schema_version": 1, "harness": "synthesis",
+  "records": [...], "aggregate": {...}}` through the same hardened writer as `trelix eval` (sorted
+  keys, mode 0600, atomic; exit `1` if it cannot be written), each record with the eight fields `id`,
+  `query`, `answerable`, `hallucination`, `completeness`, `faithfulness`, `overall`, `error`. The
+  module docstring's ninth failure mode is now worded for `line_out_of_range`. Answers on this path are
+  capped at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`) while plain
+  `trelix ask` streams at 12,000: pre-existing, documented now.
 
 ### Changed
 - **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows
