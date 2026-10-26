@@ -9,7 +9,10 @@ run (helm-lint.yml renders the chart; no job renders the compose file):
   REST service's;
 * the chart's container is off by default, serves the PVC, shares the store env with the
   `trelix` container, has a token of its own, and the chart refuses to render it without a
-  token or a volume.
+  token or a volume;
+* the chart's pod template carries a hash of the Secret the chart renders, so rotating a token
+  or key through `helm upgrade` rolls the pod, and the docs name `kubectl rollout restart` for
+  a Secret the chart does not own.
 
 The chart is read as text, not parsed: a Go template is not YAML until Helm has rendered it,
 and `helm` is not installed in the unit-test job. helm-lint.yml renders it; the last test here
@@ -219,6 +222,58 @@ def test_chart_service_and_secret_carry_the_mcp_port_and_token_key() -> None:
     assert "TRELIX_MCP_AUTH_" + "TOKEN: {{ .Values.mcp.auth.token | quote }}" in secret
     # The key's own guard, a different line from the `$hasAny` operand above.
     assert "{{- if and .Values.mcp.enabled " + tail + " }}" in secret
+
+
+def test_chart_pod_template_hashes_its_secret_so_a_rotated_token_rolls_the_pod() -> None:
+    """A container reads a `secretKeyRef` variable once, at start, so a changed Secret alone
+    rolls nothing and the old token stays accepted (measured with `helm template`: two tokens
+    rendered a byte-identical Deployment). The hash must sit in the POD template's metadata,
+    not the Deployment's own: only a change there rolls the pod. The Secret template renders a
+    bare newline when it holds no value (measured: without `| trim` the annotation was written
+    on every render), and `with` is falsy only for an empty string, so a release whose
+    credentials all come from an existing Secret writes no annotation and no empty
+    `annotations:` key."""
+    text = _chart("templates/deployment.yaml")
+    pod_metadata = text[text.index("  template:\n    metadata:\n") : text.index("    spec:\n")]
+    block = (
+        '{{- with (include (print $.Template.BasePath "/secret.yaml") . | trim) }}\n'
+        "      annotations:\n"
+        "        checksum/secret: {{ . | sha256sum }}\n"
+        "      {{- end }}\n"
+    )
+    assert block in pod_metadata
+
+
+def test_chart_docs_say_to_restart_after_changing_a_secret_the_chart_does_not_own() -> None:
+    """The chart cannot hash a Secret it does not own (`lookup` returns nothing under
+    `helm template`), so the README and the NOTES name the command for each token. Each note
+    in NOTES.txt sits inside its own block (API auth on, `mcp.enabled`), so it shows only when
+    that token exists."""
+    readme = " ".join(_chart("README.md").split())
+    notes = " ".join(_chart("templates/NOTES.txt").split())
+    restart = "`kubectl rollout restart deployment/<fullname>`"
+    for needle in (
+        "With `mcp.auth.existingSecretName` the chart cannot see the Secret, so after you "
+        f"change it run {restart}.",
+        "after you change the Secret behind `apiAuth.existingSecretName` run " + restart,
+        f"while a Secret you manage needs {restart} after you change it.",
+        "The same goes for a Secret named in `extraSecretEnv`: the chart cannot see it either, "
+        "so changing it never rolls the pod by itself.",
+    ):
+        assert needle in readme, needle
+    rollout = 'kubectl rollout restart deployment/{{ include "trelix.fullname" . }}'
+    api_start = notes.index("{{- if or .Values.apiAuth.token .Values.apiAuth.existingSecretName }}")
+    api_block = notes[api_start : notes.index("{{- else }}", api_start)]
+    mcp_start = notes.index("{{- if .Values.mcp.enabled }}")
+    mcp_block = notes[mcp_start : notes.index("{{- end }}", mcp_start)]
+    assert (
+        "after you change the Secret behind apiAuth.existingSecretName, run: " + rollout
+        in api_block
+    )
+    assert (
+        "after you change the Secret behind mcp.auth.existingSecretName, run: " + rollout
+        in mcp_block
+    )
 
 
 def test_chart_readme_documents_the_mcp_values_and_the_ingress_note() -> None:

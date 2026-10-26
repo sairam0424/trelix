@@ -12,6 +12,19 @@ spec:
       {{- include "trelix.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      {{- /*
+      The credentials this chart's own Secret holds reach the containers as environment
+      variables, which are read once, when a container starts. A changed Secret alone rolls
+      nothing, so the old value stays accepted until the pod restarts; hashing the rendered
+      Secret into the pod template makes `helm upgrade` roll the pod when any of them changes.
+      With no value to hold the Secret renders only a newline; `trim` turns that into the empty
+      string, which `with` skips, so then no annotation is written.
+      A Secret the chart does not own (an existingSecretName) cannot be hashed here.
+      */}}
+      {{- with (include (print $.Template.BasePath "/secret.yaml") . | trim) }}
+      annotations:
+        checksum/secret: {{ . | sha256sum }}
+      {{- end }}
       labels:
         {{- include "trelix.selectorLabels" . | nindent 8 }}
     spec:
