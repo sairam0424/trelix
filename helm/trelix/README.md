@@ -97,8 +97,9 @@ claude mcp add --transport http trelix http://127.0.0.1:8766/mcp --header "Autho
   cannot turn the check off, and so is any entry that is not one hostname or IP address (a
   URL, a wildcard): the container logs a warning (`kubectl logs deploy/<fullname> -c
   trelix-mcp`) and requests under that name answer 403. The probes use `GET /health`, which
-  is exempt. The 403 text names the REST API's allow-list variable, which trelix-mcp reads
-  only when its own is unset or blank, so edit `mcp.allowedHosts`, not `extraEnv`.
+  is exempt. The Host/Origin 403 text names `TRELIX_MCP_ALLOWED_HOSTS`, which the chart sets from
+  `mcp.allowedHosts`; trelix-mcp reads the REST API's allow-list variable only when that one is
+  unset or blank, so edit `mcp.allowedHosts`, not `extraEnv`.
 - **Image.** `image.tag` must be a release whose `trelix-mcp` has `--transport http`; on an
   older image the container exits at once on an argument error and crash-loops, and the
   whole pod, REST API included, stays NotReady and leaves the Service. Check an image with

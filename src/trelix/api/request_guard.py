@@ -187,13 +187,18 @@ def is_allowed_origin(origin: str | None, allowed: Collection[str]) -> bool:
     return is_allowed_host(authority, allowed)
 
 
-def _bounded_repr(value: object) -> str:
+def bounded_repr(value: object) -> str:
     """``repr()`` cut to a fixed length: hostile header bytes can neither span lines nor flood.
 
-    A string is cut BEFORE ``repr`` so a huge value costs the same as a short one.
+    A string is cut BEFORE ``repr`` so a huge value costs the same as a short one. Public so
+    another ASGI layer (trelix-mcp's bearer check) logs a request path the same way.
     """
     head = value[:_MAX_LOGGED_CHARS] if isinstance(value, str | bytes) else value
     return repr(head)[:_MAX_LOGGED_CHARS]
+
+
+# The name this helper had while it was private; the call sites below still use it.
+_bounded_repr = bounded_repr
 
 
 def _clipped(values: list[str]) -> list[str]:
@@ -313,11 +318,24 @@ class _Violation(NamedTuple):
 
 
 class RequestGuardMiddleware:
-    """Refuse foreign ``Host`` / ``Origin`` / cross-site fetches with a fixed 403."""
+    """Refuse foreign ``Host`` / ``Origin`` / cross-site fetches with a fixed 403.
 
-    def __init__(self, app: _ASGIApp, *, allowed_hosts: Collection[str]) -> None:
+    ``rejection_detail`` and ``cross_site_detail`` replace the REST API's 403 texts for a host
+    that is configured through another variable (trelix-mcp names its own).
+    """
+
+    def __init__(
+        self,
+        app: _ASGIApp,
+        *,
+        allowed_hosts: Collection[str],
+        rejection_detail: str = REJECTION_DETAIL,
+        cross_site_detail: str = CROSS_SITE_DETAIL,
+    ) -> None:
         self.app = app
         self._allowed_hosts = frozenset(allowed_hosts)
+        self._rejection_detail = rejection_detail
+        self._cross_site_detail = cross_site_detail
 
     async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
         if scope["type"] not in ("http", "websocket") or is_health_probe(scope):
@@ -337,21 +355,22 @@ class RequestGuardMiddleware:
         await self._reject(scope, send, violation.detail)
 
     def _violation(self, scope: _Scope) -> _Violation | None:
+        refused = self._rejection_detail
         hosts = _header_values(scope, b"host")
         if len(hosts) != 1:
-            return _Violation("Host header missing or repeated", _clipped(hosts), REJECTION_DETAIL)
+            return _Violation("Host header missing or repeated", _clipped(hosts), refused)
         if not is_allowed_host(hosts[0], self._allowed_hosts):
-            return _Violation("Host header not allowed", hosts[0], REJECTION_DETAIL)
+            return _Violation("Host header not allowed", hosts[0], refused)
 
         origins = _header_values(scope, b"origin")
         if len(origins) > 1:
-            return _Violation("Origin header repeated", _clipped(origins), REJECTION_DETAIL)
+            return _Violation("Origin header repeated", _clipped(origins), refused)
         if origins and not is_allowed_origin(origins[0], self._allowed_hosts):
-            return _Violation("Origin header not allowed", origins[0], REJECTION_DETAIL)
+            return _Violation("Origin header not allowed", origins[0], refused)
 
         for site in _header_values(scope, b"sec-fetch-site"):
             if site.strip().lower() == _CROSS_SITE:
-                return _Violation("cross-site fetch", site, CROSS_SITE_DETAIL)
+                return _Violation("cross-site fetch", site, self._cross_site_detail)
         return None
 
     @staticmethod

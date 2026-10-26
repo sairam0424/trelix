@@ -498,9 +498,10 @@ Two things that are **not** version sites, and must not be bumped with them:
   fails: `trelix-mcp` at start-up, the two adapters at their first query, because they import
   `require_index` inside the retrieval method). `trelix-mcp` alone also imports
   `trelix.core.confinement` (`resolve_allowed_roots`, `is_within_allowed_roots`), and its HTTP
-  transport will import `trelix.api.request_guard.is_health_probe`; neither name is in a
-  published core yet, so the next release's PR raises `trelix-mcp`'s `trelix>=` floor to that
-  release as well. `trelix-mcp` also passes
+  transport will import `trelix.api.request_guard.is_health_probe` and `bounded_repr`, and
+  passes `rejection_detail` and `cross_site_detail` to `RequestGuardMiddleware`; none of these
+  is in a published core yet, so the next release's PR raises `trelix-mcp`'s `trelix>=` floor
+  to that release as well. `trelix-mcp` also passes
   `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
   `server.disable(names=, components=)`, so its `fastmcp` floor is `>=4.0.10`, the release
   those were run against (4.0.0 to 4.0.9 were not tested);
