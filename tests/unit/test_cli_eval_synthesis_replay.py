@@ -257,6 +257,9 @@ def test_the_help_lists_both_flags_and_points_at_the_plan_cache() -> None:
     result = runner.invoke(app, ["eval-synthesis", "--help"])
     text = _plain(result.output)
     assert result.exit_code == 0
-    # The option's own row ("--replay   TEXT"), not a mention of it in another option's help.
-    assert re.search(r"--replay\s+TEXT", text) and re.search(r"--record\s+TEXT", text)
+    # Each option's own row: the flag, its metavar, then the start of its own help text. Not a
+    # mention of the flag in another option's help, and not tied to the metavar word, which
+    # click/typer render as "TEXT" up to click 8.1 and as "<str>" from click 8.5 on.
+    assert re.search(r"--replay\s+\S+\s+Score the answers recorded", text)
+    assert re.search(r"--record\s+\S+\s+After the run, write every answer", text)
     assert "TRELIX_RETRIEVAL_PLAN_CACHE_FILE" in text
