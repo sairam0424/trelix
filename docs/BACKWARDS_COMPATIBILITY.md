@@ -161,8 +161,9 @@ repository with no index, from the diff alone, and only stops creating the empty
 
 `trelix-mcp`, `trelix-langchain` and `trelix-llama-index` now import `trelix.core.index_check`,
 which the core ships from the release that contains this change. An older core under a newer
-package fails on import (`trelix-mcp` at start-up, the adapters on their first query), so the
-release that ships this raises their `trelix>=` floors to that release.
+package fails (`trelix-mcp` at start-up; the two adapters at their first query, because they import
+`require_index` inside the retrieval method), so the release that ships this raises their
+`trelix>=` floors to that release.
 
 ### Behaviour change shipped as a fix: `Synthesizer.stream()` on an empty retrieval
 
@@ -244,11 +245,20 @@ exit code 2.
 `trelix-mcp` accepts `--root PATH` (repeatable) and reads `TRELIX_ALLOWED_REPO_ROOTS`. With at
 least one root, every `repo_path`, `federation_add_repo`'s `path` and `trelix://repo/...` URI
 outside the roots is refused (`isError: true` with `repo_path is not inside an allowed repository
-root`; a resource read fails with the same text), and every `federation_search_all` response gains
-`repos_outside_roots`. With neither, nothing changes: no tool, parameter or result differs, and no
-key is added. One consumer can be confined without asking for it: `trelix-mcp` over stdio reads
-`TRELIX_ALLOWED_REPO_ROOTS` from the process environment; if you export it for `trelix serve`, the
-VS Code extension's server is confined to the same roots.
+root`; a resource read fails with the same text), `federation_list_repos` and
+`federation_search_all` list and search only the entries inside the roots and every response of
+theirs gains `repos_outside_roots`, and `federation_remove_repo` answers an alias whose repository
+is outside the roots as an unregistered one and writes nothing. With neither, nothing changes: no
+tool, parameter or result differs, and no key is added. One consumer can be confined without asking
+for it: `trelix-mcp` over stdio reads `TRELIX_ALLOWED_REPO_ROOTS` from the process environment; if
+you export it for `trelix serve`, the VS Code extension's server is confined to the same roots.
+
+Not conditional on roots, and not additive: the `config_path` of the four federation tools must
+now name a `.json` file in `~/.config/trelix/` or `<cwd>/.trelix/` that is missing, empty or a JSON
+object with a `repos` list, else the call answers `config_path is not a repository registry`. A
+path outside those two directories answers the fixed `config_path is not inside an allowed config
+directory`, which no longer names the directories. Before, a file there that the registry could
+not parse was read as an empty registry and overwritten by the next `federation_add_repo`.
 
 ### Additive: `trelix-mcp --transport http`
 

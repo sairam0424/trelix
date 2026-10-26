@@ -18,9 +18,14 @@ the refused value at WARNING (`Rejected http '/mcp': Host header not allowed: 'e
 which an operator shipping stderr to a shared sink must know. Uvicorn's access lines reach stdout,
 not the stderr stream section 18's wrapper captures; `0.0.0.0` and `::` are refused as a `Host`
 only until listed; and the idle timeout has an environment variable but a default that depends on
-the `fastmcp` version, while the session cap is `mcp` 2.3.0's. Of the two 403 bodies, only the
-Host/Origin one names `TRELIX_MCP_ALLOWED_HOSTS` and `--allowed-host`; the cross-site one names
-neither, and SECURITY.md and the changelog must say so instead of crediting both.
+the `fastmcp` and `mcp` versions, while the session cap is `mcp` 2.2.0's. Of the two 403 bodies,
+only the Host/Origin one names `TRELIX_MCP_ALLOWED_HOSTS` and `--allowed-host`; the cross-site one
+names neither, and SECURITY.md and the changelog must say so instead of crediting both.
+
+The last pin holds the two documents that explain the pre-approved `search_code`, `get_symbol` and
+`blast_radius` grant (SECURITY.md and the plugin README) to the one file `search_code` writes
+besides the index: a JSON trace of the query under `.trelix/debug/`, on every call. Both once said
+"nothing else is written", and the README kept saying it after SECURITY.md was corrected.
 """
 
 from __future__ import annotations
@@ -174,24 +179,32 @@ def test_only_the_host_origin_403_is_credited_with_the_mcp_allow_list_hint(
 def test_the_sessions_paragraph_scopes_the_idle_timeout_to_the_fastmcp_version() -> None:
     """No flag or `mcp.run` argument sets the idle timeout, but FastMCP's
     `FASTMCP_HTTP_SESSION_IDLE_TIMEOUT` reaches the SDK's session manager. What it defaults to
-    depends on the `fastmcp` the declared range (`>=4.0.10,<5`) resolves: 4.0.x never expires an
-    idle session, 4.1.x falls back to the SDK's 1800 s, and only 4.1.x parses `none` (4.0.x fails
-    to import on it). The 10,000-session cap is `mcp` 2.3.0's, absent at the declared 2.0.0 floor,
-    and at that floor a set variable stops the default stateless server from starting (probed on
-    fastmcp 4.0.10 with mcp 2.0.0: `RuntimeError`), so the guide says to set it with `--stateful`.
+    depends on the `fastmcp` and `mcp` the declared ranges (`fastmcp>=4.0.10,<5`,
+    `mcp>=2.0.0,<3.0`) resolve: 4.0.x never expires an idle session, 4.1.x falls back to the SDK's
+    default, which is 1800 s from `mcp` 2.2.0 and none before it, and only 4.1.x parses `none`
+    (4.0.x fails to import on it). The 10,000-session cap is `mcp` 2.2.0's, absent at the declared
+    2.0.0 floor, and below 2.2.0 a set variable stops the default stateless server from starting
+    (the SDK's session manager raises `RuntimeError`; run on `mcp` 2.0.0 with fastmcp 4.0.10, and
+    read in the 2.1.1 and 2.2.0 sources), so the guide says to set it with `--stateful`.
     Whitespace is collapsed, so re-wrapping the paragraph does not fail the pin."""
     guide = " ".join((_ROOT / "docs/MCP_GUIDE.md").read_text(encoding="utf-8").split())
     variable = "`FASTMCP_HTTP_SESSION_IDLE_TIMEOUT=<seconds>`"
     assert (
-        "`fastmcp` 4.0.x never ends an idle one and 4.1.x ends it after 1800 s, the `mcp` SDK's "
-        f"default; {variable} in the environment sets that timeout "
+        "`fastmcp` 4.0.x never ends an idle one and 4.1.x ends it after 1800 s with `mcp` 2.2.0 "
+        "or newer, the `mcp` SDK's default from that release (earlier `mcp` releases have no "
+        "such default; recent `fastmcp` 4.1.x releases require `mcp` 2.2.0 or newer); "
+        f"{variable} in the environment sets that timeout "
         "(`none` disables it on 4.1.x; 4.0.x fails to start on `none`), "
         "and no flag or `mcp.run` argument reaches it."
     ) in guide
-    assert "the SDK caps them at 10,000 from `mcp` 2.3.0 (the 2.0.0 floor has no cap)" in guide
     assert (
-        "Set it only together with `--stateful`: on `mcp` 2.0.x the default stateless server will "
-        "not start with it (`session_idle_timeout is not supported in stateless mode`)."
+        "the SDK caps them at 10,000 from `mcp` 2.2.0 "
+        "(earlier releases, the 2.0.0 floor included, have no cap)"
+    ) in guide
+    assert (
+        "Set it only together with `--stateful`: on `mcp` before 2.2.0 (2.0.x and 2.1.x) the "
+        "default stateless server will not start with it "
+        "(`session_idle_timeout is not supported in stateless mode`)."
     ) in guide
 
 
@@ -203,3 +216,48 @@ def test_the_logging_paragraph_brackets_an_ipv6_bind_in_the_start_line_and_the_w
         "(an IPv6 bind is bracketed, in the `--allow-unauthenticated` WARNING too: "
         "`[::1]:8766/mcp`)"
     ) in guide
+
+
+@pytest.mark.parametrize(
+    ("document", "sentences", "stale"),
+    [
+        pytest.param(
+            "SECURITY.md",
+            (
+                "`search_code` also writes one JSON trace of the query per call "
+                "(`Retriever._flush_trace`) into a `debug/` directory beside the index",
+                "`get_symbol` and `blast_radius` write no such file.",
+                "grows by at most one file per `search_code` call",
+            ),
+            ("and answers empty; nothing else is written",),
+            id="security",
+        ),
+        pytest.param(
+            "plugins/trelix/README.md",
+            (
+                "`search_code` also writes one JSON trace of the query per call, named "
+                "`.trelix/debug/<timestamp>_<query>.json`",
+                "`get_symbol` and `blast_radius` write nothing else.",
+                "every `search_code` call also writes a trace file (see above)",
+            ),
+            (
+                "`get_symbol` with `null`); nothing else is written",
+                "(see above); nothing else is written",
+            ),
+            id="plugin-readme",
+        ),
+    ],
+)
+def test_the_pre_approved_read_tools_are_not_credited_with_writing_only_the_index(
+    document: str, sentences: tuple[str, ...], stale: tuple[str, ...]
+) -> None:
+    """`Retriever._flush_trace` writes `<index dir>/debug/<timestamp>_<query>.json` for every
+    `search_code` call, with no switch, cap or rotation (`test_tool_readonly.py` measures the
+    file); `get_symbol` and `blast_radius` write none. A sentence saying that nothing but the
+    empty index is written contradicts the code, so neither document may keep it. Whitespace is
+    collapsed, so re-wrapping the paragraph does not fail the pin."""
+    text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
+    for sentence in sentences:
+        assert sentence in text
+    for sentence in stale:
+        assert sentence not in text

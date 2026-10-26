@@ -8,7 +8,7 @@ calls its tools/prompts directly — there is no bundled binary and no
 PyInstaller step involved. The extension itself ships as one bundled
 `dist/extension.js` (via `esbuild`), but the intelligence layer it talks to is
 the same `trelix-mcp` server used by Claude Desktop/Cursor/any other MCP
-client (see `docs/integrations/mcp.md`).
+client (see [MCP_GUIDE.md](../MCP_GUIDE.md)).
 
 ```
 VS Code extension  --stdio JSON-RPC-->  trelix-mcp (child process)  -->  trelix core
