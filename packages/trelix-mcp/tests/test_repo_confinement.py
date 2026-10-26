@@ -278,7 +278,7 @@ def test_federation_every_shape_carries_repos_outside_roots(
 
     # The config-path error: nothing was read, so the count is 0.
     rejected = srv.federation_search_all(query="q", config_path="/etc/passwd")
-    assert rejected["error"] is not None
+    assert rejected["error"] == "config_path is not inside an allowed config directory"
     assert rejected["repos_outside_roots"] == 0
 
     # Every kept repo unindexed: the error shape, with the count.

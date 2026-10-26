@@ -186,10 +186,15 @@ byte, a symlink loop) or resolves outside every root (`..`, a symlink pointing o
 `<root>-evil`) is refused before the tool runs:
 `isError: true` with exactly `repo_path is not inside an allowed repository root` (`path is not
 inside an allowed repository root` for `federation_add_repo`), and the value is never echoed.
-`federation_search_all` searches only the registry entries inside the roots, and every one of its
-responses gains `repos_outside_roots`, how many it left out. Stdio with no root is unchanged:
-nothing is confined, as before. A blank `--root` value (an unset shell variable, for instance) is
-a startup error rather than a root.
+The federation registry is read from a file, so its entries are filtered instead:
+`federation_list_repos` and `federation_search_all` leave out the entries outside the roots, and
+every one of their responses gains `repos_outside_roots`, how many they left out;
+`federation_remove_repo` answers an alias whose repository is outside the roots exactly like an
+unregistered alias (`removed: false`, no error) and does not write the file. The entry stays in the
+file: the roots hide it, they do not delete it. `config_path` is a different kind of argument, and
+section 9 says what it may name. Stdio with no root is unchanged: nothing is confined, as before.
+A blank `--root` value (an unset shell variable, for instance) is a startup error rather than a
+root.
 
 ### What `tools/list` tells a client
 
@@ -673,7 +678,7 @@ federation_list_repos(config_path=None) → {repos, count, error}
 **Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `config_path` | str\|None | None | Optional path to a custom repos.json. Must resolve inside `~/.config/trelix/` or `<cwd>/.trelix/`. Defaults to `~/.config/trelix/repos.json`. |
+| `config_path` | str\|None | None | Optional path to a custom registry file: a `.json` file inside `~/.config/trelix/` or `<cwd>/.trelix/` that is missing, empty or already a registry (section 9). Defaults to `~/.config/trelix/repos.json`. |
 
 **Response shape:**
 ```json
@@ -686,6 +691,8 @@ federation_list_repos(config_path=None) → {repos, count, error}
   "error": null
 }
 ```
+
+Started with `--root` or `TRELIX_ALLOWED_REPO_ROOTS`, the list holds only the repos inside the roots, `count` counts only those, and every response (a refused `config_path` included) gains `"repos_outside_roots": <how many were left out>`. Without roots the key is absent and every entry is listed.
 
 **New in v2.8.0.**
 
@@ -710,7 +717,7 @@ federation_add_repo(alias, path, weight=1.0, config_path=None) → {added, alias
 | `alias` | str | required | Short unique name for the repo (e.g. "auth-service") |
 | `path` | str | required | Absolute path to the repo root |
 | `weight` | float | 1.0 | RRF weight multiplier — higher values rank this repo's results higher in `federation_search_all` |
-| `config_path` | str\|None | None | Optional path to a custom repos.json |
+| `config_path` | str\|None | None | Optional path to a custom registry file (section 9) |
 
 **Response shape:**
 ```json
@@ -739,13 +746,13 @@ federation_add_repo(alias, path, weight=1.0, config_path=None) → {added, alias
 federation_remove_repo(alias, config_path=None) → {removed, alias, error}
 ```
 
-**What it does:** Unregisters a repo from federated search by alias. No-op if the alias is not registered (returns `removed: false`).
+**What it does:** Unregisters a repo from federated search by alias. No-op if the alias is not registered (returns `removed: false`, and the registry file is not written). Started with `--root` or `TRELIX_ALLOWED_REPO_ROOTS`, an alias whose repo is outside the roots is answered exactly like an unregistered one: `removed: false`, `error: null`, file untouched.
 
 **Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `alias` | str | required | The alias to remove |
-| `config_path` | str\|None | None | Optional path to a custom repos.json |
+| `config_path` | str\|None | None | Optional path to a custom registry file (section 9) |
 
 **Response shape:**
 ```json
@@ -785,7 +792,7 @@ federation_search_all(query, k=10, cursor=0, config_path=None, detail="detailed"
 | `query` | str | required | Natural-language or keyword query |
 | `k` | int | 10 | Results per page, clamped to 1..`TRELIX_MCP_MAX_K` (default 50) |
 | `cursor` | int | 0 | Pagination offset; a negative value is an error |
-| `config_path` | str\|None | None | Optional path to a custom repos.json |
+| `config_path` | str\|None | None | Optional path to a custom registry file (section 9) |
 | `detail` | `"detailed"` \| `"concise"` | `"detailed"` | `concise` drops `body` and adds a one-line `signature` |
 
 **Response shape:**
@@ -955,9 +962,18 @@ All four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `
 1. `~/.config/trelix/` (the default federation config directory)
 2. `<mcp-server-cwd>/.trelix/` (a repo-local override when the MCP server process is launched from within a repo)
 
-Any `config_path` that resolves outside both roots will be rejected with a `ConfigPathNotAllowedError` returned as `{"error": str}` in the tool response. This prevents an MCP client (or a prompt-injected agent) from pointing registry I/O at an arbitrary filesystem path. A blank `config_path` is a tool error (`isError: true`) instead, like every other blank argument (section 8, [Errors](#errors)): omit the argument for the default registry.
+Any `config_path` that resolves outside both roots is refused: the tool returns its usual result shape (nothing listed, added, removed or found) with `error` set to exactly `config_path is not inside an allowed config directory`. This prevents an MCP client (or a prompt-injected agent) from pointing registry I/O at an arbitrary filesystem path. A blank `config_path` is a tool error (`isError: true`) instead, like every other blank argument (section 8, [Errors](#errors)): omit the argument for the default registry.
 
-**Why this matters:** Before v2.8.1, a caller-supplied `config_path` was passed straight into file I/O operations with no validation. This fix uses `Path.is_relative_to()` (not a naive string prefix check) to ensure the resolved path lives under an allowlisted root.
+The file must also be a registry. `RepoRegistry` reads a file it cannot parse as an empty registry, and `federation_add_repo` then writes registry JSON over it, so a `config_path` naming `<cwd>/.trelix/index.db` or the operator's env file would have destroyed it in one call. A path inside the two directories is refused with `error` set to exactly `config_path is not a repository registry` unless both hold:
+
+1. the name ends in `.json`;
+2. the file is missing (the first `federation_add_repo` creates it), empty, or a JSON object whose `repos` is a list.
+
+An existing file of any other kind is never loaded as a registry and never overwritten. The rules apply to all four tools, so `federation_list_repos` and `federation_search_all` refuse such a file rather than report an empty registry. `federation_remove_repo` writes the registry only when it removed an entry.
+
+Neither text names the path or a directory. The resolved path and the allowed directories go to the server log at `WARNING` (the value escaped and cut to 100 characters), the way a refused `repo_path` does (section 8).
+
+**Why this matters:** Before v2.8.1, a caller-supplied `config_path` was passed straight into file I/O operations with no validation. The directory check uses `Path.is_relative_to()` (not a naive string prefix check) to ensure the resolved path lives under an allowlisted root; the file rules close the remaining case, a path inside those directories that is not a registry.
 
 ### Registry Capacity Cap
 
@@ -1489,8 +1505,13 @@ reads `TRELIX_MCP_ALLOWED_HOSTS` first and falls back to `TRELIX_API_ALLOWED_HOS
 MCP variable is unset or blank; when both are set, only the MCP one counts, including `*`.
 
 Tool calls. A `repo_path` (or `federation_add_repo`'s `path`) outside every root answers
-`isError: true` with `repo_path is not inside an allowed repository root` (section 8). An
-exception a tool did not expect answers `isError: true` with `Error calling tool '<name>'` — no
+`isError: true` with `repo_path is not inside an allowed repository root` (section 8). The
+federation tools do not refuse a call for the registry's entries: `federation_list_repos` and
+`federation_search_all` leave out those outside the roots (`repos_outside_roots` counts them) and
+`federation_remove_repo` treats their aliases as unregistered. A `config_path` that is not a
+registry file in `~/.config/trelix` or `<cwd>/.trelix` answers a 200 result whose `error` is
+`config_path is not inside an allowed config directory` or `config_path is not a repository
+registry` (section 9). An exception a tool did not expect answers `isError: true` with `Error calling tool '<name>'` — no
 path, no traceback — while every `ToolError` text (the table in section 8, `No index found at
 ...`, the refusal above) is unchanged. Pass absolute paths: the tools do not expand `~`, so `~/repo`
 answers `repo_path does not exist: '~/repo'; pass the absolute path of the repository root.` (the

@@ -154,6 +154,15 @@ HTTP on `127.0.0.1:8766/mcp` and is guarded from its first release:
 - **Confinement is required.** `--transport http` without a `--root` or
   `TRELIX_ALLOWED_REPO_ROOTS` is a start-up error (exit 2), so every `repo_path` a remote client
   names is checked against the roots before a tool runs.
+- **What the roots confine.** Every `repo_path` argument, `federation_add_repo`'s `path` and the
+  `trelix://repo/...` resources are checked before the tool runs
+  (`repo_path is not inside an allowed repository root`, `path ...` for `federation_add_repo`).
+  The federation registry is a file the server reads, so its entries are filtered instead:
+  `federation_list_repos` and `federation_search_all` leave out a repository outside the roots and
+  report how many in `repos_outside_roots`, and `federation_remove_repo` answers an alias whose
+  repository is outside as it answers an unregistered one (`removed: false`, no error) and writes
+  nothing. `config_path` is confined to registry files in two directories (next section). A
+  registry entry is hidden, not deleted: the file keeps it.
 - **Unexpected errors are masked.** An exception a tool did not expect answers
   `Error calling tool '<name>'` with no path or traceback; the deliberate `ToolError` texts are
   unchanged. Over stdio the texts stay unmasked, as before.
@@ -167,9 +176,19 @@ The `config_path` parameter accepted by `federation_list_repos`,
 `federation_add_repo`, `federation_remove_repo`, and `federation_search_all`
 is validated server-side:
 - The resolved path must be inside `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`
-- Paths outside these roots are rejected with an `{"error": ...}` response
+- The name must end in `.json`, and a file that already exists and is not empty must be a JSON
+  object with a `repos` list. A missing file or an empty one is accepted (the first
+  `federation_add_repo` creates it). Anything else in those directories (`index.db`, the
+  operator's env file, a JSON file that is not a registry) is never read as a registry and never
+  overwritten: `RepoRegistry.load` would read it as an empty registry, and `federation_add_repo`
+  would then write registry JSON over it. `federation_remove_repo` writes the file only when it
+  removed an entry
+- A refused path is rejected with an `{"error": ...}` response
   (never raises — matches the "never raise" convention of every other
-  federation tool)
+  federation tool) holding exactly one of two fixed texts:
+  `config_path is not inside an allowed config directory` or
+  `config_path is not a repository registry`. Neither names the path or a directory; both go to
+  the server log (`WARNING`, the value escaped and cut to 100 characters)
 - Like the `/graph/visualize` check above (`api/app.py:494`), this uses
   `Path.is_relative_to()` on the resolved path rather than a string-prefix
   comparison, which avoids a sibling-directory bypass (e.g.
