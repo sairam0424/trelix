@@ -959,27 +959,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   chart 0.2.6 reuses the old release's values, which lack `mcp`, and fails to render: use
   `--reset-then-reuse-values`, or add `--set mcp.enabled=false`. The image must ship
   `trelix-mcp --transport`; see `helm/trelix/README.md` and `docs/MCP_GUIDE.md` section 19.
-- **`trelix eval-synthesis` reads golden v2 lines and keeps one record per query** (fifth of six
-  changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not answer
-  the question; this one adds the schema, the records and the per-query file, and the stacked PR that
-  follows extends this bullet with the abstention and citation metrics over those records). A golden
-  line may carry `answerable` (`true`/`false`; absent means `true`), `gold_answer` (a non-empty string,
-  stored and never scored) and `expected_citations` (a list of non-empty repo-relative paths, validated
-  and stored); a field of another type, or a line that is JSON but not an object, is refused with its
-  line number and no query runs (a non-object line used to crash the run). The harness keeps one
-  `SynthesisRecord` per line (`run_detailed`); the four GroUSE means run over the answerable records,
-  so the aggregate's keys are `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
-  `n_queries`, `unscoreable` and the new `n_unanswerable`, and the table gains the rows `Unanswerable
-  queries` and `Unscoreable queries` (that count existed and was never printed). A v1 file returns the
-  numbers it always did: three lines where the second query's retrieval raises still report
-  `hallucination_rate 0.3333` and `unscoreable 1.0`, because an errored record keeps its placeholder
-  scores inside the means. `--per-query-out FILE` writes `{"schema_version": 1, "harness": "synthesis",
-  "records": [...], "aggregate": {...}}` through the same hardened writer as `trelix eval` (sorted
-  keys, mode 0600, atomic; exit `1` if it cannot be written), each record with the eight fields `id`,
-  `query`, `answerable`, `hallucination`, `completeness`, `faithfulness`, `overall`, `error`. The
-  module docstring's ninth failure mode is now worded for `line_out_of_range`. Answers on this path are
-  capped at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`) while plain
-  `trelix ask` streams at 12,000: pre-existing, documented now.
 
 ### Changed
 - **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows
