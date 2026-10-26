@@ -877,7 +877,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     or unreadable is a refusal, not a traceback; a `<name>.partial` beside an already-verified clone is
     refused with the same text as before a clone exists; and the README says a sidecar that is not
     valid JSON is a refusal while any other shape yields no labels.
-
 - **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
   llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
   bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
@@ -973,6 +972,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `TRELIX_STORE_HNSW*` settings (and the unaliased `hnsw_ef_construction`) are documented as
   accepted and inert; the remaining sqlite-HNSW sentences are listed in the PR for a docs-only
   follow-up.
+- **`docker compose --profile mcp up` and the Helm chart's `mcp.enabled` deploy
+  `trelix-mcp --transport http`.** `docker-compose.yml` gains an opt-in `trelix-mcp` service
+  (profile `mcp`, published on `127.0.0.1:8766` only, serving the `/repo` mount, with a
+  healthcheck on `/health`; the container exits 2 without `TRELIX_MCP_AUTH_TOKEN`); plain
+  `docker compose up` is unchanged. The chart gains `mcp.*` values, off by default, that add a
+  `trelix-mcp` container to the same pod serving the same PVC, a Service port `mcp`, a Secret key
+  and a Host allow-list of the release's Service names plus `mcp.allowedHosts`; it refuses to
+  render with `mcp.enabled` and no token, or without persistence. Default renders are unchanged
+  except the chart label (chart `version` 0.2.6 to 0.2.7). `helm upgrade --reuse-values` from
+  chart 0.2.6 reuses the old release's values, which lack `mcp`, and fails to render: use
+  `--reset-then-reuse-values`, or add `--set mcp.enabled=false`. The image must ship
+  `trelix-mcp --transport`; see `helm/trelix/README.md` and `docs/MCP_GUIDE.md` section 19.
 
 ### Changed
 - **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows
