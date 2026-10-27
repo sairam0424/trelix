@@ -1,10 +1,10 @@
 """The plugin skill names only tools the pinned server has, and grants only the read-only ones.
 
 WHY. `plugins/trelix/skills/use-trelix-index/SKILL.md` is what makes Claude reach for trelix
-instead of grep: the published `trelix-mcp==3.4.3` the plugin pins sends no server
-instructions, so the skill carries every rule. A skill that named a tool the server does not
-register (`repo_map`, `exact_search`), a parameter or flag only `develop` has (`detail`, `limit`,
-`max_body_chars`, `--tools`), or one of the eight tools `--tools core` hides would read as
+instead of grep: the published `trelix-mcp==3.5.0` the plugin pins sends server instructions, but
+they say nothing about falling back to grep, so the skill carries that rule. The plugin starts
+the server with `--tools core`, so a skill that named a tool the server does not register
+(`repo_map`, `exact_search`) or one of the eight tools `--tools core` hides would read as
 authoritative and fail at the first call. And `allowed-tools` is a permission grant: it must list
 exactly the three tools `packages/trelix-mcp/tests/test_tool_readonly.py` measures as read-only,
 nothing that writes the index or spends money.
@@ -29,8 +29,8 @@ import yaml
 _ROOT = Path(__file__).resolve().parents[2]
 SKILL = _ROOT / "plugins" / "trelix" / "skills" / "use-trelix-index" / "SKILL.md"
 
-# `--tools core` on develop (packages/trelix-mcp/src/trelix_mcp/tool_metadata.py CORE_TOOLS),
-# written out so that a change there has to be reconciled here.
+# `--tools core` in the pinned release (packages/trelix-mcp/src/trelix_mcp/tool_metadata.py
+# CORE_TOOLS), written out so that a change there has to be reconciled here.
 CORE_TOOLS = frozenset(
     {
         "index_codebase",
@@ -53,11 +53,6 @@ HIDDEN_TOOLS = (
     "subscribe_resource",
     "unsubscribe_resource",
 )
-# Parameters that exist on develop (server.py `detail=`, `max_body_chars=`, `limit=`) and not
-# on the pinned 3.4.3, and the `--tools` flag (3.4.3's argparse exits 2 on it). The pin-bump PR
-# that moves past 3.4.3 deletes this guard.
-DEVELOP_ONLY_PARAMETERS = ("detail", "limit", "max_body_chars")
-DEVELOP_ONLY_FLAG = "--tools"
 READ_ONLY_GRANT = frozenset(
     {
         "mcp__plugin_trelix_trelix__search_code",
@@ -116,17 +111,15 @@ def test_skill_frontmatter_names_its_directory_and_grants_only_read_only_tools()
     )
 
 
-def test_skill_body_names_only_core_tools_and_no_develop_only_parameters() -> None:
+def test_skill_body_names_only_core_tools() -> None:
     """Every `mcp__plugin_trelix_trelix__<tool>` reference anywhere in the file (frontmatter
-    included) is a core tool, the body names `search_code` in that full form, no hidden tool
-    appears anywhere in the file, no develop-only parameter appears in the body, and `--tools`
-    appears nowhere in the file.
+    included) is a core tool, the body names `search_code` in that full form, and no hidden tool
+    appears anywhere in the file.
 
     MUTATIONS that must make this fail: write `federation_search_all` in the body; reference
     `mcp__plugin_trelix_trelix__repo_map`; put `mcp__plugin_trelix_trelix__federation_search_all`
-    in the frontmatter description; write `detail="concise"`; write `--tools core` in the body or
-    in the description; shorten the body's `mcp__plugin_trelix_trelix__search_code(` to
-    `search_code(`.
+    in the frontmatter description; shorten the body's `mcp__plugin_trelix_trelix__search_code(`
+    to `search_code(`.
     """
     _, body = _frontmatter_and_body()
     whole = SKILL.read_text(encoding="utf-8")
@@ -140,16 +133,6 @@ def test_skill_body_names_only_core_tools_and_no_develop_only_parameters() -> No
 
     hidden = [name for name in HIDDEN_TOOLS if _words(name, whole)]
     assert hidden == [], f"the skill names tools the core profile hides: {hidden}"
-
-    # `\b` does not bound `--`, so the flag is a plain substring check. Unlike `detail` and
-    # `limit` it has no plain-English collision, so the whole file is checked (the description is
-    # what the model reads at listing time).
-    develop_only = [name for name in DEVELOP_ONLY_PARAMETERS if _words(name, body)] + (
-        [DEVELOP_ONLY_FLAG] if DEVELOP_ONLY_FLAG in whole else []
-    )
-    assert develop_only == [], (
-        f"the skill names parameters the pinned trelix-mcp 3.4.3 does not have: {develop_only}"
-    )
 
 
 def test_skill_body_is_at_most_150_lines() -> None:

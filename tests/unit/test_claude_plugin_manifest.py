@@ -35,13 +35,14 @@ MCP_PYPROJECT = _ROOT / "packages" / "trelix-mcp" / "pyproject.toml"
 CHANGELOG = _ROOT / "CHANGELOG.md"
 
 # The whole server declaration. No `env` (keys come from the user's environment, never the
-# plugin), no `type` (an entry without one is stdio), no `--tools` (the pinned release has
-# no such flag; the pin-bump PR adds `"--tools", "core"` once 3.5.0 is published).
+# plugin), no `type` (an entry without one is stdio), and `--tools core`: the profile lists the
+# seven tools the skill names and hides the other eight (test_claude_plugin_skill.py pins both
+# sets).
 EXPECTED_MCP_JSON = {
     "mcpServers": {
         "trelix": {
             "command": "uvx",
-            "args": ["--from", "trelix-mcp==3.4.3", "trelix-mcp"],
+            "args": ["--from", "trelix-mcp==3.5.0", "trelix-mcp", "--tools", "core"],
         }
     }
 }
@@ -61,16 +62,16 @@ EXPECTED_PLUGIN_FILES = [
 ]
 # sha256 over `rel_path\0bytes\0` for every file above, in that order. Any edit under
 # plugins/trelix/ changes it and must come with a bump of plugin.json's `version`.
-_PLUGIN_TREE_SHA256 = "fb52e45237e26f40d7f48fd27aa8cf7be78243ce609b8a68aec5942f42c41184"
+_PLUGIN_TREE_SHA256 = "260fd5d202d412efda32f4924bc28738653b0f4c1090297498ca92131fba2478"
 # The row of the README's "Every command the plugin executes" table that is the server launch.
 _README_LAUNCH_ROW = (
-    "| Session start, by Claude Code | `uvx --from trelix-mcp==3.4.3 trelix-mcp` "
+    "| Session start, by Claude Code | `uvx --from trelix-mcp==3.5.0 trelix-mcp --tools core` "
     "| The MCP server over stdio |"
 )
 # Every `trelix-mcp`, `trelix[local]` or bare `trelix` version specifier in the README, with its
 # operator: a `>=` warm-up would run a release the plugin does not pin.
 _README_PIN_RE = re.compile(r"trelix(?:-mcp|\[local\])?(==|>=|<=|~=|!=|>|<)(\d+\.\d+\.\d+)")
-# Bare prose mentions of a release ("trelix-mcp 3.4.3") in the plugin's README and skill: outside
+# Bare prose mentions of a release ("trelix-mcp 3.5.0") in the plugin's README and skill: outside
 # every specifier check above, so a pin bump that forgets them would leave the skill naming the
 # wrong release.
 _BARE_RELEASE_RE = re.compile(r"trelix-mcp (\d+\.\d+\.\d+)")
@@ -116,7 +117,7 @@ def test_plugin_manifest_uses_default_component_locations() -> None:
     load from their default locations; `version` is the trelix-mcp pin.
 
     MUTATIONS that must make this fail: add `"mcpServers": {}`; set `version` to `"1.0.0"`;
-    move the .mcp.json pin to `3.5.0` without touching `version` (the pin-bump PR that forgets
+    move the .mcp.json pin to `3.5.1` without touching `version` (the pin-bump PR that forgets
     `version` leaves every user on the cached copy with the old pin).
     """
     data = _load(PLUGIN_MANIFEST)
@@ -138,7 +139,7 @@ def test_plugin_manifest_uses_default_component_locations() -> None:
 
     version = data["version"]
     pin = _pin()
-    assert version == "3.4.3.2", (
+    assert version == "3.5.0", (
         f"plugin version is {version!r}: move this literal with every plugin bump (the "
         f"trelix-mcp pin is {pin!r}; `{pin}.N` is the form for a plugin-only change)"
     )
@@ -148,9 +149,11 @@ def test_plugin_manifest_uses_default_component_locations() -> None:
 
 
 def test_mcp_json_is_exactly_the_pinned_uvx_launch() -> None:
-    """Whole-object equality: command, the exact `==` pin, the console script, nothing else.
+    """Whole-object equality: command, the exact `==` pin, the console script, the `--tools core`
+    profile, nothing else.
 
-    MUTATIONS that must make this fail: `==` to `>=`; add `"env": {...}`; add `--tools core`.
+    MUTATIONS that must make this fail: `==` to `>=`; add `"env": {...}`; drop `--tools core`;
+    change `--tools core` to `--tools full`.
     """
     assert _load(MCP_JSON) == EXPECTED_MCP_JSON
 
@@ -165,7 +168,7 @@ def test_pin_trails_the_core_stamp_and_names_a_released_section() -> None:
     and CHANGELOG.md has its `## [X.Y.Z]` section. (This is the offline guard; PyPI itself
     is checked by hand in the pin-bump PR body.)
 
-    MUTATION that must make this fail: pin `3.5.0` and remove CHANGELOG's `## [3.5.0]` heading.
+    MUTATION that must make this fail: remove CHANGELOG's `## [3.5.0]` heading.
     """
     pin = _pin()
     with MCP_PYPROJECT.open("rb") as handle:
@@ -188,8 +191,8 @@ def test_plugin_readme_shows_the_exact_launch_command() -> None:
     the warm-up, the table row and the opt-in local-embeddings command all repeat it).
 
     MUTATIONS that must make this fail: drop the pin from the table row (the intro and warm-up
-    lines still carry it); change one occurrence to `3.4.2`; add a bare `trelix==3.4.2`; loosen
-    the warm-up to `trelix-mcp>=3.4.3`.
+    lines still carry it); change one occurrence to `3.4.3`; add a bare `trelix==3.4.3`; loosen
+    the warm-up to `trelix-mcp>=3.5.0`.
     """
     readme = PLUGIN_README.read_text(encoding="utf-8")
     assert _README_LAUNCH_ROW in readme, "the command table must show the pinned launch command"
@@ -198,14 +201,14 @@ def test_plugin_readme_shows_the_exact_launch_command() -> None:
     operators = {operator for operator, _ in specifiers}
     assert operators == {"=="}, f"every README version specifier must be `==`: {sorted(operators)}"
     pins = {pin for _, pin in specifiers}
-    assert pins == {"3.4.3"}, f"README pins disagree: {sorted(pins)}"
+    assert pins == {"3.5.0"}, f"README pins disagree: {sorted(pins)}"
 
 
 def test_bare_release_mentions_in_the_plugin_docs_name_the_pin() -> None:
     """Every "trelix-mcp X.Y.Z" in README.md and SKILL.md is the `.mcp.json` pin, read from
     that file here (an independent observation, not the test's own literal).
 
-    MUTATION that must make this fail: change SKILL.md's "trelix-mcp 3.4.3" to 3.5.0.
+    MUTATION that must make this fail: change SKILL.md's "trelix-mcp 3.5.0" to 3.4.3.
     """
     args = _load(MCP_JSON)["mcpServers"]["trelix"]["args"]
     pin = next(a for a in args if a.startswith("trelix-mcp==")).split("==", 1)[1]

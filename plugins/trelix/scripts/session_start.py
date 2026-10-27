@@ -5,10 +5,10 @@
 """One line of facts about this repository's trelix index, for Claude at session start.
 
 Claude Code runs this script as the plugin's SessionStart hook (`hooks/hooks.json`) and
-hands its stdout to the model as context. The pinned trelix-mcp release sends no server
-instructions and answers a search on an unindexed repository with an empty result, so this
-line is the only place the model learns whether `search_code` can answer at all, how old the
-index is, and which absolute `repo_path` to pass.
+hands its stdout to the model as context. The pinned trelix-mcp release sends server
+instructions, but they do not say whether this repository is indexed, how old the index is
+or which absolute `repo_path` to pass, so this line is the only place the model learns
+whether `search_code` can answer at all and what to pass.
 
 Rules this file keeps, each pinned by tests/unit/test_claude_plugin_session_start.py:
 

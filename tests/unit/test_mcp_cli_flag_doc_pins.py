@@ -24,8 +24,9 @@ names neither, and SECURITY.md and the changelog must say so instead of creditin
 
 The last pin holds the two documents that explain the pre-approved `search_code`, `get_symbol` and
 `blast_radius` grant (SECURITY.md and the plugin README) to the one file `search_code` writes
-besides the index: a JSON trace of the query under `.trelix/debug/`, on every call. Both once said
-"nothing else is written", and the README kept saying it after SECURITY.md was corrected.
+besides the index: a JSON trace of the query under `.trelix/debug/`, on every call that completes
+a search. Both once said "nothing else is written", and the README kept saying it after
+SECURITY.md was corrected.
 """
 
 from __future__ import annotations
@@ -235,14 +236,16 @@ def test_the_logging_paragraph_brackets_an_ipv6_bind_in_the_start_line_and_the_w
         pytest.param(
             "plugins/trelix/README.md",
             (
-                "`search_code` also writes one JSON trace of the query per call, named "
-                "`.trelix/debug/<timestamp>_<query>.json`",
+                "`search_code` call that completes a search also writes one JSON trace of the "
+                "query, named `.trelix/debug/<timestamp>_<query>.json`",
+                "a call that fails because there is no index or no embedder writes none",
                 "`get_symbol` and `blast_radius` write nothing else.",
-                "every `search_code` call also writes a trace file (see above)",
+                "a `search_code` call that completes a search also writes a trace file (see above)",
             ),
             (
                 "`get_symbol` with `null`); nothing else is written",
                 "(see above); nothing else is written",
+                "every `search_code` call also writes a trace file",
             ),
             id="plugin-readme",
         ),
@@ -252,8 +255,9 @@ def test_the_pre_approved_read_tools_are_not_credited_with_writing_only_the_inde
     document: str, sentences: tuple[str, ...], stale: tuple[str, ...]
 ) -> None:
     """`Retriever._flush_trace` writes `<index dir>/debug/<timestamp>_<query>.json` for every
-    `search_code` call, with no switch, cap or rotation (`test_tool_readonly.py` measures the
-    file); `get_symbol` and `blast_radius` write none. A sentence saying that nothing but the
+    `search_code` call that completes a search (a call that fails first, for lack of an index or
+    an embedder, writes none), with no switch, cap or rotation (`test_tool_readonly.py` measures
+    the file); `get_symbol` and `blast_radius` write none. A sentence saying that nothing but the
     empty index is written contradicts the code, so neither document may keep it. Whitespace is
     collapsed, so re-wrapping the paragraph does not fail the pin."""
     text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())

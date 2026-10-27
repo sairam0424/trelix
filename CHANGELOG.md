@@ -6,6 +6,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Changed
+- **The Claude Code plugin now runs `trelix-mcp` 3.5.0, started with `--tools core`, and its
+  version is 3.5.0.** Update with `claude plugin marketplace update trelix` and
+  `claude plugin update trelix@trelix`.
+  - *Seven tools instead of fifteen.* `index_codebase`, `search_code`, `get_symbol`,
+    `blast_radius`, `build_knowledge_graph`, `graph_search_mcp` and `ask_agent` are every tool the
+    skill names. The federation, agent-session and subscription tools are hidden, and a call to
+    one is answered as an unknown tool. To keep them, register `trelix-mcp` yourself without
+    `--tools core` (the plugin README has the command).
+  - *A search on a repository with no index now fails with a tool error.* It says
+    `No index found at <repo>/.trelix/index.db` and creates no file. The previously pinned 3.4.3
+    answered empty and left an empty `.trelix/index.db` behind. Such a file that is already there
+    still answers empty (`search_code` once an embedder is configured), and the session-start
+    line still reports it as empty.
+  - *The skill and the README follow the new server.* The server now sends short instructions of
+    its own, and the skill still says when to fall back to grep. The skill also covers
+    `detail="concise"` on `search_code`, `limit` on `blast_radius` (100 entries unless you ask for
+    more) and `max_body_chars` on `get_symbol` (a body over 20,000 characters is cut). The README
+    says what the tools write, which tools are pre-approved and which are listed.
+
 ## [3.5.0] — 2026-10-27
 
 ### Security
