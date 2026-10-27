@@ -25,11 +25,11 @@
   "devDependencies": {
     "@octokit/types": "^16.0.0",
     "@types/express": "^5.0.6",
-    "@types/node": "^24.19.1",
+    "@types/node": "^24.19.2",
     "@types/supertest": "^7.2.1",
-    "supertest": "^7.3.0",
+    "supertest": "^7.3.1",
     "tsx": "^4.23.15",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }
