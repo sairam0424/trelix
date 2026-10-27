@@ -19,8 +19,10 @@ the core version stamp and are published only by a core `v*` tag —
 `.github/workflows/release.yml` fires on `push: tags: v*`, its `build-distributions` job
 builds all four distributions and its `publish` job uploads them in the same run, so the
 newest adapter is always the one built alongside the newest core. Each declares
-`trelix>=3.0.0` (`packages/trelix-*/pyproject.toml:36`), the lowest published core verified
-to expose every name the adapters use, so pip resolves a working pair without a pin. This
+`trelix>=3.5.0` (`packages/trelix-*/pyproject.toml`), the first core that has every name the
+adapters use (`trelix.core.index_check`, imported inside the retriever), so pip resolves a
+working pair without a pin. Through 3.4.3 the floor was `trelix>=3.0.0`, the lowest published
+core verified to expose every name then used. This
 guide previously pinned `==2.4.0`; `docs/MCP_GUIDE.md` made the same mistake with
 `pip install trelix-mcp==3.0.0`, and CHANGELOG's v3.1.0 entry records removing it after a
 correct install failed the documented acceptance check.

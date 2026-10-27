@@ -1,6 +1,6 @@
 # trelix Glossary
 
-Alphabetical reference for terms used throughout trelix's source code, APIs, and documentation. Version: v3.4.3.
+Alphabetical reference for terms used throughout trelix's source code, APIs, and documentation. Version: v3.5.0.
 
 ---
 

@@ -6,18 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.5.0] — 2026-10-27
+
 ### Security
 - **`trelix-mcp --transport http` is guarded from the first release that serves it.** DNS
-  rebinding and drive-by browser requests: the REST API's Host/Origin check is always on (loopback
+  rebinding and drive-by browser requests: the REST API's Host/Origin check is on by default
+  (loopback
   names, a specific bind address, `--allowed-host`, `TRELIX_MCP_ALLOWED_HOSTS` with fallback
-  `TRELIX_API_ALLOWED_HOSTS`; `*` turns it off with a warning; FastMCP's own guard and the SDK's
-  DNS-rebinding check stay off so there is one allow-list). A reachable port: a bearer token
+  `TRELIX_API_ALLOWED_HOSTS`; `*` as the whole value of the variable in use turns it off with a
+  warning, and `--allowed-host '*'` is refused; FastMCP's own guard and the SDK's DNS-rebinding
+  check stay off so there is one allow-list). A reachable port: a bearer token
   (`TRELIX_MCP_AUTH_TOKEN`, fallback `TRELIX_API_AUTH_TOKEN`; `hmac.compare_digest`, a fixed 401
   body with `WWW-Authenticate: Bearer`, no header value logged) is required for any non-loopback
   bind unless `--allow-unauthenticated`. Path escape: at least one `--root` or
-  `TRELIX_ALLOWED_REPO_ROOTS` is required (exit 2 without), so every `repo_path` a remote client
-  names is confined. Information leak: an exception a tool did not expect answers
-  `Error calling tool '<name>'` with no path or traceback; stdio keeps its unmasked texts.
+  `TRELIX_ALLOWED_REPO_ROOTS` is required (exit 2 without), so every tool `repo_path` a remote
+  client names is confined. Information leak: an exception a tool did not expect answers
+  `Error calling tool '<name>'`, or a fixed retry text for an `httpx` timeout or a 429 status
+  error, with no path or traceback; stdio keeps its unmasked texts.
 - **The advisory `zizmor` job now reports no findings** (`zizmor 1.30.1` over `.github/`: one
   informational and three high before; two ignored with reasons now). It stays advisory.
   - *Fixed, `cache-poisoning` (twice).* `release.yml` publishes to PyPI, and its `test` and
@@ -47,14 +52,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   the full-history checkout that the date check reads, apply to tag pushes only. A real tag release was not run; a test runs both scripts
   in a scratch git repository, including either side of UTC midnight.
 - **Dependency security updates for the VS Code extension workspace.** Five Dependabot security PRs
-  (open since 2026-09-29 for two, 2026-10-02 for three) targeted `main`; they are now on `develop` and
-  ship with the next release: `undici` 7.29.0 to 7.30.0 (10 advisories, two of them high:
+  (open since 2026-09-29 for two, 2026-10-02 for three) targeted `main`; they
+  ship in this release: `undici` 7.29.0 to 7.30.0 (10 advisories, two of them high:
   GHSA-w293-vg96-wgc3 and GHSA-rfgv-xxqx-mfg5), `fast-uri` 3.1.6 to 3.1.8 (three advisories, two
   high: GHSA-qw65-cvwx-89v3 and GHSA-58mr-gqgx-xq4g, and medium GHSA-hrr3-gc8f-f4qj), `hono` 4.13.5 to
   4.13.12, `ip-address` 10.5.0 to 10.7.2 and `brace-expansion` 5.0.9 to 5.0.12. They affect
   `workspace-vscode` only, not the Python packages or the GitHub App. `npm audit` for that workspace
-  goes from 13 findings to 8, all in development tooling (`@vscode/vsce`, `mocha`); the production
-  tree reports none.
+  went from 13 findings to 8, all in development tooling (`@vscode/vsce`, `mocha`), when they were
+  applied on 2026-10-04; the production tree reported none. Advisories published after that date,
+  including some against `proxy-addr` and `@modelcontextprotocol/sdk` in the production tree, are
+  not covered by these updates.
 - **The release job's build tools are pinned.** `release.yml` ran `pip install build twine`, so the
   job that builds what is uploaded to PyPI took whatever version of either tool was newest on the day
   of the tag. It now installs `build==1.6.1` and `twine==7.0.0`, checked together on 2026-10-05:
@@ -79,7 +86,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   alias used to rewrite the file (reformatted, or created if it was absent). It still answers
   `removed: false` with `error: null`, and now writes nothing.
 - **With `--root` or `TRELIX_ALLOWED_REPO_ROOTS`, `federation_list_repos` and
-  `federation_remove_repo` stay inside the roots too.** The roots already confine every
+  `federation_remove_repo` stay inside the roots too.** The roots already confine every tool
   `repo_path`, the path of `federation_add_repo` and what `federation_search_all` searches; the
   registry tools now follow. `federation_list_repos` lists and counts only the entries inside the
   roots, and every response carries `repos_outside_roots` (how many were left out), the key
@@ -94,18 +101,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   unchanged.
 
 ### Fixed
-- **`trelix-mcp --transport http` no longer lets a request path forge a log record, and its 403
-  names the variable it reads.** The warning for a request refused by the bearer check wrote the
-  path as the server had decoded it, so a request for `/mcp%0aWARNING%20...` put a newline in the
-  log and a second, forged record after it. The path is now logged in quotes with control
-  characters escaped and cut at 100 characters, as the Host/Origin guard already logs a hostile
-  header (`Rejected POST '/mcp': missing or invalid bearer token`). The guard's 403 bodies named
-  `TRELIX_API_ALLOWED_HOSTS` and suggested `*`, but `trelix-mcp` reads that variable only when
-  `TRELIX_MCP_ALLOWED_HOSTS` is unset, and `docker-compose.yml` and the Helm chart always set the
-  MCP one: following the message changed nothing and told the operator to switch the check off.
-  The Host/Origin 403 of `trelix-mcp` now names `TRELIX_MCP_ALLOWED_HOSTS` and `--allowed-host`,
-  its cross-site 403 no longer names the REST variable, and neither suggests `*`. The REST API's
-  bodies are unchanged.
+- **`trelix-mcp --transport http` (new in this release) keeps a request path from forging a log
+  record, and its Host/Origin 403 names the variable it reads.** The warning for a request refused
+  by the bearer check logs the path in quotes with control characters escaped and cut at 100
+  characters, as the Host/Origin guard already logs a hostile header
+  (`Rejected POST '/mcp': missing or invalid bearer token`), so a request for
+  `/mcp%0aWARNING%20...`, whose `%0a` the server decodes to a newline, cannot put a second, forged
+  record
+  in the log. The Host/Origin 403 of `trelix-mcp` names `TRELIX_MCP_ALLOWED_HOSTS` and
+  `--allowed-host`, not the REST API's `TRELIX_API_ALLOWED_HOSTS`, which `trelix-mcp` reads only
+  when the MCP variable is unset (`docker-compose.yml` and the Helm chart always set it); its
+  cross-site 403 does not name the REST variable either, and neither suggests `*`, which would
+  switch the check off. The REST API's bodies are unchanged.
 - **`trelix-mcp` keeps at most `TRELIX_MCP_RETRIEVER_CACHE_SIZE` (default 8) Retrievers; the least
   recently used is dropped, not closed.** The cache had no bound, and each entry may hold an
   embedding model (`local` provider). A value that is not an integer of at least 1 stops the
@@ -116,8 +123,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   (`IndexConfig` rejects it with a pydantic `ValidationError`, which FastMCP forwards as a protocol
   error instead of masking it into a result), so a client such as the VS Code extension saw an
   exception that named no argument; a blank `repo_path` meant the server's working directory (the
-  no-index message named that directory, and `index_codebase` indexed it); a file was told to run
-  `trelix index <file>`; a blank `query` was searched by `search_code`, `graph_search_mcp` and
+  read tools opened its index, creating an empty one if there was none, and `index_codebase`
+  indexed it); a file failed with `[Errno 20] Not a directory`; a blank `query` was searched by
+  `search_code`, `graph_search_mcp` and
   `federation_search_all`, and `ask_agent` persisted a session for it; `get_symbol` and
   `blast_radius` answered a blank name with an empty result; `federation_add_repo` registered a
   blank alias, a blank, relative, missing or file path, and a weight of 0 or less;
@@ -130,11 +138,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Each is now `isError: true` with one text block naming the argument, what was given (cut to 200
   characters) and what is valid, for example
   `repo_path is not a directory: '<path>'; pass the repository root, not a file in it.`; nothing
-  is opened or created first. The no-index wording is unchanged. Unchanged on purpose: `k` and
+  is opened or created first. A repository with no index is answered as the entry on read surfaces
+  that no longer create an empty index (below) describes. Unchanged on purpose: `k` and
   `limit` outside their range are clamped (as documented), `federation_remove_repo` of an
   unregistered alias stays a no-op, the federation tools keep their `error` key for a duplicate
   alias, a full registry, a non-blank `config_path` outside the allowed roots and a registry with
-  nothing indexed (a client contract, owner decision), and a wrong type or a value outside a
+  nothing indexed (a client contract), and a wrong type or a value outside a
   `Literal` is rejected by FastMCP itself with pydantic's text. The checks live in
   `trelix_mcp.arguments`; `docs/MCP_GUIDE.md` has the table (section 8, Errors).
 - **Every `trelix-mcp` result carries a text block, including the empty ones.** FastMCP sends `[]`
@@ -142,23 +151,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   symbol), `graph_search_mcp` with no hits and `get_symbol` for an unknown symbol had no text
   block, so a client that reads only the first text block had nothing to parse (the VS Code
   extension defaults to `null` and `[]` for that case); they now carry `[]` or `null` as text,
-  equal to the structured content. `blast_radius`'s truncation note ended "raise either to see
-  more" even at `limit=500` or under `TRELIX_MCP_MAX_RESULT_CHARS=0`; it now names what can still
-  be raised, decided from what cut the list (the budget, the limit, or both) so that a raise it
-  names always shows more, or says that nothing can and the remaining dependents cannot be
+  equal to the structured content. `blast_radius`'s truncation note, new in this release, names what
+  can still be raised, decided from what cut the list (the budget, the limit, or both) so that a
+  raise it names shows more (except when `limit` is exactly the number of dependents the budget
+  holds), or says that nothing can be raised and the remaining dependents cannot be
   fetched with this tool. `federation_search_all` with some registered repos indexed and some not
   returned the indexed ones with no sign of the rest; the additive `repos_unindexed` key names the
   skipped aliases (the `error` response when none is indexed is unchanged). Two documentation
-  fixes: the trelix-mcp README's Tools paragraph, one 200-word sentence, is split into sentences and
-  links section 8 of `docs/MCP_GUIDE.md`, and that guide no longer says the `search_code` trace
-  directory has "its own `.gitignore`" (the ignore file is `.trelix/.gitignore`, one level up).
+  changes: the trelix-mcp README's Tools paragraph links section 8 of `docs/MCP_GUIDE.md`, and that
+  guide says the `search_code` trace directory has no ignore file of its own (`.trelix/.gitignore`,
+  one level up, covers it).
 - **`trelix review --json` on a local diff printed text ahead of the JSON, so stdout did not
   parse.** The `Reviewing N hunks across M files...` line went to stdout, and "No issues found.",
   "No changes found in diff." and "No findings in the hunks that were reviewed." took the place of
   an empty array. With `--json` the progress line now goes to stderr and stdout is exactly one JSON
   array in every case: the findings, or `[]` for no findings, an empty diff, a review that did not
-  run (exit 3) and a partial review with no findings (exit 4). This is what `--pr` and
-  `docs/CLI_REFERENCE.md` already said. Without `--json` nothing changes.
+  run (exit 3) and a partial review with no findings (exit 4). This is what `--pr` without
+  `--post-comments` already did, and `docs/CLI_REFERENCE.md` now says so. Without `--json` nothing
+  changes.
 - **`trelix review` said "No changes found in diff." and exited 0 when `git diff` failed.** The
   failure (an unknown `--base`, a blob compared with a commit, a timeout, output that is not UTF-8) was
   read as an empty diff. A local git diff now checks `--base` and `--head` first (each must name one
@@ -231,8 +241,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   default, not 20; raise the setting to get that back.
 - **A review that never finished held its running slot for ever and stalled the hosted GitHub App's
   queue.** The checkout, the index and the `trelix review` child each have a timeout, but the App sets
-  none on an installation-token request or a GitHub API call, and a child that ignores its kill never
-  ends, so a job that hung there held its slot for ever. The queue
+  none on an installation-token request or a GitHub API call (Node's `fetch` gives up on a
+  response that stays silent for 5 minutes, but not on one that keeps trickling in), and a child
+  that ignores its kill never ends, so a job that hung there held its slot for ever. The queue
   now has a per-job deadline, `TRELIX_APP_JOB_TIMEOUT_MINUTES` (default 17; 13 to 240): when it
   elapses the slot is taken back, the claim is released, the failure is logged once through the
   existing job-failure logger as a `JobTimeoutError`, and the next review starts. The default is the
@@ -246,8 +257,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   redelivery after the claim expired started a second review of a commit that already had one. The
   claim is now kept 4 days (the 3-day window of `redeliver-failed-webhooks.yml` plus a day), and a
   test reads the window from the workflow. Memory is still bounded by the 10,000-claim cap (about a
-  megabyte), not by time. A commit that got a verdict is now ignored for 4 days if it is sent again,
-  not 1: push a new commit to review it sooner.
+  megabyte and a half), not by time. A commit that got a verdict is now ignored for 4 days if it is
+  sent
+  again, not 1: push a new commit to review it sooner.
 - **The GitHub App's review queue had the gap the loggers just had, in its own `onError`.**
   `onError` is typed to return nothing and only a synchronous throw was caught, so an async one that
   rejected was an unhandled rejection. The queue now uses `reportIfRejected` (from
@@ -263,7 +275,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `Synthesizer.stream()` and `Synthesizer.synthesize()` (the call FLARE makes) now record
   `The LLM returned no answer: the endpoint may not be an OpenAI-compatible chat API,
   OPENAI_BASE_URL (or a proxy in front of it) may be wrong, or the model returned nothing.`
-  when the answer has no non-whitespace character, and `ask` ends as it does for any other
+  when the answer has no non-whitespace character (a large context handled by GraphRAG map-reduce
+  keeps its own `GraphRAG synthesis produced no answer` message), and `ask` ends as it does for any
+  other
   synthesis failure: that message on stderr, no banner on stdout, exit `1`, with and without
   `TRELIX_RETRIEVAL_FLARE=true`. A "not configured" error keeps its own message, and an empty
   retrieval ("No relevant code found") is still not an LLM failure. `GET /ask` is unchanged (it
@@ -284,8 +298,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   handshake and `server/discover`). The patch is deleted and the server reports
   `resources.subscribe: false`, derived from what is registered. Any MCP client that gated on the
   capability now sees `false`; the `subscribe_resource` and `unsubscribe_resource` tools are
-  unchanged apart from the `subscribe_resource` description text in `tools/list` (see
-  `docs/BACKWARDS_COMPATIBILITY.md`). The docs also said `trelix watch` pushes
+  unchanged apart from the `subscribe_resource` description text (see
+  `docs/BACKWARDS_COMPATIBILITY.md`) and the annotations and position of both in `tools/list`. The
+  docs also said `trelix watch` pushes
   `notifications/resources/updated` to MCP clients. It does not: `trelix watch` runs in its own
   process, where the subscription registry is empty, and nothing in trelix-mcp starts a watcher,
   so no client receives those notifications. `docs/MCP_GUIDE.md` (sections 12 and 17), the
@@ -299,8 +314,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `TRELIX_INCREMENTAL=false trelix index <repo>`, run once under the environment and
   `--provider` that built the index and followed by a separate prune (0 chunks embedded over an
   unchanged tree), or a rebuild where a re-index would be refused again (a walk config recorded
-  with no history, as 3.1.2 did; an older `.gitignore` digest scheme; several walk configs). All
-  of an index's refusals name the same one. No check changed, and for an index that recorded a
+  with no history, as 3.1.2 did; an older `.gitignore` digest scheme; several walk configs). The
+  refusals for a given index that name a step all name the same one. No check changed, and for an
+  index that recorded a
   walk config the step still cannot clear a changed walk (pinned on real runs). The step only
   certifies the walk as it is now, not the one that wrote the rows, so the refusal says to check
   the listed files against the disk before `--yes`: for an index that recorded no walk config,
@@ -310,11 +326,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   recording". `--prune`, `--yes`, `--prune-max-percent`, `--dry-run`, the six checks and the
   upgrade step are now in `docs/CLI_REFERENCE.md`, and each refusal in
   `docs/TROUBLESHOOTING.md`.
-- **`trelix eval` exited 0 when queries raised.** A query whose retrieval raised was scored 0.0 and
-  logged as a warning, and the run went on and printed means that blended those zeros in with real
-  misses; nothing in the exit code or the table said so. It now prints the number of failed queries and
-  the first five messages (each cut at 200 characters), and exits 1. The table is still printed first
-  and `--per-query-out` still writes its file, which names every failed query. `EvalHarness.run()` is
+- - **`trelix eval` exited 0 when queries raised.** A query whose retrieval raised was scored 0.0
+  and logged as a warning, and the run went on and printed means
+  that blended those zeros in with real misses; nothing in the exit code or the table said so. It
+  now prints the number of failed queries and the first five messages (each cut at 200 characters),
+  and exits 1 (a golden query with no frozen plan in a replayed `--plan-cache-file` is not covered
+  by this: it has always stopped the run with exit 1). The table is still printed first, and
+  `--per-query-out` (new in this release) writes
+  its file before the command exits; the file names every failed query. `EvalHarness.run()` is
   unchanged: it still returns the mean with the failed queries counted as 0.0.
 - **The read surfaces beyond the CLI no longer create an empty index on a repository that was never
   indexed, and most now say so.** 3.4.2 fixed `search`, `ask`, `query`, `call-graph` and `graph`;
@@ -326,8 +345,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   indexed". One check, `trelix.core.index_check.require_index` (filesystem only; the CLI's
   `_require_index` now uses it), runs before anything is opened, and each surface reports in its
   own form with the CLI's words (`No index found at <repo>/.trelix/index.db. Run trelix index
-  <repo> first.`): the eight MCP read tools return a tool error (`isError: true`) and the
-  `trelix_mcp.resources` handlers reply `{"error": ...}`; `/search`, `/ask`, `/stats`, `/graph`,
+  <repo> first.`): the eight MCP tools that need an existing index (`search_code`, `get_symbol`,
+  `blast_radius`, `build_knowledge_graph`, `graph_search_mcp`, `ask_agent`, `agent_list_sessions`
+  and `agent_clear_session`) return a tool error (`isError: true`) and the `trelix_mcp.resources`
+  handlers reply `{"error": ...}`; `/search`, `/ask`, `/stats`, `/graph`,
   `/graph/communities`, `/graph/visualize` and `/graph/search` answer HTTP `400` (after
   authentication and containment; `POST /index` and `POST /parse` are untouched); `TrelixRetriever`
   and `TrelixIndexRetriever` raise `IndexNotFoundError`, a `FileNotFoundError` that pickles and
@@ -359,13 +380,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `has 150 dependent(s), showing the first 100`. An uncut list reads as before. No new setting and
   no new server call; `limit` is not passed.
 - **`docs/OBSERVABILITY.md` described the OpenTelemetry integration as planned, not as it runs.**
-  It said every retrieval leg span carries the query text (trelix hands it over, but
+  It said every retrieval leg span carries the query text (trelix handed it over, but
   `opentelemetry-util-genai` records `gen_ai.retrieval.query.text` only when
   `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `SPAN_ONLY` or `SPAN_AND_EVENT`; the default
   `NO_CONTENT` drops it, so by default no query text reaches a span), that metrics cover embedding
   only (the same library records a `gen_ai.client.operation.duration` histogram for every retrieval
   leg span once a `MeterProvider` exists), that the library was `1.0b0` at time of writing (1.2b0 is
-  current; the `otel` extra still accepts `>=1.0b0`, and 1.2b0 renamed the cache-write and `top_k`
+  current; the `otel` extra accepted `>=1.0b0` in 3.4.3 and now requires `>=1.2b0`; 1.2b0 renamed
+  the cache-write and `top_k`
   attributes), and it linked the GenAI conventions in the core `semantic-conventions` repository,
   whose pages are now "Moved" stubs: the conventions live in `semantic-conventions-genai`, which has
   no tags, so the link pins a commit. The library link now points at the `opentelemetry-util-genai`
@@ -373,7 +395,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   (pinned sources, the inference attribute table with requirement levels, the content opt-in and
   the Logs-signal path, the util-genai 1.0b0 vs 1.2b0 API differences, the cache-token names and
   the metrics the library already records) is `docs/reports/otel-genai-semconv-spike-2026-10-07.md`
-  (roadmap C-8, requirement R-C6-01). No package code changes;
+  (roadmap C-8, requirement R-C6-01). This entry changes no package code (the new `otel` floor has
+  its own entry);
   `tests/unit/test_observability_doc_pins.py` pins the sentence about when trelix installs its
   `MeterProvider` (on the first counted embedding provider call; never for `bge-code` or
   `nomic-code`) to the embedder code.
@@ -405,27 +428,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   version replaces the pod once, and so does a later change of the chart `version` alone,
   because the Secret's `helm.sh/chart` label is part of the hash. Chart version 0.2.8.
 - **`trelix eval-synthesis` checks `--record` and `--per-query-out` before the run starts.** Both
-  files were written only after every golden query had been answered, so a missing directory was
-  found after the run had been paid for and the recorded answers were lost, and when both flags
-  named one file the second write silently replaced the first. The command now exits `1` before the
+  flags are new in this release, and their files are written only after every golden query has been
+  answered, so without this check a missing directory would be found after the run had been paid for
+  (and, for `--record`, the recorded answers lost), and when both flags named one file the second
+  write would silently replace the first. The command exits `1` before the
   index is opened, with one line per problem, when the directory of either file does not exist or
   cannot be written to, when a path is a directory, or when the two flags name the same file (also
   when one is written relative and the other absolute, or reached through a symlinked directory);
   for example `--record: directory /x/y does not exist`. A `--replay` run gets the same check. The
-  write after the run is unchanged and still reports a failure.
+  write after the run is still attempted and still reports a failure (the directory can change while
+  the run is paid for).
 
 ### Added
 - **`trelix-mcp --transport http` serves MCP over Streamable HTTP** on `127.0.0.1:8766/mcp`
-  (stateless; both the 2025-11-25 and 2026-07-28 protocol eras), with the Host/Origin guard always
-  on, a bearer token from `TRELIX_MCP_AUTH_TOKEN` (fallback `TRELIX_API_AUTH_TOKEN`) when set,
-  unauthenticated `GET /health`, masked unexpected errors, and a start-up error (exit 2) for a
-  non-loopback bind without a token or for no `--root`. New flags `--transport stdio|http`,
+  (stateless; both the 2025-11-25 and 2026-07-28 protocol eras), with the Host/Origin guard on
+  (unless the allowed hosts are `*`), a bearer token from `TRELIX_MCP_AUTH_TOKEN` (fallback
+  `TRELIX_API_AUTH_TOKEN`) when set, unauthenticated `GET /health`, masked unexpected errors, and a
+  start-up error (exit 2) for a non-loopback bind without a token or for no root (no `--root` and no
+  `TRELIX_ALLOWED_REPO_ROOTS`). New flags `--transport stdio|http`,
   `--host`, `--port`, `--path`, `--allowed-host`, `--stateful` and `--allow-unauthenticated` (the
   last six are `--transport http` only and a usage error on stdio); a port in `--host`, a blank
   `--host` or `--path`, and an `--allowed-host` that is `*` or not one hostname or IP address (a
   comma list, a URL, a wildcard, a blank) are refused (pass the port with `--port` and repeat
-  `--allowed-host` for more than one; only `TRELIX_MCP_ALLOWED_HOSTS=*` turns the guard off) and
-  `--host [::1]` binds `::1`. stdio with no flags is unchanged. See `docs/MCP_GUIDE.md` section 19.
+  `--allowed-host` for more than one; the guard goes off only for `*` in `TRELIX_MCP_ALLOWED_HOSTS`,
+  or in `TRELIX_API_ALLOWED_HOSTS` while the MCP one is unset or blank) and `--host [::1]` binds
+  `::1`. stdio with no flags is unchanged by this transport; the server instructions and result
+  limits described in the entries below apply to it too. See `docs/MCP_GUIDE.md` section 19.
 - **`trelix-mcp --transport http` has a real-socket end-to-end test**
   (`tests/e2e/test_mcp_http_e2e.py`). It starts the installed `trelix-mcp` as a child process on a
   free loopback port with a bearer token and one `--root`, waits for `GET /health`, and checks over
@@ -460,11 +488,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   synthesizer, the planner's decomposition path and GraphRAG read it to choose the
   `TrelixChatClient` path over a legacy raw-OpenAI path) and nothing else. The placeholder reply of
   an unconfigured backend is recorded like any other (`gen_ai.response.model="none"`). With a
-  `MeterProvider` installed, the library also records `gen_ai.client.operation.duration` and
-  `gen_ai.client.token.usage` for these spans. `docs/OBSERVABILITY.md` § LLM chat spans has the
+  `MeterProvider` installed, the library also records `gen_ai.client.operation.duration` for
+  every chat span and `gen_ai.client.token.usage` for `complete()` spans. `docs/OBSERVABILITY.md` §
+  LLM chat spans has the
   attribute table, the provider map and the stream lifecycle; `scripts/mutation.py` gains the
   `llm.otel` scope and deselects the new span test file (the global TracerProvider is one-shot).
-  Owner decisions taken: the `otel` extra floor (under Changed), the placeholder span, request-only
+  Decisions taken: the `otel` extra floor (under Changed), the placeholder span, request-only
   `stream()`/`tool_call()` spans, the custom `litellm` value, the one-time WARNING and the
   class-name-only error text.
 - **One `trelix.review` span per reviewed hunk, carrying `trelix.review.hunk_status`** (roadmap
@@ -480,8 +509,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   only after a stage started. Off by default; no span and no `opentelemetry` import when the flag
   is off.
 - **`trelix-mcp --root PATH` (repeatable) and `TRELIX_ALLOWED_REPO_ROOTS`** confine every
-  `repo_path`, `federation_add_repo.path` and `trelix://repo/...` URI to those roots; a path
-  outside answers `isError` with 'repo_path is not inside an allowed repository root';
+  `repo_path`, `federation_add_repo.path` and `trelix://repo/...` URI to those roots; a tool
+  call whose `repo_path` or `federation_add_repo.path` is outside answers `isError` with
+  'repo_path is not inside an allowed repository root' (with `path` in place of `repo_path` for
+  `federation_add_repo.path`); a `trelix://repo/...` read outside fails with a resource error
+  that carries the 'repo_path is not inside an allowed repository root' text;
   `federation_search_all` skips registry entries outside the roots and reports
   `repos_outside_roots`. A blank `--root` value is a startup error. Stdio with no root is
   unchanged.
@@ -494,9 +526,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `plugins/trelix/README.md`: the server command carries no `trelix[local]` extra (the opt-in
   command is documented, because that extra pulls PyTorch); this first version pins the published
   3.4.3, which has no `--tools` flag and sends no server instructions, so the skill carries that
-  guidance until a pin-bump PR follows the next release; `plugin.json`'s `version` equals the
-  pin (a literal test that also compares it with the `.mcp.json` pin, so a pin bump that forgets
-  `version` fails) and a contents hash in `tests/unit/test_claude_plugin_manifest.py` makes
+  guidance until a pin-bump PR follows this release; `plugin.json`'s `version` is the
+  pin, or `<pin>.N` for a plugin-only change (a literal test that also compares it with the
+  `.mcp.json` pin, so a pin bump that forgets `version` fails) and a contents hash in
+  `tests/unit/test_claude_plugin_manifest.py` makes
   every plugin edit loud (it cannot see whether `version` was bumped with it);
   `claude plugin validate --strict` runs in CI (the bullet below) and before committing; and the
   pin check is offline only (a released CHANGELOG section, not newer than the trelix-mcp
@@ -517,7 +550,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   upstream mode `NO_CONTENT`, trelix logs one WARNING saying so (best effort: parallel legs on the
   first query may repeat it), decided from the memoised
   handler rather than a re-read of the environment. A host that opted another library into content
-  capture no longer receives trelix's query text (and, once chat spans ship, prompts and repository code)
+  capture no longer receives trelix's query text (and, with the chat spans above, prompts and repository code)
   without asking for it. A malformed value behaves like a malformed `TRELIX_OTEL_ENABLED`.
   `docs/OBSERVABILITY.md` gains a "Content capture" section; `docs/CONFIGURATION.md` and `.env.example`
   list both names.
@@ -525,7 +558,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   index** (files, symbols, when and from which commit it was built, how many commits HEAD is
   ahead, which embedder provider), from a stdlib-only script (`plugins/trelix/scripts/session_start.py`,
   run by a `SessionStart` hook on `startup`, `resume` and `clear` with a 15 s timeout) that opens
-  the index read-only, creates nothing under the project, and never blocks the session: exit 0 on
+  the index read-only, creates no directory or database under the project (SQLite may leave
+  `index.db-wal` and `index.db-shm` files beside an existing WAL index), and never blocks the
+  session: exit 0 on
   every path, nothing on stdout on an error (one `trelix session_start: skipped (<reason>)` line
   on stderr, which Claude Code keeps in its debug log), at most 1,000 characters. It prints one of
   three literal lines: `trelix: no index at <repo>/.trelix/index.db. Call
@@ -539,7 +574,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   network), each line, the cap and the exit-0 behaviour on bad input; `plugins/trelix/scripts`
   joins the ruff scope in CI and `make lint`; the plugin README, the skill, the integration guide
   and SECURITY.md describe the line and what the hook runs; the plugin version moves to
-  `3.4.3.1` (a plugin-only change on the same pin).
+  `3.4.3.1` (a plugin-only change on the same pin; the next entry moves it on to `3.4.3.2`).
 - **CI runs `claude plugin validate --strict` on the marketplace and the plugin** (roadmap B-3,
   PR 4 of 4). The `TypeScript SDK` job of `ci.yml` runs Claude Code's own validator, through an
   exactly pinned `npx -y @anthropic-ai/claude-code@<version>` from the repository root, over
@@ -554,8 +589,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   to `3.4.3.2` (a README sentence; same pin).
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
   of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
-  answer the question; this one tags the context and instructs the model, nothing reads the model's
-  tags yet). With the flag on, every block header of the assembled context carries a tag, `[C1] [Lines
+  answer the question; this one tags the context and instructs the model, and the entries below read
+  the model's tags). With the flag on, every block header of the assembled context carries a tag, `[C1] [Lines
   42-67] AuthMiddleware.verify`, numbered in rendered order with one number per symbol (a compressed
   body carries its tag on each kept-span header; the intent preambles are not tagged), and
   `RetrievedContext.citation_sources` records the path, lines and qualified name each tag refers to.
@@ -570,9 +605,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   on; `trelix ask --provider local` prints them with the context. No live model call was made: how
   well a model follows the instruction is what the synthesis eval changes later in this series exist
   to measure.
-- **A verifier for the `[C#]` markers a model writes** (internal, third of six changes toward
-  `trelix ask` answers that cite the retrieved code; no user-visible change until the next change in
-  this series wires it into `trelix ask`). `trelix.retrieval.citations.verify_citations(answer,
+- **A verifier for the `[C#]` markers a model writes** (third of six changes toward
+  `trelix ask` answers that cite the retrieved code; the next entry wires it into `trelix ask`). `trelix.retrieval.citations.verify_citations(answer,
   sources, repo_root)` classifies every distinct `[C1]`..`[C999]` marker of an answer, in order of
   first appearance, as `valid`, `file_missing` (the tag's path is no longer a file under the
   repository root), `line_out_of_range` (the cited chunk ends past the file's current line count) or
@@ -584,7 +618,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Python parser) verifies as `valid` on a fresh index. The module joins the mutation driver's scope
   as `retrieval.citations`.
 - **`trelix ask --json`, and a verified `Sources:` footer after a cited answer** (fourth of six
-  changes toward `trelix ask` answers that cite the retrieved code; the first one a user sees).
+  changes toward `trelix ask` answers that cite the retrieved code).
   `--json` prints exactly one JSON object on stdout, `{query, answer, abstained, abstain_reason,
   citations}`, and nothing else: `answer` is the whole answer, the `INSUFFICIENT_EVIDENCE:` line or
   the no-results notice; `abstained` is `true` for either abstention, which exits `0` like an
@@ -624,11 +658,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   abstention facts `abstained` and `abstain_reason` (`no_results` when the retrieval found nothing,
   `insufficient_evidence` when the answer opens with `INSUFFICIENT_EVIDENCE:`; derived from the
   retrieval and the answer, never from the model's own flags), the four GroUSE scores, the citation
-  facts `citations_total`, `citations_valid`, `citation_statuses` (a count per `valid`, `file_missing`,
-  `line_out_of_range`, `unknown`), `expected_citations_hit` and `expected_citations_total` (a hit is an
+  facts `citations_total`, `citations_valid`, `citation_statuses` (a count for each status that
+  occurs, among `valid`, `file_missing`, `line_out_of_range` and `unknown`),
+  `expected_citations_hit` and `expected_citations_total` (a hit is an
   expected path that a `valid` marker refers to), and `error`. Markers are verified only when the
   retrieval tagged its blocks: with `TRELIX_RETRIEVAL_CITATIONS` off (the default) a `[C1]` in an
-  answer is noise, every citation count is 0 and the citation rows measure nothing; the prompt asks
+  answer is noise, every count taken from the answer's markers is 0 and the citation rows
+  measure nothing (`Citation recall` still reads `of N expecting citations`); the prompt asks
   for `INSUFFICIENT_EVIDENCE:` only for a tagged context too, so in practice only an empty retrieval
   registers as an abstention and the two abstention rows measure little. Set the flag for the run
   you measure. The four GroUSE means run over the answerable records; the aggregate's
@@ -670,8 +706,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   failed, no golden query repeats and retrieval returns the same context (tested on the six-line
   example of `eval/README.md` and on a v1 file, with a stub retriever), and a scoring change can be
   measured on frozen answers instead of a fresh sample. A file that cannot be used (over 20 MB, not
-  JSON, another `schema_version`, a non-string answer, an unknown key) is refused with every problem
-  on one line before the index is opened, and a golden query the file lacks stops the run before any
+  JSON, another `schema_version`, a non-string answer, an unknown key) is refused with its problems
+  in one message (the first 20, then a count of the rest) before the index is opened, and a
+  golden query the file lacks stops the run before any
   query (`replay file has no answer for 2 queries: 'a', 'b'`); both are exit `1`,
   and the two flags together are a usage error, exit `2`. Answers are keyed by the query text, so two
   identical golden queries share one. A query whose retrieval raised has no answer to record, so
@@ -680,7 +717,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   may now succeed). These are recorded answers, unrelated to `trelix eval-suite`'s replay of frozen
   query plans.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
-  comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
+  comparing retrieval runs honestly; the golden file format and the comparison command are in the entries below).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
     `split`, `ndcg`, `recall`, `mrr`, `top10` (the first ten distinct files retrieved) and `error`.
     `run()` is the mean of these records and returns the same values as before. A golden entry without
@@ -720,9 +757,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `TRELIX_EMBEDDING_CACHE_DIR`, and an unusable directory; a cache file of another width or
   schema is named and refused. `embed_query` is not cached here (that is
   `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`). The hosted GitHub App forwards every `TRELIX_*` host
-  variable into its `trelix index` child, so setting this on a multi-tenant host would share
-  one cache across tenants; SECURITY.md has the section. A `trelix cache` command group is not
-  part of this change.
+  variable except `TRELIX_APP_*` and `TRELIX_GIT_TOKEN` into its `trelix index` child, so setting
+  this on a multi-tenant host would share one cache across tenants; SECURITY.md has the section.
+  The `trelix cache` command group is the next entry.
 - **`trelix cache gc` and `trelix cache clear`, and the cache in `trelix index`'s output** (the
   command group the bullet above deferred). `trelix cache gc [--max-mb N]` trims every cache file
   (`<fingerprint>.db` in `TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`,
@@ -732,7 +769,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   command, not a limit during a run. Each file is opened at the width it records (no embedder is
   loaded, no width check can fail); a file that cannot be opened or trimmed is reported as
   `Embedding cache unreadable` and the rest are still trimmed, exit 1 afterwards (`gc` creates
-  nothing: an empty file or a symlink with no target is refused before SQLite touches it); a
+  nothing: an empty file is refused before SQLite touches it, and a symlink is never opened); a
   directory that exists but cannot be listed is the same line and exit 1 at once, for both
   commands; a directory that happens to carry a cache file's name is left alone by both, and
   `gc` skips every symlink, whatever it points at (`clear` unlinks the link without following it).
@@ -785,8 +822,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     schema, telemetry off). That is a claim about the index database, not every file. Three things
     write, and the test records each: `TRELIX_TELEMETRY_ENABLED=true` adds a `query_telemetry` row
     per `search_code`, the first open of an index written by an older trelix migrates it, and every
-    `search_code` writes a JSON trace of the query to `.trelix/debug/` (one new file per call, the
-    database unchanged). `agent_clear_session` and `federation_remove_repo` are destructive;
+    `search_code` that completes writes a JSON trace of the query to `.trelix/debug/` (the file name
+    is the time to the second plus the first 60 characters of the query, with punctuation replaced,
+    so the same query repeated within that second replaces the file; the database is unchanged).
+    `agent_clear_session` and `federation_remove_repo` are destructive;
     `index_codebase` is idempotent. The federation reader tools (`federation_list_repos`,
     `federation_search_all`) stay not read-only until that test covers them.
   - *Order, instructions, cache hint.* `tools/list` follows a literal list (indexing and search
@@ -802,12 +841,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     as an unknown tool. `repo_map` and `exact_search` are not in `core` because they do not exist in
     this server yet. Any other value is a usage error (exit 2). `docs/MCP_GUIDE.md` section 8 has the
     table. Five guides (`MCP_GUIDE`, `TROUBLESHOOTING`, `INSTALLATION_GUIDE`, `USER_GUIDE`,
-    `integrations/vscode-plugin`) said `trelix-mcp` takes no arguments; they now say it accepts
-    `--help`, `--version` and `--tools` (the first two already worked).
+    `integrations/vscode-plugin`) said `trelix-mcp` takes no arguments; `MCP_GUIDE`,
+    `TROUBLESHOOTING`, `USER_GUIDE` and `integrations/vscode-plugin` now list its flags (`--help`
+    and `--version`, which already worked; `--tools`, above; `--root` and the HTTP flags, in their
+    own entries), and `INSTALLATION_GUIDE` points at `--transport http` and `--help`.
 - **`trelix eval-compare` with a pre-registered decision rule, and the `results.json` format** (third
-  change toward comparing retrieval runs honestly, and the judging half of it: the command that writes
-  `results.json` for a whole suite comes next, so nothing produces the files yet except
-  `trelix.eval.results.build_results` and `write_results`). No retrieval default changes.
+  change toward comparing retrieval runs honestly, and the judging half of it: `trelix eval-suite`,
+  below, is the command that writes `results.json` for a whole suite). No retrieval default changes.
   - `trelix eval-compare BASE CAND --prereg EXP.yaml` judges a candidate run against a baseline under a
     pre-registration, needs no git, no index and no embedder, and is the only producer of PASS. Exit
     code 0 is PASS, 1 FAIL, 2 INCONCLUSIVE and 3 REFUSED, and the last stdout line of every real
@@ -818,7 +858,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     When a reader of stdout or stderr stops reading (`| head`), the remaining lines are dropped and
     the exit code is still the verdict's; the commands that print through the shared consoles exit 0 on a closed pipe, which would
     have turned a FAIL into success under `pipefail`.
-  - The pre-registration is a YAML file with ten required keys and no defaults: `experiment_id`,
+  - The pre-registration is a YAML file with ten required keys and no defaults:
+    `schema_version` (`1`), `experiment_id`,
     `comparison_id` (`<baseline arm>..<candidate arm>`), `primary_metric` (`ndcg@10`), `direction`
     (`increase`), `expected_effect`, `alpha` (at most 0.05), `family_size`, `min_queries` (at least 20)
     and `cost_class` (`flag` 0.01, `index` 0.02 or `heavy` 0.03, the smallest nDCG@10 gain worth
@@ -844,8 +885,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     `--per-query-out` file and that file is refused with a pointed message. See `eval/README.md` and
     `docs/CLI_REFERENCE.md`.
 - **`trelix-mcp`: `detail` on the search tools, `limit` on `blast_radius`, `max_body_chars` on
-  `get_symbol`, and three keys on list responses.** All additive; the defaults keep each tool's old
-  meaning.
+  `get_symbol`, and three keys on list responses.** The arguments are additive, and their defaults
+  keep each tool's old meaning, except that `blast_radius` returns at most 100 dependents (it
+  returned all of them)
+  and `get_symbol` cuts a body over 20,000 characters (`max_body_chars=0` restores it).
   - `detail` (`"detailed"`, the default and unchanged, or `"concise"`) on `search_code`,
     `graph_search_mcp` and `federation_search_all`. `concise` drops each result's `body` and adds a
     one-line `signature`: the first line of the symbol's signature, at most 200 characters, or the
@@ -858,8 +901,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     error and empty-registry responses keep their shorter shape.
   - Two environment variables, `TRELIX_MCP_MAX_K` and `TRELIX_MCP_MAX_RESULT_CHARS` (below).
 - **`suite.json` and a hardened, verified clone of its pinned repository** (groundwork for the command
-  that runs a suite, not a feature yet: `trelix eval-suite` is hidden from `--help` and only
-  `--prepare-only` works. It indexes nothing, replays nothing and writes no `results.json`. No
+  that runs a suite: `trelix eval-suite --prepare-only` does only what this entry describes. It
+  indexes nothing, replays nothing and writes no `results.json`; the next entry adds the run. No
   retrieval default changes).
   - A suite is one repository at one 40-hex commit, a golden file and a file of frozen plans, named by
     `suite.json` (`name`, `golden_version`, `repo.url`, `repo.sha`, `repo.license`, and a `path` and
@@ -903,12 +946,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     package.json, ...` line naming the first five.
   - `trelix eval-suite SUITE.json [--cache-dir DIR] --prepare-only` prints the repository, the commit,
     the two hashes, the number of golden queries and of gold files, and the clone path, and exits 0; any
-    refusal exits 1 with one `refused: ...` line per reason, and without `--prepare-only` it exits 1
-    saying the run is not available in this release. New modules `trelix.eval.suite`, `suite_git`,
+    refusal exits 1 with one `refused: ...` line per reason, and without `--prepare-only` it runs one
+    arm (the next entry). New modules `trelix.eval.suite`, `suite_git`,
     `suite_gold` and `suite_prepare`. See `eval/README.md`.
 - **`trelix eval-suite SUITE.json --arm NAME --out results.json` runs one arm of a suite** (the second
-  half of the suite work, part 2 of 2: the groundwork above is now a visible command, and the
-  "`--prepare-only` only" state it describes is superseded). It prepares the suite exactly as
+  half of the suite work, part 2 of 2: it adds the run to the groundwork above). It prepares the suite exactly as
   `--prepare-only` does, builds ONE index for ONE arm from the verified clone with the local
   embedder, replays the frozen plans and writes a `results.json` (schema_version 1) that
   `trelix eval-compare` reads. Exit 0 when the file was written and no query raised; 1 for every
@@ -921,10 +963,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   queries that raised after the file was written; 2 for a usage error. No retrieval default changes.
   - One index per arm, in `<cache>/arms/<sha>/<name>/<arm>/`, claimed with `exist_ok=False`: an
     existing run directory is refused (`arm 'X' already has a run directory at PATH: choose another
-    --arm or delete it`), there is no reuse option, and the command deletes nothing under the cache.
+    --arm or delete it`), there is no reuse option, and the command never deletes
+    anything that was already there (it removes only the `.partial` clone directory it created
+    itself, when the clone fails or Ctrl-C interrupts it).
     The harness reads copies of the verified golden and plans bytes in that directory (re-hashed as
     they are read), never the committed files.
-  - The settings that change the index or the ranking are forced to literal values whatever the
+  - A fixed set of settings is forced to literal values whatever the
     environment or `~/.config/trelix/env` says: no file summaries, no batch API, `embedder.provider`
     `local`, `walker.follow_symlinks` false, `chunker.contextual` false, `store.backend` `sqlite` in
     the run directory, `rerank`, `hyde_fallback_enabled`, `multi_query_enabled` and `flare_enabled`
@@ -951,7 +995,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   - Three nits from the review of the groundwork: a `golden-metadata.json` sidecar that is a directory
     or unreadable is a refusal, not a traceback; a `<name>.partial` beside an already-verified clone is
     refused with the same text as before a clone exists; and the README says a sidecar that is not
-    valid JSON is a refusal while any other shape yields no labels.
+    valid JSON is a refusal while any other shape yields no labels; the one shape it does not cover
+    is a `queries` value that is `null`, a boolean or a number, which still ends in a `TypeError`
+    traceback.
 - **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
   llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
   bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
@@ -1026,13 +1072,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   script (same Python, SQLite and sqlite-vec; 384 x 100k read 45 ms where this run read
   334 ms) put the crossings near 220,000 / 53,000 / 41,000 rows, so the 384 value is the
   furthest from a quiet reading (0.15x), 768 next (0.24x) and 1024 nearest (0.71x). All three
-  crossings, and the three literals the flat-scan advisory (`feat/flat-scan-advisory`) pins to
-  them, are placeholders until the owner's quiet run replaces this file. It is manual, not a
+  crossings, and the three literals the flat-scan advisory (next entry) pins to
+  them, are placeholders until a run on a quiet machine replaces this file. It is manual, not a
   test, and its scratch files need up to ~5 GB; the numbers describe that machine, not a
   guarantee.
 - **`trelix index` and `trelix stats` print a `Flat-scan advisory` when the sqlite store holds
   more vectors than the measured threshold for the index's width.** The sqlite backend is an
-  exact flat scan (sqlite-vec has never shipped an HNSW or any other ANN index), so p95 search
+  exact flat scan (no stable sqlite-vec release has shipped an HNSW or any other ANN index, and the
+  `<0.1.10` pin keeps the ivf/diskann pre-releases out), so p95 search
   latency grows with rows x width. The thresholds (p95 past 100 ms near 32,765 rows at 384
   dimensions, 12,979 at 768 and 28,956 at 1024 on apple-m4-shared, measured on a shared
   machine, so the thresholds are conservative; the nearest measured width at or above the
@@ -1045,8 +1092,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   named a 100k/500k threshold now say "exact flat scan" and point at the measured table
   (CLI_REFERENCE, CONFIGURATION, GLOSSARY, FAQ, WHY_TRELIX, TROUBLESHOOTING, PROVIDERS); the
   `TRELIX_STORE_HNSW*` settings (and the unaliased `hnsw_ef_construction`) are documented as
-  accepted and inert; the remaining sqlite-HNSW sentences are listed in the PR for a docs-only
-  follow-up.
+  accepted and inert.
 - **`docker compose --profile mcp up` and the Helm chart's `mcp.enabled` deploy
   `trelix-mcp --transport http`.** `docker-compose.yml` gains an opt-in `trelix-mcp` service
   (profile `mcp`, published on `127.0.0.1:8766` only, serving the `/repo` mount, with a
@@ -1055,7 +1101,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `trelix-mcp` container to the same pod serving the same PVC, a Service port `mcp`, a Secret key
   and a Host allow-list of the release's Service names plus `mcp.allowedHosts`; it refuses to
   render with `mcp.enabled` and no token, or without persistence. Default renders are unchanged
-  except the chart label (chart `version` 0.2.6 to 0.2.7). `helm upgrade --reuse-values` from
+  except the chart label (chart `version` 0.2.6 to 0.2.8). `helm upgrade --reuse-values` from
   chart 0.2.6 reuses the old release's values, which lack `mcp`, and fails to render: use
   `--reset-then-reuse-values`, or add `--set mcp.enabled=false`. The image must ship
   `trelix-mcp --transport`; see `helm/trelix/README.md` and `docs/MCP_GUIDE.md` section 19.
@@ -1069,14 +1115,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 - **The `trelix-mcp` command line moved to `trelix_mcp.cli`.** `trelix_mcp.server` keeps the
   FastMCP server and every tool; its `main()` is now a two-line entry point that calls
   `trelix_mcp.cli.main()`, so `[project.scripts]` (`trelix_mcp.server:main`) and every
-  `import trelix_mcp.server` are unchanged. Internal, no user-visible change: the flags (`--help`,
-  `--version`, `--tools core|full`, `--root PATH`), their texts and exit codes are the same. Done
-  ahead of the Streamable HTTP transport so that `server.py` (1,432 lines) stops growing.
+  `import trelix_mcp.server` are unchanged. Internal, no user-visible change from the move: the
+  flags (`--help`, `--version`, `--tools core|full`, `--root PATH`; the last two are new in this
+  release, see their entries), their texts and exit codes are the same as before the move. Done
+  ahead of the Streamable HTTP transport so that the transport's command line does not add to
+  `server.py` (1,432 lines before the move).
 - **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim
   space in vec0 tables, which trelix's `DELETE`+`INSERT` upsert and `--prune` rely on; 0.1.9 is
   the release the vec0 contract tests were verified against; the ceiling keeps the 0.1.10
-  pre-releases (ivf/diskann) out until they are tested, and PEP 440 places every `0.1.10aN` under
-  `<0.1.10`. `pip install` already resolved 0.1.9, so nothing changes for a fresh install.
+  pre-releases (ivf/diskann) out until they are tested: PEP 440 sorts every `0.1.10aN` below
+  `0.1.10`, but `<0.1.10` does not match a pre-release of
+  `0.1.10`. `pip install` already resolved 0.1.9, so nothing changes for a fresh install.
   `tests/unit/test_dependency_floor_guards.py` now pins the requirement string and the installed
   release (`sqlite_vec.__version__` and `select vec_version()`), so a venv on an older release
   fails one test with the reason instead of running on it silently.
@@ -1086,7 +1135,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   (`TRELIX_STORE_DB_PATH` outside the repository, or a `trelix eval-suite` run) now gets its traces
   there and the source tree stays untouched. Found by the first two-arm suite run: the trace landed
   in the shared clone, and the second arm refused a worktree that was no longer pristine.
-- **`trelix ask` and `GET /ask` no longer call the LLM when retrieval found nothing, and an answer
+- **Plain `trelix ask` and `GET /ask` no longer call the LLM on an empty retrieval, and an answer
   can abstain** (second of six changes toward `trelix ask` answers that cite the retrieved code and
   abstain when it does not answer the question). `Synthesizer.stream()`, behind plain `trelix ask`
   with a non-local embedder and REST `/ask`, used to send the model `No relevant code found.` as the
@@ -1112,36 +1161,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `gen_ai.retrieval.query.text` on it; hosts that relied on the upstream variable alone must set the
   trelix flag too. (The other way round, the trelix flag without the upstream mode, logs one WARNING.)
 - **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
-  `resolve_allowed_roots`, `is_within_allowed_roots`; the first now takes any number of explicit
-  roots, otherwise same bodies) so `trelix-mcp` can apply
+  `resolve_allowed_roots`, `is_within_allowed_roots`; `resolve_allowed_roots` now takes any number
+  of explicit roots, otherwise same bodies) so `trelix-mcp` can apply
   the same rule to its `repo_path` arguments; `trelix.api.app` keeps the old private names bound to
   them. `trelix.api.request_guard.is_health_probe` (the `GET`/`HEAD /health` exemption) is public for
   the same reason, with the old private name kept. No behaviour change: the REST API's containment and
   request-guard tests pass unchanged, and `tests/unit/test_confinement.py` pins the helpers directly.
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):
+  `bridgecrewio/checkov-action` 12.3125.0 to 12.3126.0,
   `docker/build-push-action` 7.3.0 to 7.4.0, `github/codeql-action` (`init`, `analyze`, `upload-sarif`)
   4.38.1 to 4.38.2, `trufflesecurity/trufflehog` 3.97.6 to 3.97.9. npm: `supertest` 7.2.2 to 7.3.0 (the
   GitHub App's tests), `@types/node` 26.6.2 to 26.6.3 (`packages/trelix-typescript`, `workspace-vscode`),
   `@modelcontextprotocol/sdk` 1.30.0 to 1.30.1 (`workspace-vscode`). Deliberately not taken: the
-  `openai` ceiling stays `<3.0.0` (every `litellm` release through 1.104.0 requires `openai<3.0.0`, so
-  `openai>=3` would make `trelix[litellm]` unresolvable), and the GitHub App image stays on Node 24
+  `openai` ceiling stays `<3.0.0` (every `litellm` release since 1.84.0 requires `openai<3.0.0`, and
+  `trelix[litellm]` asks for `litellm>=1.90.2`, so `openai>=3` would make it
+  unresolvable), and the GitHub App image stays on Node 24
   (an LTS line supported until 2028-04-30; Node 26 enters LTS on 2026-10-28, revisit then). The `trufflehog` pin
   moves the wrapper action only: the scanner version stays set by `version:` in `security-scan.yml`.
 - **GitHub App: the time limits of a review's stages moved to `src/review-timeouts.ts`** (checkout 2
   minutes, index 5, review child 5; values unchanged) so the queue's deadline is sized from them. The
   README documents the two new settings and the longer claim.
 - **The `openai<3.0.0` comments and messages name the one real reason.** The comment in
-  `pyproject.toml` and the text in `test_dependency_floor_guards.py` and `test_llm_sdk_floor_guards.py`
-  said the retry layer does not recognise the `httpx2` transport and cited `litellm` "through
-  1.102.0"; `core/retry.py` has recognised `httpx2` since 3.3.0. They now state what was checked on
+  `pyproject.toml` and the text in `test_llm_sdk_floor_guards.py` cited `litellm` "through
+  1.102.0", and the text in `test_dependency_floor_guards.py` said the retry layer does not
+  recognise the `httpx2` transport; `core/retry.py` has recognised `httpx2` since 3.3.0. They now
+  state what was checked on
   2026-10-05: `litellm` 1.104.0 (the latest) and every release since 1.84.0 require
   `openai>=2.20.0,<3.0.0`, and `uv pip compile` of `litellm>=1.90.2` with `openai>=3.0.0` has no
   solution. The comment on the removed `plaid` extra no longer calls `openai>=3.0.0` the core floor
   (the core is `openai>=2.20.0,<3.0.0`). The requirement and what the tests assert are unchanged;
   one test is renamed to `test_openai_ceiling_matches_litellm_requirement`.
 - **The sdist size comment in `pyproject.toml` is current.** It said the released sdist is ~1.9 MiB;
-  3.4.3 on PyPI is 4.16 MiB and a build of a clean `git archive` of `develop` is about 4.2 MiB. The
-  incident figures (928 MB, 158 MiB, 329 MB) are left as they were.
+  3.4.3 on PyPI is 4.16 MiB and a build of a clean `git archive` of `develop` was about 4.2 MiB on
+  2026-10-05. The incident figures (928 MB, 158 MiB, 329 MB) are left as they were.
 - **More of the release workflows' safety rules are pinned by tests.** The check that no step in
   `release.yml` can save a cache now also flags a `setup-*` step given a cache input (`cache`,
   `enable-cache` or `package-manager-cache`) that is not `false`. A setup action whose cache is on by
@@ -1153,12 +1205,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
   `server.disable(names=, components=)`. 4.0.10 is the release those were run against (4.0.0 to
   4.0.9 were not tested), and `tests/unit/test_dependency_floor_guards.py` pins it.
-- **`trelix-mcp` gains the pieces of a Streamable HTTP transport as a module nothing wires yet**
-  (`trelix_mcp.http`: settings resolution with its start-up errors, a bearer-token ASGI middleware
-  that answers `401` with `WWW-Authenticate: Bearer`, and a `GET /health` route). Internal, no
-  user-visible change: `trelix-mcp` still serves stdio only and accepts the same flags. `starlette`
-  is now a declared dependency of `trelix-mcp` (it was already installed through `fastmcp`; nothing
-  new is resolved).
+- **`starlette>=1.0.1` is now a declared dependency of `trelix-mcp`.** The Streamable HTTP
+  transport (`trelix_mcp.http`, see Added) imports `starlette` directly; it was already installed
+  through `fastmcp`, so nothing new is resolved.
 - **`trelix-mcp` list results are bounded, and a cut says so.** A tool result costs a client twice
   (FastMCP sends a dict result as a text block, where every quote is escaped, and as
   `structuredContent`): measured with 100,000-character bodies, `search_code` at `k=100` was about
@@ -1218,8 +1267,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   gets a commented Lance block (`LANCE_URI`, `LANCE_TABLE`) and points at the `Flat-scan advisory`
   that `trelix index` and `trelix stats` print. The installation guide's settings table said
   `TRELIX_STORE_HNSW` uses an HNSW index for the vector leg; it is accepted and read nowhere (the
-  sqlite store is always an exact flat scan), as the provider guide and the CLI reference already
-  said. The rest of the docs now describe the sqlite store the same way, and the `lance` backend is
+  sqlite store is always an exact flat scan), as the provider guide and the CLI reference now say.
+  The rest of the docs now describe the sqlite store the same way, and the `lance` backend is
   no longer described as providing an ARM-native HNSW index: trelix builds no index on a Lance
   table, so a search is an exact scan there too. No behaviour changes.
 
@@ -6597,7 +6646,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/sairam0424/trelix/compare/v3.4.3...v3.5.0
 [3.0.1]: https://github.com/sairam0424/trelix/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/sairam0424/trelix/compare/v2.12.0...v3.0.0
 [2.12.0]: https://github.com/sairam0424/trelix/compare/v2.11.1...v2.12.0

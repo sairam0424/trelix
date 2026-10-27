@@ -276,10 +276,11 @@ claude mcp add trelix -- trelix-mcp --tools core
 answered as an unknown tool. (`repo_map` and `exact_search` do not exist in this server, so
 `core` does not list them.) Any other value is a usage error: exit code 2 and no server.
 
-No published release up to 3.4.3 has `--tools`. Releases 3.2.2 through 3.4.3 accept only `--help`
-and `--version` and exit 2 on `--tools`; releases before 3.2.2 ignore argv altogether (see the
-3.2.2 CHANGELOG entry). The Claude Code plugin (section 3, Option A) therefore launches its pinned
-server without the flag, and passes `--tools core` once its pin reaches a release that has it.
+3.5.0 is the first release with `--tools`, and with `--transport` (section 19). Releases 3.2.2
+through 3.4.3 accept only `--help` and `--version` and exit 2 on `--tools`; releases before 3.2.2
+ignore argv altogether (see the 3.2.2 CHANGELOG entry). The Claude Code plugin (section 3, Option
+A) pins `trelix-mcp==3.4.3`, so it launches its pinned server without the flag, and passes
+`--tools core` once its pin reaches 3.5.0 or later.
 
 ### Output size and limits
 

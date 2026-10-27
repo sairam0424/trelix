@@ -160,7 +160,7 @@ def test_the_wildcard_binds_are_refused_as_host_only_until_listed(document: str)
         ),
         pytest.param(
             "CHANGELOG.md",
-            "its cross-site 403 no longer names the REST variable",
+            "cross-site 403 does not name the REST variable either",
             id="changelog",
         ),
     ],

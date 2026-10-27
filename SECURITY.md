@@ -237,8 +237,8 @@ accepted; beyond the commit-shape check the hook is not hardened against a hosti
 repository.
 
 The skill's `allowed-tools` pre-approves `search_code`, `get_symbol` and
-`blast_radius`: the three tools annotated `readOnlyHint` on this repository's
-`develop` branch (`packages/trelix-mcp/tests/test_tool_readonly.py`, which measures the
+`blast_radius`: the three tools annotated `readOnlyHint` since 3.5.0
+(`packages/trelix-mcp/tests/test_tool_readonly.py`, which measures the
 index database, not every file). On the pinned
 3.4.3 a call to any of them against an unindexed repository creates an empty,
 gitignored `.trelix/index.db` and answers empty. `search_code` also writes one JSON trace
@@ -250,7 +250,7 @@ directory, so it grows by at most one file per `search_code` call (the same quer
 one second shares a file name); delete it when that matters.
 The grant is kept because the SessionStart line and the skill forbid searching before
 indexing, and it lasts one turn (Claude Code clears it at the next message); the
-pin bump to the next release makes the statement exact.
+pin bump to 3.5.0 makes the statement exact.
 
 ## Out of Scope
 

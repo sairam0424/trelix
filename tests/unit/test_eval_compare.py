@@ -303,7 +303,7 @@ class TestTheVerdictObject:
         failed = verdict_of(base_doc(), cand_doc(0.4375))
         unproven = verdict_of(base_doc(), cand_doc(0.5))
         refused = verdict_of(
-            base_doc(), cand_doc(0.5625, trelix_version="3.4.4", ids=query_ids(19))
+            base_doc(), cand_doc(0.5625, trelix_version="3.5.0", ids=query_ids(19))
         )
 
         assert [v.exit_code for v in (passed, failed, unproven, refused)] == [0, 1, 2, 3]

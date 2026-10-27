@@ -4,7 +4,7 @@ Functional round-trip test for TrelixRetriever against a real trelix index.
 Strategy (contrast with tests/test_retriever.py):
 - tests/test_retriever.py mocks `_get_trelix_retriever` wholesale, so it verifies
   TrelixRetriever's document-shaping logic but never proves this package's
-  `trelix>=3.0.0` floor actually exposes the attributes retriever.py reads
+  `trelix>=3.5.0` floor actually exposes the attributes retriever.py reads
   (`IndexConfig`, `EmbedderConfig`, `SearchResult.symbol`/`.file`/`.score`/`.source`).
 - This test builds a REAL trelix index (local embedder, no mocking) and calls
   `TrelixRetriever(...).invoke(...)` end to end, so it fails if a future trelix
@@ -12,7 +12,7 @@ Strategy (contrast with tests/test_retriever.py):
 
 Kept physically separate from tests/test_retriever.py: that suite stays the fast,
 hermetic unit test; this one is additive and requires the local embedder + a real
-`trelix` install (see packages/trelix-langchain/pyproject.toml's `trelix>=3.0.0`
+`trelix` install (see packages/trelix-langchain/pyproject.toml's `trelix>=3.5.0`
 dependency), which is why it lives in its own tests/e2e/ tree.
 """
 

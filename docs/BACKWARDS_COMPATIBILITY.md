@@ -160,10 +160,10 @@ repository with no index, from the diff alone, and only stops creating the empty
 (unchanged).
 
 `trelix-mcp`, `trelix-langchain` and `trelix-llama-index` now import `trelix.core.index_check`,
-which the core ships from the release that contains this change. An older core under a newer
+which the core ships from 3.5.0, the release that contains this change. An older core under a newer
 package fails (`trelix-mcp` at start-up; the two adapters at their first query, because they import
-`require_index` inside the retrieval method), so the release that ships this raises their
-`trelix>=` floors to that release.
+`require_index` inside the retrieval method), so 3.5.0 raised their `trelix>=` floors to
+`trelix>=3.5.0`.
 
 ### Behaviour change shipped as a fix: `Synthesizer.stream()` on an empty retrieval
 
