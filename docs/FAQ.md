@@ -53,13 +53,13 @@ For unsupported file types trelix skips the file without error. To add a new lan
 
 ### How large can my codebase be?
 
-The default SQLite backend handles repositories up to roughly **100,000 chunks** (typically a 200–400k line codebase) without noticeable slowdown. For larger repos:
+The default SQLite backend is an exact flat scan: every search compares the query with every stored vector, so latency grows with the number of vectors and their width. `trelix index` and `trelix stats` print a `Flat-scan advisory` on stderr once the store passes the measured threshold for your index's width (table in [CONFIGURATION.md § Storage](CONFIGURATION.md#storage)). Which backend to use:
 
 | Scale | Recommended backend | Install |
 |-------|---------------------|---------|
-| Up to ~100k chunks | SQLite (default) | included |
-| 100k–500k chunks | LanceDB — 3–5x faster insert | `pip install "trelix[lance]"` |
-| 500k+ chunks / multi-team | Qdrant | `pip install "trelix[qdrant]"` |
+| Below the `Flat-scan advisory` threshold for your width | SQLite (default) | included |
+| Past the advisory threshold | LanceDB — 3–5x faster insert at 100k+ chunks (vecdb-bench) | `pip install "trelix[lance]"` |
+| Past the advisory threshold, multi-team | Qdrant (HNSW index) | `pip install "trelix[qdrant]"` |
 
 Switch backends with:
 ```bash
@@ -366,7 +366,7 @@ For code-specific retrieval quality, ranked highest to lowest:
 
 | Provider | Model | CoIR Score | Notes |
 |----------|-------|-----------|-------|
-| `voyage` | voyage-code-3 (256–2048-dim, Matryoshka) | Very High | Best API option; set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2x faster HNSW |
+| `voyage` | voyage-code-3 (256–2048-dim, Matryoshka) | Very High | Best API option; set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for smaller vectors and a cheaper vector search |
 | `local-code` | SFR-Embedding-Code-2B_R (2304-dim) | Very High (vendor claim) | Experimental; CC-BY-NC weights; needs `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` |
 | `nomic-code` | nomic-ai/CodeRankEmbed (768-dim) | High (vendor claim) | Experimental; off-protocol prefixes; needs `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` |
 | `openai` / `azure` | text-embedding-3-large (3072-dim) | High | General-purpose, strong on mixed code+prose |

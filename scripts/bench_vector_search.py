@@ -5,10 +5,11 @@ Why
 ---
 trelix's sqlite store (``src/trelix/store/vector.py``) answers every search with an exact
 flat scan, so search cost is linear in rows x width and a row-count threshold is only
-meaningful per dimension, and only when it was measured. The flat-scan advisory planned for
-``trelix index`` / ``trelix stats`` (branch ``feat/flat-scan-advisory``) will quote the row
-count at which the warm p95 search latency passes 100 ms for each width; this script
-measures those crossings and writes the JSON report the advisory pins to.
+meaningful per dimension, and only when it was measured. The flat-scan advisory that
+``trelix index`` / ``trelix stats`` print (``src/trelix/store/scale_advisory.py``) quotes the
+row count at which the warm p95 search latency passes 100 ms for each width; this script
+measures those crossings and writes the JSON report the advisory table is pinned to
+(``tests/unit/test_scale_advisory.py`` compares the two).
 
 How to run
 ----------

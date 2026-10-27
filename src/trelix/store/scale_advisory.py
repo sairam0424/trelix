@@ -1,9 +1,9 @@
 """When the sqlite-vec store has grown past what an exact flat scan can answer quickly.
 
 The `sqlite` backend is an exact flat scan: every search compares the query with every
-stored vector, so its cost is linear in rows x width. sqlite-vec has never shipped an HNSW or
-any other approximate index, which means there is no setting that changes this and the only
-remedy is a different backend (`TRELIX_STORE_BACKEND=lance` or `qdrant`).
+stored vector, so its cost is linear in rows x width. No stable sqlite-vec release has shipped
+an HNSW or any other approximate index, which means there is no setting that changes this and
+the only remedy is a different backend (`TRELIX_STORE_BACKEND=lance` or `qdrant`).
 
 The thresholds below are MEASURED, not guessed: the row counts at which the p95 latency of
 a k-nearest query passes 100 ms at 384, 768 and 1024 dimensions, read out of the benchmark

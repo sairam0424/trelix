@@ -27,7 +27,7 @@ None of this exists in the existing code-search tooling available today.
 
 ### 1. Zero-Infrastructure Deployment
 
-**What it does:** The entire index — vectors, BM25, call graph, import graph, file summaries — lives in a single SQLite file (`.trelix/index.db`) using WAL mode, FTS5, and sqlite-vec HNSW. No Docker, no Redis, no Postgres, no cloud account required.
+**What it does:** The entire index — vectors, BM25, call graph, import graph, file summaries — lives in a single SQLite file (`.trelix/index.db`) using WAL mode, FTS5, and sqlite-vec (an exact flat scan). No Docker, no Redis, no Postgres, no cloud account required.
 
 **Implementation:**
 - sqlite-vec provides exact nearest-neighbour search (a flat scan) inside a stock SQLite file; `trelix index` and `trelix stats` advise a larger backend once the measured threshold for the index's width is passed
@@ -37,7 +37,7 @@ None of this exists in the existing code-search tooling available today.
 
 **Why it matters:** Cursor and Copilot require a running IDE extension connected to a cloud backend. Sourcegraph Cody requires a Sourcegraph instance. Trelix runs `trelix index ./repo` and produces a portable file you can put anywhere, query from scripts, or check into CI.
 
-**Who else has it (OSS):** Nobody provides this combination of HNSW vector search + BM25 + call graph in a single embedded file. pgvector DIY requires Postgres. Sourcegraph requires a full server stack.
+**Who else has it (OSS):** Nobody provides this combination of vector search + BM25 + call graph in a single embedded file. pgvector DIY requires Postgres. Sourcegraph requires a full server stack.
 
 ---
 
@@ -49,7 +49,7 @@ None of this exists in the existing code-search tooling available today.
 
 | Leg | Source tag | What it finds |
 |-----|-----------|---------------|
-| 1 | `vector` | Semantically similar chunks (HNSW ANN over embeddings) |
+| 1 | `vector` | Semantically similar chunks (nearest-neighbour search over embeddings: exact flat scan on sqlite, HNSW on Qdrant) |
 | 2 | `bm25` | Keyword-frequency matches (FTS5 over name, body, context\_summary) |
 | 3 | `grep` | Exact or regex symbol name matches (zero-latency SQL LIKE) |
 | 4 | `file_summary` | Files matching at the 2–4 sentence LLM summary level (RAPTOR-style) |

@@ -193,7 +193,7 @@ qdrant = [
     "qdrant-client>=1.9.0,<2.0.0",     # Qdrant HNSW vector backend (optional)
 ]
 lance = [
-    "lancedb>=0.6.0",                  # LanceDB ARM-native HNSW vector backend (optional)
+    "lancedb>=0.6.0",                  # LanceDB vector backend (optional)
     "pyarrow>=14.0",
 ]
 watch = [

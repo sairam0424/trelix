@@ -3,13 +3,17 @@ Vector store: stores and searches chunk embeddings.
 
 Backends:
   - SQLiteVectorStore  — sqlite-vec extension, no external infra needed (default)
-  - QdrantVectorStore  — Qdrant HNSW index, scales to 500k+ chunks (optional)
+  - QdrantVectorStore  — Qdrant HNSW index, for indexes past the sqlite flat-scan
+                         advisory threshold (optional)
+  - LanceVectorStore   — LanceDB table, for indexes past the same threshold (optional,
+                         `pip install "trelix[lance]"`)
 
 Use make_vector_store(config, dimension) to get the right backend.
 
-SQLite backend is always a flat vec0 scan: sqlite-vec has never shipped an
-HNSW (or any other ANN) index under any release, stable or alpha. Results
-are always exact, never approximate.
+SQLite backend is always a flat vec0 scan: no stable sqlite-vec release has shipped an
+HNSW (or any other ANN) index, and the `<0.1.10` pin in pyproject.toml keeps the ivf/diskann
+pre-releases out. Results are always exact, never approximate. The advisory threshold is in
+trelix.store.scale_advisory.
 """
 
 from __future__ import annotations

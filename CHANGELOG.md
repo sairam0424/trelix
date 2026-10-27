@@ -1213,6 +1213,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `pip install -e ".[dev]"` already resolves newer releases, and
   `tests/unit/test_dependency_floor_guards.py` pins both floors. Nothing changes for a default
   install: the extra is for contributors.
+- **`.env.example` lists the `lance` backend, and the installation guide marks `TRELIX_STORE_HNSW`
+  inert.** `TRELIX_STORE_BACKEND` now reads `sqlite | qdrant | lance` in `.env.example`, which also
+  gets a commented Lance block (`LANCE_URI`, `LANCE_TABLE`) and points at the `Flat-scan advisory`
+  that `trelix index` and `trelix stats` print. The installation guide's settings table said
+  `TRELIX_STORE_HNSW` uses an HNSW index for the vector leg; it is accepted and read nowhere (the
+  sqlite store is always an exact flat scan), as the provider guide and the CLI reference already
+  said. The rest of the docs now describe the sqlite store the same way, and the `lance` backend is
+  no longer described as providing an ARM-native HNSW index: trelix builds no index on a Lance
+  table, so a search is an exact scan there too. No behaviour changes.
 
 ## [3.4.3] — 2026-10-04
 

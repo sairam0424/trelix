@@ -157,10 +157,11 @@ pip install "trelix[knowledge-graph]"
 trelix graph ./  --output graph.html
 ```
 
-### 3.10 Large-scale vector store (>100k chunks)
+### 3.10 Larger vector stores (past the Flat-scan advisory)
 
-For very large monorepos or when SQLite becomes a bottleneck, use the LanceDB
-backend.
+The default sqlite store is an exact flat scan. When `trelix index` or `trelix stats`
+prints a `Flat-scan advisory`, switch to the LanceDB backend, or to Qdrant
+(`pip install "trelix[qdrant]"`, then `TRELIX_STORE_BACKEND=qdrant`).
 
 ```bash
 pip install "trelix[lance]"
@@ -504,7 +505,7 @@ are read from the process environment only and ignore `.env` entirely.
 |----------|---------|-------------|
 | `TRELIX_STORE_DB_PATH` | `.trelix/index.db` | Index location, relative to the repo root |
 | `TRELIX_STORE_BACKEND` | `sqlite` | Vector store: `sqlite`, `qdrant`, `lance` |
-| `TRELIX_STORE_HNSW` | `true` | Use an HNSW ANN index for the vector leg |
+| `TRELIX_STORE_HNSW` | `true` | **Inert.** Accepted and read nowhere: the sqlite store is always an exact flat scan; see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint; used when `TRELIX_STORE_BACKEND=qdrant` |
 | `QDRANT_API_KEY` | _(none)_ | Qdrant API key for cloud deployments |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
