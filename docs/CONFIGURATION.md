@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v3.4.3
+# Trelix Configuration Reference — v3.5.0
 
 Complete reference for all configuration options available in trelix.
 
@@ -77,6 +77,43 @@ anywhere. See [Per-Project Configuration](#per-project-configuration).
 There is **no embedding concurrency setting.** Indexing throughput against a remote provider is
 tuned via the three batching variables above, not by a worker/concurrency count.
 
+### Embedding cache (index time)
+
+Off by default. When on, anything that constructs an `Indexer` (`trelix index`, `watch`,
+`update-index`, the REST `POST /index`, the MCP `index_codebase` tool) looks every chunk's text
+up by its sha256 in an on-disk cache before calling the embedding provider, and only the misses
+are embedded. A fresh index of unchanged text makes no provider calls and stores byte-identical
+vectors. Distinct from `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`, the in-memory LRU for `embed_query()`
+at search time.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_EMBEDDING_CACHE_ENABLED` | `false` | Turn the cache on. Refused together with `TRELIX_USE_BATCH_API`/`--use-batch-api` on the `openai` provider, and by `trelix index --resume-batch` (the Batch API path never consults the cache); both exit 1 before any model is loaded |
+| `TRELIX_EMBEDDING_CACHE_DIR` | _(unset)_ | Directory for the cache files. **Must be absolute** (`~` is expanded); a relative value is a configuration error, because it would resolve against whatever repository is being indexed. Unset means `$XDG_CACHE_HOME/trelix/embeddings` (a relative `XDG_CACHE_HOME` is ignored, as the XDG spec requires), else `~/.cache/trelix/embeddings` |
+| `TRELIX_EMBEDDING_CACHE_MAX_MB` | `4096` | Size trim per cache file (one file per embedder fingerprint), minimum `1`. Applied after each index run and by `trelix cache gc [--max-mb N]`: the least recently used rows go until the file fits. Not a limit during a run — one run can write past it |
+
+One SQLite file per **embedder fingerprint**: provider, model id, the configuration knobs that
+change a vector for the same model id (`TRELIX_EMBEDDER_OPENAI_DIMENSIONS`,
+`TRELIX_EMBEDDER_AZURE_DIMENSIONS` and `AZURE_ENDPOINT`, `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS`,
+the Titan dimensions and normalize flags) and the declared width. Changing the model is a
+different file, never a mixed one, and a file whose recorded width disagrees with the embedder
+actually built is refused by name. The directory is created `0o700` — and set to `0o700` on
+every run, including a pre-existing directory you point `TRELIX_EMBEDDING_CACHE_DIR` at, so
+give the cache a directory of its own — and each file created `0o600` (POSIX; Windows applies
+neither). Two indexers may share a file; first opens of a new file are serialised, and a trim
+that finds the file locked or deleted is skipped for that run. The run reports
+`chunks_from_cache` beside `chunks_embedded`, and the `trelix index` summary adds a
+`Chunks from cache` row when it is above zero; `trelix index --dry-run` reads the cache file
+(read-only, creating nothing) and adds `Chunks already cached` and `Tokens already cached`,
+subtracting the cached tokens from the priced count. `trelix cache gc [--max-mb N]` applies
+the trim on demand and `trelix cache clear` deletes every cache file; both read these three
+variables and nothing else (plus `XDG_CACHE_HOME`/`HOME` when the directory is unset), and
+work whether or not the cache is enabled (see
+[CLI_REFERENCE.md](CLI_REFERENCE.md#trelix-cache-gc)).
+**Single-operator machines only:** the hosted GitHub App forwards every `TRELIX_*` host variable
+into its `trelix index` child, so setting this on a multi-tenant host shares one cache across
+every tenant it indexes — see [SECURITY.md](../SECURITY.md#embedding-cache-on-disk-trelix_embedding_cache_enabled).
+
 ### Retrieval
 
 | Variable | Default | Description |
@@ -100,6 +137,7 @@ tuned via the three batching variables above, not by a worker/concurrency count.
 | `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | **Inert.** `RetrievalConfig.xtr_candidate_tokens` is declared and range-validated but read nowhere in `src/`, deliberately: the `xtr` provider is degenerate (one synthetic query token, so every output score is bit-identical to its input) and a real candidate-token budget needs the ColBERT-style multi-vector token index trelix does not build. The knob is kept for that future embedder; the provider logs this on every call |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE re-retrieval. Not the paper's token-log-probability method: after a synthesis completes, the answer is scanned for a fixed list of uncertainty phrases (`"i don't know"`, `"cannot find"`, …) and, on a hit, the query is enriched and re-synthesized. There is no probability threshold setting |
 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Maximum FLARE iterations per query (min: 1, max: 3) |
+| `TRELIX_RETRIEVAL_CITATIONS` | `false` | Tag every block of the assembled context with `[C1]`, `[C2]`, … (in rendered order, one tag per symbol; a compressed body carries its tag on every kept-span header) and append an instruction to the synthesis system prompt to write the block's tag after each sentence that relies on it. The tag number is the only thing the model is asked to write about a source; `RetrievedContext.citation_sources` records what each tag refers to. `false` leaves the assembled context, the synthesis prompts and every command's output unchanged. Read by every Retriever, so it also tags the per-hunk context `trelix review` retrieves (the review prompt gives the tags no instruction) and the context REST `/ask` synthesizes from; `trelix ask --provider local` prints the tags with the context. |
 | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE (Hypothetical Document Embeddings) fallback when standard retrieval returns weak results |
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable the file-summary retrieval leg — retrieves against LLM-generated file summaries in addition to raw chunks |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Enable PageRank-based symbol boosting — surfaces frequently referenced symbols higher in results |
@@ -113,8 +151,8 @@ tuned via the three batching variables above, not by a worker/concurrency count.
 | `TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_SYMBOLS` | `10` | See above. Chosen against one repository's golden set: the floor restored nDCG@10 to 0.6189/0.6217 from 0.6039/0.5791, at the cost of top-rank precision on exact-filename queries (Recall@10 stays 1.0000, nDCG 1.0000 -> 0.8253). |
 | `TRELIX_TELEMETRY_ENABLED` | `false` | Record every `retrieve()` call to the `query_telemetry` table in the index DB. Zero overhead when disabled. This setting lives on the top-level index config, not on the retrieval config — so it is `TRELIX_TELEMETRY_ENABLED`, **not** `TRELIX_RETRIEVAL_TELEMETRY`, which is not read. For OpenTelemetry spans see `TRELIX_OTEL_ENABLED` under [Observability](#observability-opentelemetry) — a separate, independent switch |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM-powered file summaries at index time (requires a configured LLM provider) |
-| `TRELIX_REVIEW_MAX_TOKENS` | `4096` | Output-token limit for the model call that reviews one hunk in `trelix review` (range 256–16384). A review is a JSON array, so a limit that is too low cuts it off mid-object. When a reply is cut off, trelix retries once at four times this limit (capped at 16384, so a limit of 16384 is not retried) and otherwise reports the hunk as truncated, which counts as not reviewed. The ceiling is 16384 because the Anthropic SDK refuses a non-streaming request above 21333 tokens and some models refuse less. On models that think, reasoning tokens count toward the limit. This setting lives on the top-level index config, so it is `TRELIX_REVIEW_MAX_TOKENS`, not `TRELIX_LLM_...`. |
-| `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` | `0.0` | Share of hunks, from `0.0` to `1.0`, that `trelix review` may leave unreviewed (cut off, refused, filtered, not a review, or failed) before it exits `4` after printing its findings. The default `0.0` means any unreviewed hunk; `1` restores exit `0` for a partial review. A review where nothing usable came out still exits `3`. A blank value is read as unset. This setting lives on the top-level index config, so it is `TRELIX_REVIEW_...`, not `TRELIX_LLM_...`. |
+| `TRELIX_REVIEW_MAX_TOKENS` | `4096` | Output-token limit for the model call that reviews one hunk in `trelix review` (range 256–16384). A review is a JSON array, so a limit that is too low cuts it off mid-object. When a reply is cut off, trelix retries once at four times this limit (capped at 16384, so a limit of 16384 is not retried) and otherwise reports the hunk as truncated, which counts as not reviewed. With `TRELIX_LLM_BASE_URL` set, a hunk is also truncated (detail `prompt_truncated`) when the server's reported `prompt_tokens` is under 0.85 x the cl100k_base count of what trelix sent, the sign that it cut the prompt; that hunk is not retried and nothing is kept from its reply. The ceiling is 16384 because the Anthropic SDK refuses a non-streaming request above 21333 tokens and some models refuse less. On models that think, reasoning tokens count toward the limit. This setting lives on the top-level index config, so it is `TRELIX_REVIEW_MAX_TOKENS`, not `TRELIX_LLM_...`. |
+| `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` | `0.0` | Share of hunks, from `0.0` to `1.0`, that `trelix review` may leave unreviewed (cut off, its prompt cut by a local server (`prompt_truncated`), refused, filtered, not a review, or failed) before it exits `4` after printing its findings. The default `0.0` means any unreviewed hunk; `1` restores exit `0` for a partial review. A review where nothing usable came out still exits `3`. A blank value is read as unset. This setting lives on the top-level index config, so it is `TRELIX_REVIEW_...`, not `TRELIX_LLM_...`. |
 | `TRELIX_REVIEW_OUTCOME_FILE` | _(none)_ | Path where `trelix review` writes a JSON record (`schema_version`, `hunks_total`, `hunks_reviewed`, `hunks_unreviewed`, `exit_code`, `hunks` for the first 100 unreviewed as `file`/`line`/`status`/`detail`, `hunks_omitted`). Created with mode 0600 and moved into place atomically; the parent directory must exist; a failure to write it only warns. `status` and `detail` are a fixed vocabulary plus a character-limited provider stop token or exception class name and never carry model prose; `file` is text from the diff, so escape it when you display it. The file is written before comments are posted, and not at all when the command stops before reviewing (an error, or no changes to review), so remove a reused path first. Unset or blank: no file. |
 
 ### Model-Aware Context Budget
@@ -127,8 +165,9 @@ By default `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` is the fixed integer `12000`,
 | `claude-sonnet-4-6` | 200,000 | 100,000 |
 | `gemini-2.5-pro` | 1,000,000 | 500,000 |
 | unrecognised (e.g. `my-finetune`) | — | 12,000 (fallback) |
+| any tag with `TRELIX_LLM_LOCAL_CONTEXT_TOKENS=32768` (a local server) | 32,768 (from the variable) | 16,384 |
 
-Window lookup is **prefix** matching against a longest-prefix-first table, lower-cased on both sides, so version and date suffixes resolve correctly (`gpt-4o-2024-11-20` → `gpt-4o`). Matching is anchored at the **start** of the string: a provider-namespaced model id such as `us.anthropic.claude-sonnet-4-6`, `anthropic.claude-3-5-sonnet-...`, or `bedrock/claude-3-5-sonnet` does **not** match, and an unrecognised model falls back to a flat `12,000`-token budget (the fraction is not applied) with a WARNING in the log. Any failure resolving the window falls back the same way, so auto-derivation can never harden into a startup error.
+Window lookup is **prefix** matching against a longest-prefix-first table, lower-cased on both sides, so version and date suffixes resolve correctly (`gpt-4o-2024-11-20` → `gpt-4o`). Matching is anchored at the **start** of the string: a provider-namespaced model id such as `us.anthropic.claude-sonnet-4-6`, `anthropic.claude-3-5-sonnet-...`, or `bedrock/claude-3-5-sonnet` does **not** match, and an unrecognised model falls back to a flat `12,000`-token budget (the fraction is not applied) with a WARNING in the log. A local model tag (`qwen2.5-coder:7b`) is unrecognised too: `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` supplies its window instead — set it to the context length the server behind `TRELIX_LLM_BASE_URL` runs with — and the fraction applies to it (`int(32768 × 0.5) = 16384`). Any failure resolving the window falls back the same way, so auto-derivation can never harden into a startup error.
 
 **The budget is not the real ceiling.** `rerank_top_n` (default `15`), `top_k_vector` (default `20`), and `top_k_bm25` cap the candidate set *before* the budget is ever applied, so raising the budget alone usually changes very little — there simply aren't more candidates to pack. `TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET=true` is what actually widens the assembled context: it scales `top_k_vector` and `rerank_top_n` by `effective_budget / 12000`. It requires `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` and it raises per-query cost — more candidates through the reranker and more tokens into synthesis.
 
@@ -170,23 +209,32 @@ Unknown or absent intents fall back to `TRELIX_RETRIEVAL_COMPRESSION_RATIO` (`0.
 |---|---|---|
 | `TRELIX_LLM_PROVIDER` | `openai` | LLM provider used for answer synthesis. One of: `openai`, `azure`, `anthropic`, `bedrock`, `vertex`, `litellm` — see [PROVIDERS.md](PROVIDERS.md#llm-providers-for-trelix-ask) |
 | `TRELIX_LLM_MODEL` | `gpt-4o` | Chat model for synthesis. Used verbatim by the `openai`, `anthropic`, and `vertex` backends, and it is the model name the auto-derived context budget resolves its window from — see [Model-Aware Context Budget](#model-aware-context-budget). |
+| `TRELIX_LLM_BASE_URL` | _(unset)_ | Base URL of an OpenAI-compatible server for the `openai` backend: Ollama (`http://127.0.0.1:11434/v1`), llama-server, a gateway. Must be `http://` or `https://` with a host, must not carry a user name or password and must not contain whitespace or control characters such as a trailing newline (the error names the variable, never the value); a blank value is unset. With it set, `OPENAI_API_KEY` is optional — without one trelix sends the fixed bearer `trelix-local`, which Ollama ignores — the output cap is sent as `max_tokens` (Ollama has no `max_completion_tokens` field), and a model tag under 20B parameters, or with no readable size, logs one warning each time a backend is built (a `review` on an indexed repository builds two). Any other `TRELIX_LLM_PROVIDER` ignores it with one warning per LLM client built. The openai SDK's own `OPENAI_BASE_URL` keeps working as before when this is unset. See [PROVIDERS.md](PROVIDERS.md#openai-with-a-local-openai-compatible-server). |
+| `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` | _(unset)_ | Context length, in tokens, of the server behind `TRELIX_LLM_BASE_URL`: `1024` to `2000000`, a blank value is unset, and setting it without `TRELIX_LLM_BASE_URL` is a configuration error (the message names both variables, never the value). `context_windows` knows no local model tags, so with `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` the budget would fall back to `12,000`; with this set it is `int(TRELIX_LLM_LOCAL_CONTEXT_TOKENS × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`. Set it to the length the server runs with (Ollama: `OLLAMA_CONTEXT_LENGTH`). Ignored with an explicit integer budget. See [Model-Aware Context Budget](#model-aware-context-budget). |
 | `AZURE_CHAT_MODEL` | `gpt-4o` | Azure chat deployment name — what the `azure` backend actually calls, instead of `TRELIX_LLM_MODEL` |
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key — required when `TRELIX_LLM_PROVIDER=anthropic` |
-| `TRELIX_LLM_THINKING_ENABLED` | `false` | Opt the answer synthesizer into Anthropic extended thinking. Only has an effect when `TRELIX_LLM_PROVIDER=anthropic` — every other backend accepts the flag and ignores it. See [Extended Thinking (Anthropic)](#extended-thinking-anthropic). |
-| `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | Value sent as `thinking.budget_tokens` on the Anthropic Messages API request. Not range-validated locally — `0` or a negative value is accepted by config and forwarded to the API as-is. |
+| `TRELIX_LLM_THINKING_ENABLED` | `false` | Opt the answer synthesizer into Claude extended thinking. Only has an effect when `TRELIX_LLM_PROVIDER` is `anthropic` or `bedrock` (a Claude model on Bedrock) — every other backend accepts the flag and ignores it. On adaptive-only models (Claude 5 and newer; see below) the model decides whether to think, so a response may carry no thinking block. See [Extended Thinking (Anthropic)](#extended-thinking-anthropic). |
+| `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | Value sent as `thinking.budget_tokens` on the Anthropic Messages API request (on Bedrock, as `reasoning_config.budget_tokens`). **Ignored for adaptive-only models** — Claude 5 and newer (fable, mythos, opus, sonnet, haiku) and Opus 4.7 and newer — which reject a budget; nothing is sent for it there. Not range-validated locally — `0` or a negative value is accepted by config and forwarded to the API as-is. |
 | `TRELIX_RETRIEVAL_AGENTIC` | `false` | Enable the agentic ReAct loop — the LLM iteratively issues retrieval calls before producing a final answer |
 
 ### Extended Thinking (Anthropic)
 
-Extended thinking is a **request parameter**, not a model: enabling it sends `thinking={"type": "enabled", "budget_tokens": N}` alongside the messages. You do not change `TRELIX_LLM_MODEL` to turn it on, and there is no separate "thinking model" to select.
+Extended thinking is a **request parameter**, not a model: enabling it adds a thinking parameter alongside the messages. You do not change `TRELIX_LLM_MODEL` to turn it on, and there is no separate "thinking model" to select. Which parameter is sent depends on the model id:
+
+- **Budget models** — every model that accepted thinking before, and any id trelix does not recognise — get `thinking={"type": "enabled", "budget_tokens": N}` (on Bedrock, `additionalModelRequestFields.reasoning_config`). `N` is `TRELIX_LLM_THINKING_BUDGET_TOKENS`. Claude Sonnet 4.6, Sonnet 4.5, Opus 4.6, Haiku 4.5 and Claude 3.7 are in this group.
+- **Adaptive-only models** — any `claude-fable`, `claude-mythos`, `claude-opus`, `claude-sonnet` or `claude-haiku` id at version 5 or newer (`claude-sonnet-5` and `claude-sonnet-5-5` are the ones confirmed live), plus any `claude-opus` id from 4.7 up (`claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-4-10`), in any id form (`anthropic.`, `us.anthropic.` and `global.anthropic.` prefixes, a dated suffix, a `-v1:0` suffix) — reject `budget_tokens` with a 400 / `ValidationException`, so they get `thinking={"type": "adaptive"}` (on Bedrock, `additionalModelRequestFields.thinking`). `TRELIX_LLM_THINKING_BUDGET_TOKENS` is not used for them.
+- **An id trelix does not know yet that turns out to be adaptive-only** is handled at runtime: on the first `"thinking.type.enabled" is not supported` rejection the backend switches that model to adaptive, retries once, logs one warning naming the model, and uses adaptive for that model from then on (per backend instance; nothing is persisted). An Amazon Bedrock ARN or application inference profile id is not recognised by name, so it takes this path.
+
+The adaptive shape was confirmed live on Bedrock Converse for `us.anthropic.claude-sonnet-5` and `us.anthropic.claude-sonnet-5-5` only. For every other model in the list, and for the direct Anthropic API, the list follows the Claude API reference and was not measured here.
 
 Opt-in is **per call site, and only the synthesizer opts in.** The index-time LLM call sites — contextual chunking (one call per symbol) and file summarization (one call per file) — deliberately never pass the flag. A single global switch would multiply indexing cost several-fold across thousands of calls for no retrieval-quality gain, so the flag is wired only where a human is waiting on one answer.
 
 Behaviour to expect when it is on:
 
-- **`temperature` is forced to `1.0`** for that request, overriding the temperature the synthesizer would otherwise use — the API requires it.
+- **`temperature` is forced to `1.0`** for that request on a budget model over Bedrock, overriding the temperature the synthesizer would otherwise use — the API requires it. For an adaptive-only model the Bedrock backend omits `temperature` instead, and the Anthropic backend never sends one.
+- **Adaptive thinking may return no thinking block.** The model decides whether a question needs reasoning; an easy question comes back as text only. `ChatResponse.thinking` is then `None` and `ChatResponse.thinking_blocks` is empty — a normal response, not an error. trelix sends plain `{"type": "adaptive"}` without a `display` setting, and what the default display returns for a harder question on these models was not measured (only an easy question was called), so do not rely on `ChatResponse.thinking` being populated.
 - **Incompatible with a forced `tool_choice`**; do not combine it with a call site that pins tool selection.
-- **Thinking bills as output tokens.** There is no separate thinking counter — the tokens land in `output_tokens`, so raising `TRELIX_LLM_THINKING_BUDGET_TOKENS` directly raises the per-answer bill.
+- **Thinking bills as output tokens.** There is no separate thinking counter — the tokens land in `output_tokens`, so raising `TRELIX_LLM_THINKING_BUDGET_TOKENS` directly raises the per-answer bill on a budget model. On an adaptive-only model the budget setting has no effect and the model chooses how much to think.
 - Thinking blocks are split out of the response rather than concatenated into the answer: `ChatResponse.thinking` carries the reasoning text (`None` when absent), alongside the `cache_read_tokens` / `cache_write_tokens` counters.
 
 ### Agentic ReAct Loop — Persistent Sessions
@@ -294,6 +342,16 @@ echo "dist/" >> .gitignore
 | `QDRANT_TIMEOUT` | `10.0` | Client request timeout in seconds — raise for Cloud deployments with higher network latency |
 | `TRELIX_STORE_BM25_READ_POOL_SIZE` | `0` | Number of read-only SQLite connections to pool for parallel `bm25_search()` calls. `0` disables pooling (default — identical to the pre-existing single-connection behavior). When set, `Retriever` automatically calls `Database.enable_bm25_read_pool()` at construction time. |
 
+**Flat-scan advisory.** The `sqlite` backend is an exact flat scan: no stable sqlite-vec release has shipped an HNSW or any other approximate-nearest-neighbour index, so every search compares the query with every stored vector and latency grows with rows × width. `TRELIX_STORE_HNSW`, `TRELIX_STORE_HNSW_M` and `TRELIX_STORE_HNSW_EF_SEARCH` (and the unaliased `hnsw_ef_construction` field) are accepted and inert. `trelix index` and `trelix stats` print a `Flat-scan advisory: ...` line on stderr, without changing the exit code, once the store holds more vectors (file-summary and sub-chunk rows included, because the scan pays for them too) than the measured threshold for the index's width:
+
+| Width (dimensions) | p95 search latency passes 100 ms near (rows) | Basis |
+|---|---|---|
+| 384 | 32,765 | measured |
+| 768 | 12,979 | measured |
+| 1024 | 28,956 | measured |
+
+The nearest measured width at or above the index's width applies; above 1024 dimensions the 1024 threshold is scaled by `1024 / width`. The numbers come from one machine (`apple-m4-shared`, an Apple M4) and are a guide, not a guarantee: see [the benchmark report](reports/vector-search-bench-2026-10-07-apple-m4-shared.json). That run was measured on a shared machine, so the thresholds are conservative, and they are not monotonic in width (the 768 figure sits below the 1024 one because load spiked during its 10,000-row cell); a quiet run will replace them. Past the threshold, consider `TRELIX_STORE_BACKEND=lance` or `qdrant`.
+
 ### Federation
 
 | Variable | Default | Description |
@@ -302,7 +360,7 @@ echo "dist/" >> .gitignore
 | `TRELIX_FEDERATION_MAX_WORKERS` | `4` | **Inert.** `RetrievalConfig.federation_max_workers` is declared and range-validated (1–16) but read nowhere in `src/`. `search-all` constructs `FederatedRetriever(registry)` with no arguments, so the `ThreadPoolExecutor` size is always the constructor's own default of 4 — which happens to equal this documented default, so the only observable symptom is that raising it does nothing |
 | `TRELIX_FEDERATION_MAX_REPOS` | `50` | Maximum number of registered repos actually queried per federated search call (1–500). Registered repos beyond this cap are skipped (reported via `repos_skipped` in the MCP `federation_search_all` response); prevents an unbounded `federation_add_repo` loop from making every subsequent query scale linearly. **No effect on `trelix search-all`** — `FederatedRetriever`'s `max_repos` parameter defaults to `None` (unbounded) and the CLI passes nothing, so only the separately-distributed `trelix-mcp` server applies this |
 
-There is no environment variable for the federation registry file path. The registry JSON file location defaults to `~/.config/trelix/repos.json` and can be overridden per-call via the `--config` CLI option (`trelix search-all --config`, `trelix federation add/list/remove --config`) or the `config_path` argument on the corresponding MCP tools. For security, MCP callers may only point `config_path` at `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/` — paths outside those roots are rejected.
+There is no environment variable for the federation registry file path. The registry JSON file location defaults to `~/.config/trelix/repos.json` and can be overridden per-call via the `--config` CLI option (`trelix search-all --config`, `trelix federation add/list/remove --config`) or the `config_path` argument on the corresponding MCP tools. For security, MCP callers may only point `config_path` at `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/` — paths outside those roots are rejected (`config_path is not inside an allowed config directory`). The name must also end in `.json` and the file must be missing, empty, or a JSON object with a `repos` list; any other file there is refused with `config_path is not a repository registry` and never overwritten.
 
 ### Git ticket linking
 
@@ -381,6 +439,12 @@ replace `TRELIX_API_AUTH_TOKEN`; see [SECURITY.md](../SECURITY.md#rest-api--host
 |---|---|---|
 | `TRELIX_MCP_MAX_SUBSCRIBERS` | `1000` | Maximum number of concurrent resource subscriptions `trelix-mcp` will accept. Re-subscribing an existing `subscription_id` never counts as growth. Once at capacity, `subscribe_resource` returns a soft error (`{"subscribed": false, ...}`) instead of raising. |
 | `TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS` | `3600` | Time-to-live (seconds) for an inactive resource subscription before it is evicted from the `SubscriptionRegistry`. Expired subscriptions are swept lazily on the next registry access. |
+| `TRELIX_MCP_MAX_K` | `50` (min: `1`) | Largest page a list tool returns: `k` on `search_code`, `graph_search_mcp` and `federation_search_all`, and `limit` on `agent_list_sessions`, is clamped to `1..TRELIX_MCP_MAX_K`, and `page_size` in the response says what was used. (`blast_radius`'s own `limit` clamps to `1..500`.) Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
+| `TRELIX_MCP_MAX_RESULT_CHARS` | `15000` (min: `0`) | Budget for the text of a list result, in characters. The budget counts both copies a client is sent (the text block, with each quote escaped, and `structuredContent`), so the whole response is at most twice the budget (30,000 characters by default) and its text under the budget. Over it, the tail of the list is dropped and the response says so (`truncated`, `omitted`, and for a bare array a second text block and `_meta.trelix`); `next_cursor` continues from the first dropped result. One result is always kept. `0` turns the cut off. Read on every call; blank means the default; a negative or non-integer value is a start-up error. See [MCP_GUIDE.md](MCP_GUIDE.md#output-size-and-limits). |
+| `TRELIX_MCP_RETRIEVER_CACHE_SIZE` | `8` (min: `1`) | Most Retrievers `trelix-mcp` keeps across tool calls, one per repository (`search_code` and `graph_search_mcp` reuse them, and each may hold an embedding model with the `local` provider). Past the bound the least recently used one is dropped, not closed (a call in another worker thread may still hold it); a later call for that repository builds it again. Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
+| `TRELIX_MCP_AUTH_TOKEN` | _(none)_ | Bearer token for `trelix-mcp --transport http` (fallback `TRELIX_API_AUTH_TOKEN`; the first non-blank value is used as given and must be printable ASCII; blank means unset). With a token, every request but `GET`/`HEAD /health` must carry `Authorization: Bearer <token>` or `X-Trelix-Api-Key: <token>`, else `401` with `WWW-Authenticate: Bearer`. Required for a non-loopback `--host` unless `--allow-unauthenticated`; a loopback bind may run without one. Read from the process environment only (the REST API also reads its operator env file; `trelix-mcp` does not). See [MCP_GUIDE.md section 19](MCP_GUIDE.md#19-streamable-http-transport). |
+| `TRELIX_MCP_ALLOWED_HOSTS` | _(none)_ | Comma-separated hostnames the Host/Origin guard of `trelix-mcp --transport http` accepts besides `localhost`, `127.0.0.1`, `::1`, the bind address and every `--allowed-host`; normalised like `TRELIX_API_ALLOWED_HOSTS` (ports, brackets and case ignored, invalid entries dropped with a warning). `*` turns the guard off with a warning. The 403 text names this variable and `--allowed-host` and never suggests `*`. `trelix-mcp` reads `TRELIX_MCP_ALLOWED_HOSTS` first and falls back to `TRELIX_API_ALLOWED_HOSTS` only when the MCP variable is unset or blank; when both are set, only the MCP one counts, including `*`. `127.1` is a hostname to the bind check, so write `127.0.0.1`. Process environment only. |
+| `TRELIX_ALLOWED_REPO_ROOTS` | _(none)_ | Repository roots `trelix-mcp` confines itself to, `os.pathsep`-separated (`:` on POSIX, `;` on Windows); `trelix-mcp --root PATH` (repeatable) adds roots on the command line. With at least one root, every `repo_path` argument, `federation_add_repo`'s `path` and every `trelix://repo/...` resource URI must resolve inside a root (both sides are resolved, so `..`, a symlink pointing outside and a sibling `<root>-evil` are refused); a call outside answers `isError: true` with `repo_path is not inside an allowed repository root` (`path is not inside an allowed repository root` for `federation_add_repo`), `federation_list_repos` and `federation_search_all` list and search only the registry entries inside the roots and report the others as `repos_outside_roots`, and `federation_remove_repo` answers an alias whose repository is outside the roots as an unregistered one and writes nothing. With neither the flag nor the variable, nothing is confined over stdio; at least one is required for `--transport http` (exit 2 without it). Read from the process environment only, never from a `.env` or `config.toml` (an indexed repository must not be able to widen the list). `trelix serve` reads the same variable for its REST API, in addition to the directory it was pointed at. |
 
 ### Observability (OpenTelemetry)
 
@@ -388,9 +452,10 @@ Requires `pip install trelix[otel]`. See [OBSERVABILITY.md](OBSERVABILITY.md) fo
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_OTEL_ENABLED` | `false` | Emit one OpenTelemetry span per retrieval leg (vector/BM25/grep/sparse/sub-chunk/file-summary) plus pipeline-stage spans (planner/fusion/expansion/rerank/pagerank/assembly). Zero import cost and zero behavior change when disabled. |
+| `TRELIX_OTEL_ENABLED` | `false` | Emit one OpenTelemetry span per retrieval leg (vector/BM25/grep/sparse/sub-chunk/file-summary) plus pipeline-stage spans (planner/fusion/expansion/rerank/pagerank/assembly), and one GenAI `chat` span per LLM call (`complete`/`stream`/`tool_call` of every `build_chat_client()` backend; see [OBSERVABILITY.md § LLM chat spans](OBSERVABILITY.md#llm-chat-spans)). When disabled the backend is returned unchanged (type-identical, no `opentelemetry` import) at the cost of one memoised `RetrievalConfig()` read per process ([OBSERVABILITY.md § LLM chat spans](OBSERVABILITY.md#llm-chat-spans), "The switch is the environment's"). |
 | `OTEL_SERVICE_NAME` | `trelix` | Service name attached to the installed `TracerProvider`'s resource attributes. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(none)_ | OTLP collector endpoint. If unset, spans are still created but have nowhere to export to unless a host application configures its own exporter/processor before trelix runs. |
+| `TRELIX_OTEL_CAPTURE_CONTENT` | `false` | Hand prompts, replies and retrieval query text to the GenAI instrumentation (`stream()` replies and images are never handed over). Off by default; the text includes repository code. Where it then goes is decided by OpenTelemetry's own `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (not `TRELIX_`-prefixed; default `NO_CONTENT`; read once when tracing starts on `opentelemetry-util-genai` 1.2b0, re-read per span on 1.0b0 and 1.1b0): `SPAN_ONLY` puts the text on the retrieval and chat span attributes, `EVENT_ONLY` puts prompts and replies in a `gen_ai.client.inference.operation.details` record on the OpenTelemetry Logs signal (only when a `LoggerProvider` is configured; retrieval spans emit no such record), `SPAN_AND_EVENT` does both, `NO_CONTENT` discards it and trelix logs one WARNING. A pydantic boolean like `TRELIX_OTEL_ENABLED`: `true/1/yes/on`, `false/0/no/off`; a blank value or `maybe` is a `Configuration error` (exit 1) where the CLI catches it; the other two paths are in [OBSERVABILITY.md § Content capture](OBSERVABILITY.md#content-capture). |
 
 ---
 
@@ -444,6 +509,10 @@ TRELIX_INDEXER_STREAMING=false
 TRELIX_RETRIEVAL_FLARE=false
 TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=1
 
+# Citation tags: prefix every context block with [C1], [C2], ... and ask the
+# synthesis model to cite them. Off: context and prompts unchanged.
+TRELIX_RETRIEVAL_CITATIONS=false
+
 # HyDE fallback
 TRELIX_RETRIEVAL_HYDE_FALLBACK=false
 
@@ -496,14 +565,21 @@ TRELIX_LLM_PROVIDER=openai
 TRELIX_LLM_MODEL=gpt-4o
 # OPENAI_API_KEY=sk-...  (shared with embedder if both use OpenAI)
 
+# OpenAI-compatible local server (Ollama, llama-server) for the openai backend;
+# OPENAI_API_KEY is optional with it set
+# TRELIX_LLM_BASE_URL=http://127.0.0.1:11434/v1
+# That server's context length; sizes the null budget (this x the window fraction)
+# TRELIX_LLM_LOCAL_CONTEXT_TOKENS=65536
+
 # Azure chat — the azure backend calls this deployment, not TRELIX_LLM_MODEL
 # AZURE_CHAT_MODEL=gpt-4o
 
 # Anthropic
 # ANTHROPIC_API_KEY=sk-ant-...
 
-# Anthropic extended thinking — synthesizer only, forces temperature=1.0,
-# and the budget bills as OUTPUT tokens. Ignored by non-Anthropic backends.
+# Claude extended thinking (anthropic and bedrock backends) — synthesizer only. On budget
+# models Bedrock forces temperature=1.0 and the budget bills as OUTPUT tokens; adaptive-only
+# models (Claude 5 and newer, Opus 4.7 and newer) ignore the budget. Ignored by the other backends.
 TRELIX_LLM_THINKING_ENABLED=false
 # TRELIX_LLM_THINKING_BUDGET_TOKENS=4096
 
@@ -532,6 +608,15 @@ TRELIX_STORE_BACKEND=sqlite
 
 # Parallel read-only BM25 connections (0 = disabled, default)
 # TRELIX_STORE_BM25_READ_POOL_SIZE=4
+
+# ---------------------------------------------------------------------------
+# Embedding cache (index time) — off by default; single-operator machines only
+# ---------------------------------------------------------------------------
+# TRELIX_EMBEDDING_CACHE_ENABLED=false
+# Absolute path only. Unset: $XDG_CACHE_HOME/trelix/embeddings, else ~/.cache/trelix/embeddings
+# TRELIX_EMBEDDING_CACHE_DIR=/home/me/.cache/trelix/embeddings
+# Per-file LRU trim after each run, in MB (minimum 1); not a limit during a run
+# TRELIX_EMBEDDING_CACHE_MAX_MB=4096
 
 # ---------------------------------------------------------------------------
 # Federation
@@ -600,8 +685,14 @@ TRELIX_STORE_BACKEND=sqlite
 # MCP Server
 # ---------------------------------------------------------------------------
 
+# trelix-mcp reads these from the process environment only, not from this file
 # TRELIX_MCP_MAX_SUBSCRIBERS=1000
 # TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
+# TRELIX_MCP_MAX_K=50
+# TRELIX_MCP_MAX_RESULT_CHARS=15000
+# TRELIX_MCP_RETRIEVER_CACHE_SIZE=8
+# TRELIX_MCP_AUTH_TOKEN=...
+# TRELIX_MCP_ALLOWED_HOSTS=localhost,127.0.0.1,[::1]
 ```
 
 ---
@@ -655,20 +746,28 @@ wrapper script instead.
 
 trelix ships a Model Context Protocol server (`trelix-mcp`) that exposes indexed repositories as MCP resources and tools, allowing MCP-compatible clients (e.g. Claude Desktop) to query trelix directly.
 
+It serves stdio by default (the client spawns the process). `trelix-mcp --transport http --root
+PATH` serves Streamable HTTP on `127.0.0.1:8766/mcp` instead, stateless unless `--stateful` (needed
+by a client that opens a server-initiated GET stream), with the Host/Origin guard always on and a
+bearer token when `TRELIX_MCP_AUTH_TOKEN` is set. Every `TRELIX_MCP_*` variable and
+`TRELIX_ALLOWED_REPO_ROOTS` is read from the process environment only — never from a `.env`,
+`config.toml` or the operator env file the REST API reads. Flags, texts and the proxy notes:
+[MCP_GUIDE.md section 19](MCP_GUIDE.md#19-streamable-http-transport).
+
 ### Resource subscriptions (v2.5.0)
 
-trelix-mcp v2.5.0 advertises `resources.subscribe = true` in its server capabilities and exposes two new tools:
+trelix-mcp v2.5.0 exposes two tools for registering interest in a resource. It does not advertise `resources.subscribe` (it reports `false`) and does not serve the `resources/subscribe` request:
 
 | Tool | Parameters | Description |
 |---|---|---|
-| `subscribe_resource` | `uri`, `subscription_id` | Subscribe to change notifications for a `trelix://` resource URI |
+| `subscribe_resource` | `uri`, `subscription_id` | Register a subscription for a `trelix://` resource URI |
 | `unsubscribe_resource` | `subscription_id` | Cancel an active subscription |
 
 **URI scheme:** `trelix://repo/{repo_path}/manifest`
 
 **Wire protocol:**
 1. Client calls `subscribe_resource(uri, subscription_id)` — the server registers the subscription.
-2. When a watched file changes, trelix-mcp emits a `notifications/resources/updated` notification (URI only, with `subscriptionId` in `params._meta`).
-3. Client calls `resources/read` to fetch the updated content.
+2. Intended: when a watched file changes, trelix-mcp emits a `notifications/resources/updated` notification (URI only, with `subscriptionId` in `params._meta`). **Not delivered today:** this only works if a file watcher runs inside the `trelix-mcp` process, and nothing starts one.
+3. Client would then call `resources/read` to fetch the updated content.
 
 Subscriptions are held in-memory (not persisted across server restarts). The subscription registry is thread-safe.

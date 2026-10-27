@@ -117,6 +117,43 @@ describe("createJobFailureLogger", () => {
         ]);
     });
 
+    it("writes the same fixed line when the writer's promise rejects, and leaves no unhandled rejection", async () => {
+        const consoleError = vi
+            .spyOn(console, "error")
+            .mockImplementation(() => {});
+        const unhandled = vi.fn();
+        process.on("unhandledRejection", unhandled);
+        try {
+            const log = createJobFailureLogger(PROTECTED, PREFIX, () =>
+                Promise.reject(new Error(`sink down: ${HOOK}`)),
+            );
+
+            expect(() => log(new Error("boom"), "o/r#1")).not.toThrow();
+            await new Promise((resolve) => setImmediate(resolve));
+
+            expect(consoleError.mock.calls).toEqual([
+                ["[queue] a job failed; the error could not be logged"],
+            ]);
+            expect(unhandled).not.toHaveBeenCalled();
+        } finally {
+            process.off("unhandledRejection", unhandled);
+        }
+    });
+
+    it("does not report a writer whose promise resolves", async () => {
+        const consoleError = vi
+            .spyOn(console, "error")
+            .mockImplementation(() => {});
+        const log = createJobFailureLogger(PROTECTED, PREFIX, () =>
+            Promise.resolve(),
+        );
+
+        log(new Error("boom"), "o/r#1");
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(consoleError).not.toHaveBeenCalled();
+    });
+
     it("does not throw when even the console throws", () => {
         vi.spyOn(console, "error").mockImplementation(() => {
             throw new Error("console closed");

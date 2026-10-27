@@ -1,4 +1,3 @@
-import argparse
 import json
 import logging
 import os
@@ -10,12 +9,13 @@ logging.basicConfig(
     format="[trelix-mcp] %(levelname)s %(message)s",
 )
 
-import signal  # noqa: E402
 import threading  # noqa: E402
+from collections import OrderedDict  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
+from fastmcp.exceptions import ResourceError, ToolError  # noqa: E402
 from fastmcp.prompts import Message  # noqa: E402
 from fastmcp.tools.base import InputRequiredToolResult  # noqa: E402
 from mcp.types import (  # noqa: E402
@@ -23,20 +23,74 @@ from mcp.types import (  # noqa: E402
     ElicitRequestFormParams,
     ElicitResult,
     InputRequiredResult,
-    ServerCapabilities,
 )
 
 from trelix.agent.loop import AgentLoop  # noqa: E402
 from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig  # noqa: E402
-from trelix.federation.registry import RepoRegistry  # noqa: E402
+from trelix.core.index_check import IndexNotFoundError, require_index  # noqa: E402
+from trelix.core.models import IndexedFile, Symbol  # noqa: E402
+from trelix.federation.registry import _DEFAULT_CONFIG, RepoRegistry  # noqa: E402
 from trelix.federation.retriever import FederatedRetriever  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
 from trelix.retrieval.retriever import Retriever  # noqa: E402
 from trelix.store.db import Database  # noqa: E402
 from trelix_mcp import __version__  # noqa: E402
+from trelix_mcp.arguments import (  # noqa: E402
+    check_absolute_repo_dir,
+    check_positive_weight,
+    check_repo_dir,
+    check_session_id,
+    check_text,
+)
+from trelix_mcp.budget import (  # noqa: E402
+    DEFAULT_BLAST_LIMIT,
+    DEFAULT_MAX_BODY_CHARS,
+    MAX_BLAST_LIMIT,
+    MAX_RESULT_CHARS_ENV,
+    BudgetConfigError,
+    Detail,
+    Limits,
+    bare_array_result,
+    blast_radius_remedy,
+    body_or_signature,
+    cap_session_query,
+    check_body_limit,
+    check_cursor,
+    clamp_page_size,
+    empty_bare_array,
+    fit_page,
+    fit_rows,
+    limits_from_env,
+    null_result,
+    truncate_body,
+)
+from trelix_mcp.confinement import (  # noqa: E402
+    LOGGED_VALUE_CHARS,
+    REFUSAL,
+    RepoConfinementMiddleware,
+    entries_inside_roots,
+    inside_roots,
+)
+from trelix_mcp.http import register_health_route  # noqa: E402
 from trelix_mcp.subscriptions import SubscriptionLimitExceeded, SubscriptionRegistry  # noqa: E402
+from trelix_mcp.tool_metadata import (  # noqa: E402
+    LISTING_CACHE_SCOPE,
+    LISTING_CACHE_TTL_SECONDS,
+    SERVER_INSTRUCTIONS,
+    ToolMetadata,
+)
 
-mcp = FastMCP("trelix", version=__version__)
+mcp = FastMCP(
+    "trelix",
+    version=__version__,
+    instructions=SERVER_INSTRUCTIONS,
+    cache_ttl=LISTING_CACHE_TTL_SECONDS,
+    cache_scope=LISTING_CACHE_SCOPE,
+    transforms=[ToolMetadata()],
+)
+# `GET /health` for `--transport http`; custom routes are read only by `http_app`, so stdio is
+# unaffected. Registered here, before any tool, so the route exists however the app is built.
+register_health_route(mcp)
 _log = logging.getLogger("trelix_mcp")
 
 # Retriever construction is the expensive part of every tool call that uses
@@ -49,81 +103,126 @@ _log = logging.getLogger("trelix_mcp")
 # path so relative/absolute spellings of the same repo share one entry.
 # Invalidated by index_codebase (see there) -- a re-index can switch
 # embedder providers, which changes what Retriever.__init__ needs to build.
-_retriever_cache: dict[str, Retriever] = {}
+# Bounded: an LRU of TRELIX_MCP_RETRIEVER_CACHE_SIZE entries (default 8), since
+# each one may hold an embedding model and a client can name any number of
+# distinct repositories. Insertion order is recency: a hit moves its entry to
+# the end, and _get_retriever drops entries from the front past the bound.
+_retriever_cache: OrderedDict[str, Retriever] = OrderedDict()
 _retriever_cache_lock = threading.Lock()
+
+# The repository roots every repo_path, federation path and trelix://repo/... URI must resolve
+# inside, set once by main() from --root and TRELIX_ALLOWED_REPO_ROOTS. Empty (the stdio default
+# with neither) confines nothing, which is what every client got before the flag existed.
+_allowed_roots: tuple[Path, ...] = ()
+
+
+def _install_confinement(roots: tuple[Path, ...]) -> None:
+    """Confine tool arguments and resource URIs to `roots`; with no roots, install nothing."""
+    global _allowed_roots
+    _allowed_roots = roots
+    if not roots:
+        return
+    _log.info("Confining repo paths to %s", [str(root) for root in roots])
+    mcp.add_middleware(RepoConfinementMiddleware(roots))
+
+
+def _confine_resource_repo(repo_path: str) -> None:
+    """Refuse a trelix://repo/... read whose repository lies outside the allowed roots.
+
+    Called first in each repo resource handler, where FastMCP has already parsed the URI into
+    `repo_path`, so the same value is checked and then used (a second URI parser in a middleware
+    could disagree with FastMCP's). A `ResourceError` reaches the client with this text verbatim.
+    Nothing to do when no roots are configured.
+    """
+    if not _allowed_roots:
+        return
+    if repo_path.strip() and inside_roots(repo_path, _allowed_roots):
+        return
+    raise ResourceError(REFUSAL.format(field="repo_path"))
+
+
+def _require_index(config: IndexConfig) -> None:
+    """Raise the tool error a read tool answers with when `config`'s repo has no index.
+
+    Every read tool calls this BEFORE it builds a Retriever, GraphBuilder, AgentLoop or
+    Database: opening a missing index creates one, and an empty index left behind makes a
+    repository that was never indexed look indexed. A `ToolError` is this server's normal
+    error result (`isError: true` with the message as text, the session carries on, and
+    clients such as the VS Code extension already show or swallow it). The words are the
+    CLI's: "No index found at <path>. Run trelix index <repo> first."
+    """
+    try:
+        require_index(config)
+    except IndexNotFoundError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+def _indexed_config(repo_path: str) -> IndexConfig:
+    """The IndexConfig of an indexed repository directory, or the tool error saying what is wrong.
+
+    `check_repo_dir` answers a blank path, a path that does not exist and a file before
+    `IndexConfig` sees the value. Its own validator raises a pydantic `ValidationError`, which
+    FastMCP forwards as a JSON-RPC "Invalid request parameters" error instead of a tool result (a
+    client such as the VS Code extension then sees an exception that names no argument), a blank
+    path resolves to the server's working directory, so the no-index message named that directory,
+    and a file was told to run `trelix index <file>`.
+    """
+    check_repo_dir(repo_path)
+    config = IndexConfig(repo_path=repo_path)
+    _require_index(config)
+    return config
+
+
+def _limits() -> Limits:
+    """The output limits in force for this call (see budget.py), as a tool error if unusable."""
+    try:
+        return limits_from_env()
+    except BudgetConfigError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def _get_retriever(repo_path: str) -> Retriever:
-    """Return a cached Retriever for repo_path, constructing one if needed."""
+    """Return a cached Retriever for repo_path, constructing one if needed.
+
+    The directory check comes before the cache lookup: a blank repo_path resolves to the server's
+    working directory, which may well be a cached repo. The cache keeps the
+    TRELIX_MCP_RETRIEVER_CACHE_SIZE most recently used entries (a hit counts as a use).
+    """
+    check_repo_dir(repo_path)
     key = str(Path(repo_path).resolve())
     with _retriever_cache_lock:
         cached = _retriever_cache.get(key)
         if cached is not None:
+            _retriever_cache.move_to_end(key)
             return cached
-        retriever = Retriever(IndexConfig(repo_path=repo_path))
+        size = _limits().retriever_cache_size
+        config = IndexConfig(repo_path=repo_path)
+        _require_index(config)
+        retriever = Retriever(config)
         _retriever_cache[key] = retriever
+        # Evicted, not closed: a tool call in another worker thread may still hold the entry
+        # (tools run in FastMCP's thread pool), and index_codebase already pops without closing.
+        # Its SQLite connection closes with the last reference.
+        while len(_retriever_cache) > size:
+            _retriever_cache.popitem(last=False)
         return retriever
 
 
-# Global subscription registry — tracks which MCP clients are watching which
-# trelix:// resource URIs.  notify_file_changed() fires notifications to all
-# active subscribers when trelix watch detects a file change.
+# Global subscription registry — records which subscription IDs were registered
+# (via the subscribe_resource tool) for which trelix:// resource URIs.  It lives in this
+# server process only; the `trelix watch` process has its own, empty one.
 _subscription_registry = SubscriptionRegistry(
     max_subscribers=int(os.environ.get("TRELIX_MCP_MAX_SUBSCRIBERS", "1000")),
     ttl_seconds=float(os.environ.get("TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS", "3600")),
 )
 
 # ---------------------------------------------------------------------------
-# MCP spec 2024-11-05 §Resources — declare resources.subscribe=True so that
-# MCP clients (Claude Code, Cursor, VS Code Copilot) know they may send
-# resources/subscribe requests.  FastMCP's low-level SDK hardcodes
-# subscribe=False when it builds ServerCapabilities, so we patch the
-# get_capabilities method on the server instance after construction.
-# subscribe and listChanged are independent optional fields; we only
-# opt-in to subscribe here — listChanged is handled separately by FastMCP's
-# notification_options.
-#
-# The wrapper is deliberately *args/**kwargs rather than a fixed
-# (notification_options, experimental_capabilities) signature: the mcp SDK's
-# own internal call sites for this method are not stable across SDK major
-# versions —
-#   mcp 1.x  Server.create_initialization_options() calls
-#            get_capabilities(notification_options, experimental_capabilities)
-#            — 2 positional args, no `extensions`/`protocol_version`.
-#   mcp 2.x  Server.create_initialization_options() calls
-#            get_capabilities(notification_options or ..., experimental_capabilities
-#            or ..., extensions if ... else ...) — 3 positional args.
-#   mcp 2.x  Server._handle_discover() calls
-#            get_capabilities(protocol_version=ctx.protocol_version) — 0
-#            positional args, one keyword-only arg unknown to the 1.x shape.
-# A fixed 2-positional-arg signature raises TypeError against the second and
-# third call shapes (confirmed against real mcp 2.1.1: "takes 2 positional
-# arguments but 3 were given"). Forwarding everything straight through to the
-# real bound method keeps this correct across SDK generations without
-# version-sniffing mcp's version at import time.
-# ---------------------------------------------------------------------------
-
-_orig_get_capabilities = mcp._mcp_server.get_capabilities
-
-
-def _get_capabilities_with_subscribe(*args: Any, **kwargs: Any) -> ServerCapabilities:
-    """Wrap get_capabilities to advertise resources.subscribe=True."""
-    caps = _orig_get_capabilities(*args, **kwargs)
-    if caps.resources is not None:
-        caps = caps.model_copy(
-            update={"resources": caps.resources.model_copy(update={"subscribe": True})}
-        )
-    return caps
-
-
-mcp._mcp_server.get_capabilities = _get_capabilities_with_subscribe  # type: ignore[method-assign]
-
-
-# ---------------------------------------------------------------------------
-# MCP Resource Subscription handlers (MCP spec 2024-11-05 §Resources)
-# Wire protocol: resources/subscribe → notifications/resources/updated → resources/read
-# The subscribe/unsubscribe tools register/deregister URIs in _subscription_registry.
-# Callers (trelix watch) call notify_file_changed() to fire the push notifications.
+# Resource subscription TOOLS. This server does not serve the MCP
+# resources/subscribe request, so it does not advertise resources.subscribe (the
+# capability is derived from the registered handlers, not forced).
+# The tools below only register/deregister URIs in _subscription_registry.
+# notify_file_changed() can push notifications/resources/updated for them, but only
+# when it runs inside this stdio server process, and nothing here starts a watcher.
 # ---------------------------------------------------------------------------
 
 
@@ -131,10 +230,11 @@ mcp._mcp_server.get_capabilities = _get_capabilities_with_subscribe  # type: ign
 def subscribe_resource(uri: str, subscription_id: str) -> dict[str, Any]:
     """Register a subscription for a trelix:// resource URI.
 
-    MCP clients call this after receiving resources.subscribe=True in capabilities.
-    When the resource changes (e.g. trelix watch detects a file edit), the server
-    pushes notifications/resources/updated carrying only the URI — no content.
-    The client then calls resources/read to fetch the updated content.
+    Registers the URI in this server process's in-memory subscription registry. The
+    server does not advertise resources.subscribe and does not serve resources/subscribe,
+    so this tool is the only way to register. A notifications/resources/updated (URI
+    only, no content) is sent for a registered URI only if a file watcher runs inside
+    this server process; nothing starts one today, so none is delivered yet.
 
     Args:
         uri: The trelix:// resource URI to watch (e.g. trelix://repo//path/manifest).
@@ -204,6 +304,7 @@ def resource_repo_index_stats(repo_path: str) -> str:
     Cheap by design — three COUNT(*) queries, no embedder and no graph build — so an
     agent can check whether a repo is indexed at all before committing to a search.
     """
+    _confine_resource_repo(repo_path)
     from trelix_mcp.resources import get_index_stats
 
     _log.info("resource_repo_index_stats repo_path=%r", repo_path)
@@ -217,6 +318,7 @@ def resource_repo_manifest(repo_path: str) -> str:
     Returns JSON with ``file_count`` and ``files[]`` list.
     Example URI: ``trelix://repo//Users/you/myrepo/manifest``
     """
+    _confine_resource_repo(repo_path)
     from trelix_mcp.resources import get_repo_manifest
 
     return get_repo_manifest(repo_path)
@@ -229,6 +331,7 @@ def resource_symbol_source(repo_path: str, qualified_name: str) -> str:
     Returns JSON with ``qualified_name``, ``kind``, ``signature``, ``body``.
     Example URI: ``trelix://repo//Users/you/myrepo/symbols/AuthService.login``
     """
+    _confine_resource_repo(repo_path)
     from trelix_mcp.resources import get_symbol_source
 
     return get_symbol_source(repo_path, qualified_name)
@@ -330,6 +433,7 @@ def search_code(
     cursor: int = 0,
     intent_hint: str | None = None,
     hyde_snippet_hint: str | None = None,
+    detail: Detail = "detailed",
 ) -> dict[str, Any]:
     """
     Search the indexed codebase using natural language queries.
@@ -345,9 +449,17 @@ def search_code(
     - Find similar patterns to follow when adding code
 
     📄 Pagination:
-    - Use cursor=0 for first page (default).
+    - Use cursor=0 for first page (default). A negative cursor is an error.
     - If next_cursor is not null, pass it as cursor for the next page.
-    - k controls page size.
+    - k controls page size, from 1 up to TRELIX_MCP_MAX_K (default 50); page_size
+      in the response is the k the server used.
+    - The response text is capped at TRELIX_MCP_MAX_RESULT_CHARS (default
+      15000). When results are dropped to fit, truncated is true, omitted counts
+      them and next_cursor points at the first dropped result.
+
+    🪶 Detail:
+    - detail="detailed" (default) returns each result's body (first 800 chars).
+    - detail="concise" drops body and returns a one-line signature instead.
 
     🧭 Intent hint (optional):
     - If the calling agent already knows the query's intent, pass it as
@@ -360,8 +472,13 @@ def search_code(
       when intent_hint is also valid.
 
     Returns:
-        {"results": [...], "next_cursor": int|null, "total_available": int}
+        {"results": [...], "next_cursor": int|null, "total_available": int,
+         "page_size": int, "truncated": bool, "omitted": int}
     """
+    limits = _limits()
+    check_cursor(cursor)
+    check_text(query, "query", "the text to search for")
+    k = clamp_page_size(k, limits.max_k)
     _log.info("search_code query=%r repo=%s k=%d cursor=%d", query, repo_path, k, cursor)
     from trelix.retrieval.planner.models import plan_from_intent_hint
 
@@ -373,26 +490,26 @@ def search_code(
     ctx = _get_retriever(repo_path).retrieve(query, plan=plan)
     all_results = ctx.results
 
-    page = all_results[cursor : cursor + k]
-    next_cursor = cursor + k if cursor + k < len(all_results) else None
-
-    return {
-        "results": [
-            {
-                "file": r.file.rel_path,
-                "symbol": r.symbol.qualified_name,
-                "kind": r.symbol.kind.value,
-                "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
-                "score": round(r.score, 4),
-                "source": r.source,
-                "body": r.symbol.body[:800],
-                "language": r.file.language.value,
-            }
-            for r in page
-        ],
-        "next_cursor": next_cursor,
-        "total_available": len(all_results),
-    }
+    rows = [
+        {
+            "file": r.file.rel_path,
+            "symbol": r.symbol.qualified_name,
+            "kind": r.symbol.kind.value,
+            "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
+            "score": round(r.score, 4),
+            "source": r.source,
+            **body_or_signature(r.symbol, detail, 800),
+            "language": r.file.language.value,
+        }
+        for r in all_results[cursor : cursor + k]
+    ]
+    return fit_page(
+        rows,
+        cursor=cursor,
+        page_size=k,
+        total=len(all_results),
+        max_chars=limits.max_result_chars,
+    )
 
 
 @mcp.tool()
@@ -419,6 +536,7 @@ def index_codebase(
     Progress notifications are sent if the MCP client supports them.
     """
     _log.info("index_codebase repo=%s provider=%s", repo_path, provider)
+    check_repo_dir(repo_path)
 
     # Omit the kwarg when unset so pydantic-settings falls through to
     # TRELIX_EMBEDDER_PROVIDER — passing provider="local" unconditionally
@@ -455,39 +573,49 @@ def index_codebase(
     return stats
 
 
+def _find_symbol(db: Database, qualified_name: str) -> tuple[Symbol, IndexedFile] | None:
+    """The symbol named `qualified_name` and its file, or None when the index has no match."""
+    rows = db.get_symbol_by_name(qualified_name)
+    if not rows:
+        # "Class.method" may be stored under another prefix: fall back to the last segment.
+        rows = db.get_symbol_by_name(qualified_name.split(".")[-1])
+    if not rows:
+        return None
+    return db.get_symbol_with_file(rows[0].id)  # type: ignore[arg-type]
+
+
 @mcp.tool()
-def get_symbol(qualified_name: str, repo_path: str) -> dict[str, Any] | None:
+def get_symbol(
+    qualified_name: str, repo_path: str, max_body_chars: int = DEFAULT_MAX_BODY_CHARS
+) -> dict[str, Any] | None:
     """Look up a symbol by its fully-qualified name.
 
     Args:
         qualified_name: e.g. "MyClass.my_method" or "my_function".
         repo_path: Absolute path to the repository root.
+        max_body_chars: Longest body to return, in characters (default 20000;
+            0 means no limit). A longer body is cut and body_truncated is true.
 
     Returns:
         Symbol dict or None if not found.  Keys: name, qualified_name, kind,
-        file, line_start, line_end, signature, docstring, body, language.
+        file, line_start, line_end, signature, docstring, body, language,
+        body_truncated.
     """
     _log.info("get_symbol qualified_name=%r repo_path=%r", qualified_name, repo_path)
-    config = IndexConfig(repo_path=repo_path)
+    check_body_limit(max_body_chars)
+    check_text(
+        qualified_name, "qualified_name", "the symbol's qualified name, e.g. MyClass.my_method"
+    )
+    config = _indexed_config(repo_path)
     db = Database(config.db_path_absolute)
-    rows = db.get_symbol_by_name(qualified_name)
-    if not rows:
-        # Fall back to bare name lookup
-        name_only = qualified_name.split(".")[-1]
-        rows = db.get_symbol_by_name(name_only)
-        # Filter to exact qualified_name match when possible
-        exact = [s for s in rows if s.qualified_name == qualified_name]
-        if exact:
-            rows = exact
-
-    if not rows:
-        return None
-
-    sym = rows[0]
-    sym_file = db.get_symbol_with_file(sym.id)  # type: ignore[arg-type]
-    if sym_file is None:
-        return None
-    symbol, file = sym_file
+    try:
+        found = _find_symbol(db, qualified_name)
+    finally:
+        db.close()
+    if found is None:
+        return null_result()
+    symbol, file = found
+    body, body_truncated = truncate_body(symbol.body, max_body_chars)
     return {
         "name": symbol.name,
         "qualified_name": symbol.qualified_name,
@@ -497,13 +625,16 @@ def get_symbol(qualified_name: str, repo_path: str) -> dict[str, Any] | None:
         "line_end": symbol.line_end,
         "signature": symbol.signature,
         "docstring": symbol.docstring,
-        "body": symbol.body,
+        "body": body,
         "language": file.language,
+        "body_truncated": body_truncated,
     }
 
 
 @mcp.tool()
-def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
+def blast_radius(
+    symbol_name: str, repo_path: str, limit: int = DEFAULT_BLAST_LIMIT
+) -> list[dict[str, Any]]:
     """Find all symbols that depend on (call or import) a given symbol.
 
     Useful for impact analysis: "if I change X, what else might break?"
@@ -511,6 +642,10 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
     Args:
         symbol_name: Name or qualified name of the symbol to analyse.
         repo_path: Absolute path to the repository root.
+        limit: Most dependents to return, from 1 to 500 (default 100). The list is also
+            capped at TRELIX_MCP_MAX_RESULT_CHARS characters (default 15000). When
+            dependents are left out, the result carries a second text block saying so and
+            `_meta.trelix` has total_available and omitted.
 
     Answered from the resolved call edges in the index, not by semantic search.
 
@@ -537,8 +672,11 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
         Deduplicated list of dependent-symbol dicts with keys: file, symbol,
         kind, line_start, language. Empty when the symbol is unknown to the index.
     """
-    _log.info("blast_radius symbol_name=%r repo_path=%r", symbol_name, repo_path)
-    config = IndexConfig(repo_path=repo_path)
+    max_chars = _limits().max_result_chars
+    limit = max(1, min(limit, MAX_BLAST_LIMIT))
+    _log.info("blast_radius symbol_name=%r repo_path=%r limit=%d", symbol_name, repo_path, limit)
+    check_text(symbol_name, "symbol_name", "the name or qualified name of the symbol to analyse")
+    config = _indexed_config(repo_path)
     db = Database(config.db_path_absolute)
     try:
         # A bare name can match several symbols (same method name in different
@@ -547,7 +685,7 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
         targets = db.get_symbol_by_name(symbol_name)
         target_ids = {s.id for s in targets if s.id is not None}
         if not target_ids:
-            return []
+            return empty_bare_array()
 
         caller_ids: set[int] = set()
         for target_id in target_ids:
@@ -592,7 +730,13 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
                     else str(file.language),
                 }
             )
-        return output
+        return bare_array_result(
+            output[:limit],
+            total_available=len(output),
+            max_chars=max_chars,
+            noun="dependents",
+            remedy=lambda kept: blast_radius_remedy(kept, limit=limit, total=len(output)),
+        )
     finally:
         db.close()
 
@@ -647,11 +791,10 @@ def build_knowledge_graph(
     GET /graph/communities call GraphBuilder(config).build() on every request — a full
     Louvain pass, a PageRank rebuild and two metadata saves — and that is untouched here.
     """
-    from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
 
     _log.info("build_knowledge_graph repo=%s concepts=%s", repo_path, extract_concepts)
-    config = IndexConfig(repo_path=repo_path)
+    config = _indexed_config(repo_path)
     result = GraphBuilder(config).build(extract_concepts=extract_concepts)
 
     summary = list(result.community_summary or [])
@@ -688,7 +831,9 @@ def build_knowledge_graph(
 
 
 @mcp.tool()
-def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict[str, Any]]:
+def graph_search_mcp(
+    query: str, repo_path: str, k: int = 10, detail: Detail = "detailed"
+) -> list[dict[str, Any]]:
     """
     Graph-traversal search: find structurally related symbols by starting
     from semantically similar seeds and following code relationships.
@@ -699,37 +844,59 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict[str, 
     - "What other code is connected to X?" — follow call/import/type edges
     - "Find the blast radius of a class" — who calls or imports it?
     - "What lives in the same architectural cluster as X?"
+
+    📏 Size:
+    - k is the most results, from 1 up to TRELIX_MCP_MAX_K (default 50).
+    - detail="detailed" (default) returns each body (first 600 chars); detail="concise"
+      returns a one-line signature instead.
+    - The list is capped at TRELIX_MCP_MAX_RESULT_CHARS characters (default 15000). When
+      results are left out, the result carries a second text block saying so and
+      `_meta.trelix` has total_available and omitted.
     """
-    from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
     from trelix.graph.search import graph_search
 
+    limits = _limits()
+    k = clamp_page_size(k, limits.max_k)
+    check_text(query, "query", "the text to search for")
     _log.info("graph_search_mcp query=%r repo=%s k=%d", query, repo_path, k)
-    config = IndexConfig(repo_path=repo_path)
 
-    # First find seed symbols via standard retrieval
-    ctx = _get_retriever(repo_path).retrieve(query)
+    # First find seed symbols via standard retrieval. _get_retriever refuses a repo_path that is
+    # not a directory or has no index, so GraphBuilder below never sees one.
+    retriever = _get_retriever(repo_path)
+    ctx = retriever.retrieve(query)
     seed_ids = [r.chunk.symbol_id for r in ctx.results[:5]]
 
     if not seed_ids:
-        return []
+        return empty_bare_array()
 
-    # Then expand via graph — reuse the DB already opened by GraphBuilder/CodeGraph
-    build_result = GraphBuilder(config).build(extract_concepts=False)
+    # Then expand via graph, on the retriever's own (checked) config — reuse the DB already
+    # opened by GraphBuilder/CodeGraph
+    build_result = GraphBuilder(retriever.config).build(extract_concepts=False)
     db = build_result.code_graph._db
     graph_results = graph_search(db, build_result.code_graph, seed_ids, depth=2, max_results=k)
 
-    return [
+    rows = [
         {
             "file": r.file.rel_path,
             "symbol": r.symbol.qualified_name,
             "kind": r.symbol.kind.value,
             "score": round(r.score, 4),
             "source": r.source,
-            "body": r.symbol.body[:600],
+            **body_or_signature(r.symbol, detail, 600),
         }
         for r in graph_results[:k]
     ]
+    return bare_array_result(
+        rows,
+        total_available=len(rows),
+        max_chars=limits.max_result_chars,
+        noun="results",
+        remedy=(
+            f"The list is bounded by {MAX_RESULT_CHARS_ENV}, not by k; "
+            'use detail="concise" for shorter results, or raise it, to see more.'
+        ),
+    )
 
 
 # Fixed, cursor-independent per-repo fan-out width for federation_search_all.
@@ -739,9 +906,58 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict[str, 
 _FEDERATION_SEARCH_ALL_FETCH_WIDTH = 100
 
 
+def _outside_roots_key(outside: int) -> dict[str, int]:
+    """`repos_outside_roots` for every federation_search_all response while roots are configured.
+
+    Absent when nothing is confined, so the unconfined responses keep the exact keys they had.
+    """
+    return {"repos_outside_roots": outside} if _allowed_roots else {}
+
+
 class ConfigPathNotAllowedError(ValueError):
-    """Raised when a caller-supplied federation config_path resolves outside
-    every allowlisted root."""
+    """Raised when a caller-supplied federation config_path is refused: it resolves outside
+    every allowlisted directory, or the file there is not a repository registry."""
+
+
+# The whole refusal, like confinement.REFUSAL: no path, no directory name. The resolved value and
+# the allowed directories go to the operator log only.
+CONFIG_PATH_DIRECTORY_REFUSAL = "config_path is not inside an allowed config directory"
+CONFIG_PATH_REGISTRY_REFUSAL = "config_path is not a repository registry"
+
+
+def _config_path_refusal(message: str, resolved: Path, detail: str) -> ConfigPathNotAllowedError:
+    """The error to raise for a refused config_path; `message` is all the client learns.
+
+    `resolved` is caller input: `%r` escapes newlines and quotes, and the cut keeps a pasted file
+    from flooding the log, as for `RepoConfinementMiddleware._refuse_if_outside`.
+    """
+    _log.warning("Refused config_path=%r: %s", str(resolved)[:LOGGED_VALUE_CHARS], detail)
+    return ConfigPathNotAllowedError(message)
+
+
+def _is_registry_file(path: Path) -> bool:
+    """True when `path` may be loaded and then saved as a repository registry.
+
+    That is a name ending in `.json` whose file is missing (the first add creates it), empty, or a
+    JSON object with a `repos` list. `RepoRegistry.load` reads any other existing file as an empty
+    registry that keeps the path, so the next `save()` would overwrite it (`index.db`, the operator
+    env file) with registry JSON: such a file is refused instead.
+    """
+    if not path.name.endswith(".json"):
+        return False
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):  # unreadable, a directory, or not text
+        return False
+    if not text:
+        return True
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and isinstance(data.get("repos"), list)
 
 
 def _confine_federation_config_path(config_path: str | None) -> str | None:
@@ -762,20 +978,42 @@ def _confine_federation_config_path(config_path: str | None) -> str | None:
       closest available analog to "the repo-local .trelix/" the docstring
       already promises)
 
+    The file there must also be a registry (see `_is_registry_file`): a name
+    ending in .json that is missing, empty, or a JSON object with a `repos`
+    list. An existing file of any other kind is never loaded as an empty
+    registry and overwritten.
+
     Returns None unchanged (the RepoRegistry default). Raises
-    ConfigPathNotAllowedError if config_path resolves outside both roots.
+    ConfigPathNotAllowedError, carrying a fixed text, if config_path resolves
+    outside both roots or is not a registry; the detail goes to the log only.
+    A blank config_path is a ToolError like every other blank argument:
+    Path("").resolve() is the process cwd, and the refusal would otherwise
+    name that directory and the allowed roots, none of which the caller passed.
     """
     if config_path is None:
         return None
-
-    from trelix.federation.registry import _DEFAULT_CONFIG
-
-    resolved = Path(config_path).resolve()
+    check_text(
+        config_path,
+        "config_path",
+        "a path inside ~/.config/trelix or <cwd>/.trelix, or omit it for the default registry",
+    )
+    try:
+        resolved = Path(config_path).resolve()
+    except (OSError, ValueError, RuntimeError):
+        # A NUL byte or a symlink loop: the same fixed refusal, not the exception's own text.
+        raise _config_path_refusal(
+            CONFIG_PATH_DIRECTORY_REFUSAL, Path(config_path), "cannot be resolved"
+        ) from None
     allowed_roots = [_DEFAULT_CONFIG.parent, Path.cwd() / ".trelix"]
     if not any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots):
-        raise ConfigPathNotAllowedError(
-            f"config_path must resolve inside one of {[str(r) for r in allowed_roots]}, "
-            f"got {resolved}"
+        raise _config_path_refusal(
+            CONFIG_PATH_DIRECTORY_REFUSAL,
+            resolved,
+            f"outside the allowed config directories {[str(root) for root in allowed_roots]}",
+        )
+    if not _is_registry_file(resolved):
+        raise _config_path_refusal(
+            CONFIG_PATH_REGISTRY_REFUSAL, resolved, "not a .json repository registry"
         )
     return str(resolved)
 
@@ -784,26 +1022,34 @@ def _confine_federation_config_path(config_path: str | None) -> str | None:
 def federation_list_repos(config_path: str | None = None) -> dict[str, Any]:
     """List all repos registered for federated (multi-repo) search.
 
+    When the server runs with --root or TRELIX_ALLOWED_REPO_ROOTS, a
+    registered repo outside those roots is not listed or counted, and every
+    response carries repos_outside_roots (how many were left out).
+
     Args:
-        config_path: Optional path to a custom repos.json. Must resolve
-            inside ~/.config/trelix/ or <cwd>/.trelix/. Defaults to
+        config_path: Optional path to a custom repos.json. Must be a .json
+            registry file (missing, empty or already a registry) inside
+            ~/.config/trelix/ or <cwd>/.trelix/. Defaults to
             ~/.config/trelix/repos.json.
 
     Returns:
         {"repos": [{"alias": str, "path": str, "weight": float}, ...],
          "count": int, "error": str|None}
+        With --root or TRELIX_ALLOWED_REPO_ROOTS set, every response also has
+        "repos_outside_roots": int.
     """
     _log.info("federation_list_repos config_path=%r", config_path)
     try:
         confined_path = _confine_federation_config_path(config_path)
     except ConfigPathNotAllowedError as exc:
-        return {"repos": [], "count": 0, "error": str(exc)}
+        return {"repos": [], "count": 0, "error": str(exc), **_outside_roots_key(0)}
     registry = RepoRegistry.load(confined_path)
-    entries = registry.list()
+    entries, outside = entries_inside_roots(registry.list(), _allowed_roots)
     return {
         "repos": [{"alias": e.alias, "path": e.path, "weight": e.weight} for e in entries],
         "count": len(entries),
         "error": None,
+        **_outside_roots_key(outside),
     }
 
 
@@ -828,13 +1074,17 @@ def federation_add_repo(
         path: Absolute path to the repo root.
         weight: RRF weight multiplier (default 1.0; higher = ranked higher
             in federation_search_all's fused results).
-        config_path: Optional path to a custom repos.json. Must resolve
-            inside ~/.config/trelix/ or <cwd>/.trelix/.
+        config_path: Optional path to a custom repos.json. Must be a .json
+            registry file (missing, empty or already a registry) inside
+            ~/.config/trelix/ or <cwd>/.trelix/.
 
     Returns:
         {"added": bool, "alias": str, "path": str, "error": str|None}
     """
     _log.info("federation_add_repo alias=%r path=%r weight=%s", alias, path, weight)
+    check_text(alias, "alias", "a short unique name for the repo, e.g. auth-service")
+    check_absolute_repo_dir(path, "path")
+    check_positive_weight(weight)
     try:
         confined_path = _confine_federation_config_path(config_path)
     except ConfigPathNotAllowedError as exc:
@@ -853,24 +1103,33 @@ def federation_add_repo(
 def federation_remove_repo(alias: str, config_path: str | None = None) -> dict[str, Any]:
     """Unregister a repo from federated search by alias.
 
+    When the server runs with --root or TRELIX_ALLOWED_REPO_ROOTS, a
+    registered repo outside those roots cannot be removed: its alias is
+    answered exactly like an unregistered one, and the registry file is not
+    written.
+
     Args:
         alias: The alias to remove. No-op (removed=False) if not registered.
-        config_path: Optional path to a custom repos.json. Must resolve
-            inside ~/.config/trelix/ or <cwd>/.trelix/.
+        config_path: Optional path to a custom repos.json. Must be a .json
+            registry file (missing, empty or already a registry) inside
+            ~/.config/trelix/ or <cwd>/.trelix/.
 
     Returns:
         {"removed": bool, "alias": str, "error": str|None}
     """
     _log.info("federation_remove_repo alias=%r", alias)
+    check_text(alias, "alias", "the alias to unregister (see federation_list_repos)")
     try:
         confined_path = _confine_federation_config_path(config_path)
     except ConfigPathNotAllowedError as exc:
         return {"removed": False, "alias": alias, "error": str(exc)}
     registry = RepoRegistry.load(confined_path)
-    existed = any(e.alias == alias for e in registry.list())
+    visible, _ = entries_inside_roots(registry.list(), _allowed_roots)
+    if not any(e.alias == alias for e in visible):
+        return {"removed": False, "alias": alias, "error": None}
     registry.remove(alias)
     registry.save()
-    return {"removed": existed, "alias": alias, "error": None}
+    return {"removed": True, "alias": alias, "error": None}
 
 
 @mcp.tool()
@@ -879,17 +1138,24 @@ def federation_search_all(
     k: int = 10,
     cursor: int = 0,
     config_path: str | None = None,
+    detail: Detail = "detailed",
 ) -> dict[str, Any]:
     """Search across ALL registered repos simultaneously (federated search).
 
     ⚠️ IMPORTANT:
     - Requires repos to already be registered via federation_add_repo AND
-      already indexed (run index_codebase on each repo path beforehand).
+      already indexed (run index_codebase on each repo path beforehand). A
+      registered repo with no index is skipped, not searched, and not counted
+      in repos_searched; repos_unindexed names its alias, and if none of the
+      queried repos is indexed, error says so.
     - Results are merged via Reciprocal Rank Fusion weighted by each repo's
       registered weight, then deduplicated.
     - Only the first TRELIX_FEDERATION_MAX_REPOS registered repos (default
       50) are actually queried; repos_skipped reports how many were
       omitted.
+    - When the server runs with --root or TRELIX_ALLOWED_REPO_ROOTS, a
+      registered repo outside those roots is not searched, and every
+      response carries repos_outside_roots (how many were left out).
 
     🎯 When to Use:
     - Cross-service / cross-repo questions ("where is auth handled across
@@ -899,12 +1165,26 @@ def federation_search_all(
     📄 Pagination: same cursor/k contract as search_code — pages are sliced
     from one fixed-width fetch, independent of cursor, so page contents are
     stable across calls (results don't shift/duplicate/vanish between
-    pages the way a cursor-scaled fetch width would cause).
+    pages the way a cursor-scaled fetch width would cause). k is clamped to
+    1..TRELIX_MCP_MAX_K, a negative cursor is an error, and the text is capped
+    at TRELIX_MCP_MAX_RESULT_CHARS (see search_code).
+
+    🪶 Detail: detail="concise" drops each body and returns a one-line signature.
 
     Returns:
         {"results": [...], "next_cursor": int|None, "total_available": int,
-         "repos_searched": int, "repos_skipped": int, "error": str|None}
+         "page_size": int, "truncated": bool, "omitted": int,
+         "repos_searched": int, "repos_skipped": int,
+         "repos_unindexed": [alias, ...], "error": str|None}
+        The error and empty-registry responses keep their shorter shape (no
+        page_size, truncated, omitted or repos_unindexed). With --root or
+        TRELIX_ALLOWED_REPO_ROOTS set, every response also has
+        "repos_outside_roots": int.
     """
+    limits = _limits()
+    check_cursor(cursor)
+    check_text(query, "query", "the text to search for")
+    k = clamp_page_size(k, limits.max_k)
     _log.info("federation_search_all query=%r k=%d cursor=%d", query, k, cursor)
     try:
         confined_path = _confine_federation_config_path(config_path)
@@ -916,9 +1196,13 @@ def federation_search_all(
             "repos_searched": 0,
             "repos_skipped": 0,
             "error": str(exc),
+            **_outside_roots_key(0),
         }
     registry = RepoRegistry.load(confined_path)
-    entries = registry.list()
+    entries, outside = entries_inside_roots(registry.list(), _allowed_roots)
+    if outside:
+        # Search only what the roots allow: a registry holding the kept entries, at the same path.
+        registry = RepoRegistry(confined_path or str(_DEFAULT_CONFIG), entries)
     if not entries:
         return {
             "results": [],
@@ -927,38 +1211,60 @@ def federation_search_all(
             "repos_searched": 0,
             "repos_skipped": 0,
             "error": None,
+            **_outside_roots_key(outside),
         }
 
     max_repos = RetrievalConfig().federation_max_repos
     fed = FederatedRetriever(registry, max_repos=max_repos)
-    repos_searched = fed.repos_queried_count(len(entries))
-    repos_skipped = len(entries) - repos_searched
+    repos_queried = fed.repos_queried_count(len(entries))
+    repos_skipped = len(entries) - repos_queried
+
+    # A registered repo with no index is not searched (searching it would create the empty
+    # index that makes it look indexed), so it is not counted in repos_searched. When that
+    # leaves nothing to search, say why instead of returning an empty page that reads as
+    # "no matches".
+    unindexed = fed.unindexed_repos()
+    repos_searched = repos_queried - len(unindexed)
+    if unindexed and repos_searched == 0:
+        return {
+            "results": [],
+            "next_cursor": None,
+            "total_available": 0,
+            "repos_searched": 0,
+            "repos_skipped": repos_skipped,
+            "error": " ".join(str(missing) for _, missing in unindexed),
+            **_outside_roots_key(outside),
+        }
 
     all_results = fed.retrieve(query, k=_FEDERATION_SEARCH_ALL_FETCH_WIDTH)
 
-    page = all_results[cursor : cursor + k]
-    next_cursor = cursor + k if cursor + k < len(all_results) else None
-
-    return {
-        "results": [
-            {
-                "repo": r.source.split(":")[0] if ":" in r.source else "",
-                "file": r.file.rel_path,
-                "symbol": r.symbol.qualified_name,
-                "kind": r.symbol.kind.value,
-                "score": round(r.score, 4),
-                "source": r.source,
-                "body": r.symbol.body[:800],
-                "language": r.file.language.value,
-            }
-            for r in page
-        ],
-        "next_cursor": next_cursor,
-        "total_available": len(all_results),
-        "repos_searched": repos_searched,
-        "repos_skipped": repos_skipped,
-        "error": None,
-    }
+    rows = [
+        {
+            "repo": r.source.split(":")[0] if ":" in r.source else "",
+            "file": r.file.rel_path,
+            "symbol": r.symbol.qualified_name,
+            "kind": r.symbol.kind.value,
+            "score": round(r.score, 4),
+            "source": r.source,
+            **body_or_signature(r.symbol, detail, 800),
+            "language": r.file.language.value,
+        }
+        for r in all_results[cursor : cursor + k]
+    ]
+    return fit_page(
+        rows,
+        cursor=cursor,
+        page_size=k,
+        total=len(all_results),
+        max_chars=limits.max_result_chars,
+        extra={
+            "repos_searched": repos_searched,
+            "repos_skipped": repos_skipped,
+            "repos_unindexed": [entry.alias for entry, _ in unindexed],
+            "error": None,
+            **_outside_roots_key(outside),
+        },
+    )
 
 
 def _extract_elicit_answer(ctx: Context | None) -> str | None:
@@ -1029,6 +1335,11 @@ def ask_agent(
         an InputRequiredToolResult when the agent needs a clarifying answer
         before it can continue.
     """
+    check_text(query, "query", "the question to answer")
+    if session_id is not None:
+        check_session_id(
+            session_id, "the session_id a previous answer returned, or omit it for a new session"
+        )
     request_state = ctx.request_state if ctx is not None else None
     resolved_session_id = request_state or session_id
     client_answer = _extract_elicit_answer(ctx)
@@ -1046,7 +1357,7 @@ def ask_agent(
     _log.info(
         "ask_agent query=%r repo=%s session_id=%r", effective_query, repo_path, resolved_session_id
     )
-    config = IndexConfig(repo_path=repo_path)
+    config = _indexed_config(repo_path)
     config.retrieval.agentic_enabled = True
     loop = AgentLoop(config)
     result = loop.run(effective_query, session_id=resolved_session_id)
@@ -1092,23 +1403,39 @@ def agent_list_sessions(repo_path: str, limit: int = 50) -> dict[str, Any]:
 
     Args:
         repo_path: Absolute path to the repository root.
-        limit: Max sessions to return (default 50).
+        limit: Max sessions to return, from 1 up to TRELIX_MCP_MAX_K (default 50).
+            The text is also capped at TRELIX_MCP_MAX_RESULT_CHARS characters; when
+            the oldest sessions are left out, truncated is true and omitted counts them.
 
     Returns:
         {"sessions": [{"session_id", "created_at", "last_active_at", "query",
-         "turn_count"}, ...], "count": int}
+         "turn_count"}, ...], "count": int, "page_size": int, "truncated": bool,
+         "omitted": int}. query is the session's most recent prompt, cut to its first 300
+        characters, and then the session also has query_truncated: true.
     """
+    limits = _limits()
+    limit = clamp_page_size(limit, limits.max_k)
     _log.info("agent_list_sessions repo=%s limit=%d", repo_path, limit)
-    config = IndexConfig(repo_path=repo_path)
+    config = _indexed_config(repo_path)
     db = Database(config.db_path_absolute)
     try:
         max_age = config.retrieval.agent_session_max_age_seconds
         if max_age > 0:
             db.evict_stale_agent_sessions(max_age)
-        sessions = db.list_agent_sessions(limit=limit)
+        sessions = [cap_session_query(row) for row in db.list_agent_sessions(limit=limit)]
     finally:
         db.close()
-    return {"sessions": sessions, "count": len(sessions)}
+
+    def build(kept: list[dict[str, Any]], omitted: int) -> dict[str, Any]:
+        return {
+            "sessions": kept,
+            "count": len(kept),
+            "page_size": limit,
+            "truncated": omitted > 0,
+            "omitted": omitted,
+        }
+
+    return fit_rows(sessions, build, limits.max_result_chars)
 
 
 @mcp.tool()
@@ -1123,7 +1450,8 @@ def agent_clear_session(repo_path: str, session_id: str) -> dict[str, Any]:
         {"cleared": bool, "session_id": str}
     """
     _log.info("agent_clear_session repo=%s session_id=%r", repo_path, session_id)
-    config = IndexConfig(repo_path=repo_path)
+    check_session_id(session_id, "the session_id to delete (see agent_list_sessions)")
+    config = _indexed_config(repo_path)
     db = Database(config.db_path_absolute)
     try:
         existed = db.delete_agent_session(session_id)
@@ -1133,23 +1461,9 @@ def agent_clear_session(repo_path: str, session_id: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Entry point for the trelix-mcp server (stdio transport).
-
-    Parses argv only for --help/--version/unknown-flag rejection — the normal path (no
-    args, launched by an MCP client's server config) falls straight through to running
-    the server, unchanged from before this parser existed.
+    """Console-script entry point (`trelix-mcp = trelix_mcp.server:main`); the CLI lives in
+    `trelix_mcp.cli`.
     """
-    parser = argparse.ArgumentParser(
-        prog="trelix-mcp",
-        description="MCP server for trelix — semantic code search over stdio.",
-    )
-    parser.add_argument("--version", action="version", version=f"trelix-mcp {__version__}")
-    parser.parse_args()
+    from trelix_mcp.cli import main as cli_main  # lazy: trelix_mcp.cli imports this module
 
-    def _handle_sigterm(signum: int, frame: Any) -> None:
-        _log.info("Received SIGTERM — shutting down")
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, _handle_sigterm)
-    _log.info("trelix-mcp starting (transport=stdio)")
-    mcp.run(transport="stdio")
+    cli_main()

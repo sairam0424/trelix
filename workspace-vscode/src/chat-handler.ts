@@ -184,14 +184,17 @@ async function handleImpact(
         return;
     }
     stream.progress(`Analyzing the blast radius of ${symbolName}…`);
-    const entries = await client.blastRadius(symbolName, repoPath);
-    if (entries.length === 0) {
+    const { entries, total } = await client.blastRadius(symbolName, repoPath);
+    if (total === 0) {
         stream.markdown(`Nothing depends on \`${symbolName}\`.`);
         return;
     }
 
+    // `total` is the real count; the server may have cut the `entries` list.
+    const cut =
+        total > entries.length ? `, showing the first ${entries.length}` : "";
     stream.markdown(
-        `\`${symbolName}\` has ${entries.length} dependent(s):\n\n`,
+        `\`${symbolName}\` has ${total} dependent(s)${cut}:\n\n`,
     );
     for (const e of entries) {
         const location = toReference(

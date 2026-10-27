@@ -17,8 +17,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from trelix.core.index_check import IndexNotFoundError, require_index
 from trelix.llm.finish_reasons import CONTENT_FILTER, LENGTH, PAUSED, REFUSAL, STOP
+from trelix.llm.offline import PROMPT_TRUNCATED
 from trelix.llm.prompt import fenced_block
+from trelix.retrieval.otel_tracing import pipeline_stage_span
 from trelix.review.hunk_status import (
     HunkResult,
     HunkStatus,
@@ -134,6 +137,16 @@ def _error_result(hunk: DiffHunk, detail: str) -> HunkResult:
     return HunkResult(hunk.file_path, hunk.new_start, HunkStatus.ERROR, detail)
 
 
+def _prompt_truncated(response: Any) -> bool:
+    """True when the backend saw a local server cut the prompt (`ChatResponse.signals`).
+
+    Only a list counts: a reply whose `signals` is some other object (a test double) is read as
+    carrying no signal rather than guessed at.
+    """
+    signals = getattr(response, "signals", None)
+    return isinstance(signals, list) and PROMPT_TRUNCATED in signals
+
+
 class DiffReviewer:
     """
     Retrieve-augmented code reviewer for git diffs.
@@ -151,7 +164,17 @@ class DiffReviewer:
         self.last_outcome = ReviewOutcome()
 
     def _get_retriever(self) -> Any:
+        """The Retriever for this repository, or None when it has no index yet.
+
+        A repository nobody indexed is still reviewed, from the diff alone: there is
+        nothing to retrieve. Building a Retriever there would only create an empty index
+        (see `trelix.core.index_check`), so it is skipped.
+        """
         if self._retriever is None:
+            try:
+                require_index(self._config)
+            except IndexNotFoundError:
+                return None
             from trelix.retrieval.retriever import Retriever
 
             self._retriever = Retriever(self._config)
@@ -214,31 +237,15 @@ class DiffReviewer:
         llm_available = True
         for hunk in hunks:
             try:
-                review = self._review_hunk(hunk, client)
+                review = self._review_one(hunk, client)
             except LLMNotConfiguredError as exc:
                 # Every remaining hunk would get the same placeholder answer.
                 logger.warning("DiffReviewer: %s", exc)
                 llm_available = False
                 results = [_error_result(h, "not_configured") for h in hunks]
                 break
-            except Exception as exc:
-                logger.warning("DiffReviewer: hunk review failed (non-fatal): %s", exc)
-                results.append(
-                    _error_result(
-                        hunk, f"exception:{safe_token(type(exc).__name__, default='unknown')}"
-                    )
-                )
-                continue
             comments.extend(review.comments)
             results.append(review.result)
-            if not review.result.reviewed:
-                logger.warning(
-                    "DiffReviewer: %s:%d was not reviewed (%s: %s)",
-                    review.result.file_path,
-                    review.result.line,
-                    review.result.status.value,
-                    review.result.detail or "no detail",
-                )
 
         self.last_outcome = ReviewOutcome(
             llm_available=llm_available,
@@ -247,6 +254,36 @@ class DiffReviewer:
             hunk_results=tuple(results),
         )
         return comments
+
+    def _review_one(self, hunk: DiffHunk, client: Any) -> _HunkReview:
+        """Review one hunk inside its `trelix.review` span, whose `hunk_status` is set once the
+        status is known. `LLMNotConfiguredError` passes through (the caller stops the review);
+        any other exception becomes an `error` result."""
+        with pipeline_stage_span(self._config.retrieval, "review") as span:
+            try:
+                review = self._review_hunk(hunk, client)
+            except LLMNotConfiguredError:
+                span.set_attribute("hunk_status", HunkStatus.ERROR.value)
+                raise
+            except Exception as exc:
+                span.set_attribute("hunk_status", HunkStatus.ERROR.value)
+                logger.warning("DiffReviewer: hunk review failed (non-fatal): %s", exc)
+                return _HunkReview(
+                    [],
+                    _error_result(
+                        hunk, f"exception:{safe_token(type(exc).__name__, default='unknown')}"
+                    ),
+                )
+            span.set_attribute("hunk_status", review.result.status.value)
+        if not review.result.reviewed:
+            logger.warning(
+                "DiffReviewer: %s:%d was not reviewed (%s: %s)",
+                review.result.file_path,
+                review.result.line,
+                review.result.status.value,
+                review.result.detail or "no detail",
+            )
+        return review
 
     def _call(self, client: Any, user_content: str, max_tokens: int) -> Any:
         from trelix.llm.client import UNCONFIGURED_MODEL, ChatMessage
@@ -269,8 +306,9 @@ class DiffReviewer:
         retrieval_failed = False
         try:
             retriever = self._get_retriever()
-            ctx = retriever.retrieve(query)
-            context_text = ctx.context_text[:3000]  # cap context size
+            if retriever is not None:
+                ctx = retriever.retrieve(query)
+                context_text = ctx.context_text[:3000]  # cap context size
         except Exception as exc:
             # WARNING, matching the sibling per-hunk handler in review(): the CLI
             # configures WARNING, so a DEBUG record would be as silent as the
@@ -308,7 +346,9 @@ class DiffReviewer:
         limit = self._config.review_max_tokens
         response = self._call(client, user_content, limit)
         used, retried, retry_failed = limit, False, False
-        if self._effective_finish(response, used) in _RETRYABLE:
+        # A bigger output cap cannot help when the input was cut: no retry for that hunk.
+        cut_off = self._effective_finish(response, used) in _RETRYABLE
+        if cut_off and not _prompt_truncated(response):
             larger = min(limit * _RETRY_FACTOR, _RETRY_CEILING)
             if larger > limit:
                 logger.info(
@@ -375,6 +415,11 @@ class DiffReviewer:
         def outcome(status: HunkStatus, detail: str = "", kept: int = 0) -> HunkResult:
             return HunkResult(hunk.file_path, hunk.new_start, status, detail, kept)
 
+        if _prompt_truncated(response):
+            # The model never saw the whole hunk, so nothing in the reply is salvaged: findings
+            # against half a prompt would carry wrong line numbers into a published Check. With
+            # nothing kept, a review whose every hunk was cut this way is one that did not run.
+            return _HunkReview([], outcome(HunkStatus.TRUNCATED, PROMPT_TRUNCATED))
         finish = self._effective_finish(response, used)
         is_text = isinstance(response.content, str)
         content = response.content if is_text else ""

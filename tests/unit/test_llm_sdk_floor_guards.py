@@ -7,21 +7,18 @@ and Bedrock's region check matches AnthropicBedrock's v1.0.0 enforcement. Loweri
 floor would silently resurrect a fixed TypeError-on-first-call bug the moment pip
 resolves back below 1.0.0.
 
-openai's floor tells a DIFFERENT, since-revised story: it was raised to >=3.0.0 to
-safely adopt openai-python v3.0.0's "httpx2" default-transport switch (src/trelix/
-core/retry.py's is_retryable_http_error() was updated for it), but every litellm
-release through 1.102.0 caps openai<3.0.0 -- making trelix[litellm] permanently
-unresolvable from a fresh lock at >=3.0.0 (see pyproject.toml's own comment on the
-openai dependency, and tests/unit/test_dependency_floor_guards.py's ceiling guard).
-The floor was deliberately re-lowered to >=2.20.0 with an explicit <3.0.0 ceiling --
-retry.py's is_retryable_http_error() is attribute/duck-typed rather than
-httpx2-specific, so it tolerates the older, pre-3.0.0 transport shape that <3.0.0
-actually resolves to.
+openai's floor tells a DIFFERENT story: it is >=2.20.0 with an explicit <3.0.0 ceiling
+because litellm 1.104.0 (the latest when checked, 2026-10-05) requires
+openai>=2.20.0,<3.0.0, and so does every litellm release since 1.84.0 -- an openai>=3.0.0
+floor would make trelix[litellm] unresolvable (see pyproject.toml's own comment on the
+openai dependency, and tests/unit/test_dependency_floor_guards.py's ceiling guard). The
+retry layer is not the reason: src/trelix/core/retry.py has recognised the "httpx2"
+transport since 3.3.0.
 
 These tests pin the current, deliberate floors so a future contributor loosening one
 during an unrelated dependency bump gets a named, specific failure instead of silently
-reopening a fixed bug (anthropic) or re-exposing the httpx2 major (openai, guarded
-separately in test_dependency_floor_guards.py).
+reopening a fixed bug (anthropic) or making trelix[litellm] unresolvable (openai,
+guarded separately in test_dependency_floor_guards.py).
 """
 
 from __future__ import annotations
@@ -56,17 +53,15 @@ def _extra_dependency_specifier(extra: str, name: str) -> str:
 
 
 def test_openai_floor_has_deliberate_sub_3_0_0_ceiling() -> None:
-    """openai>=3.0.0 was raised for retry.py's httpx2 recognition, then deliberately
-    re-lowered below 3.0.0 because litellm permanently caps openai<3.0.0 -- this
-    guard checks the re-lowering kept its <3.0.0 ceiling (an unbounded floor here
-    would silently re-expose the unmigrated httpx2 major, see
-    test_dependency_floor_guards.py::test_openai_ceiling_excludes_unmigrated_httpx2_major)
+    """litellm (checked at 1.104.0) requires openai<3.0.0 -- this guard checks the core
+    openai specifier keeps its <3.0.0 ceiling (see
+    test_dependency_floor_guards.py::test_openai_ceiling_matches_litellm_requirement)
     rather than that the floor itself stayed at any particular value."""
     spec = _core_dependency_specifier("openai")
     assert "<3.0.0" in spec, (
-        f"openai specifier is {spec!r} -- litellm permanently caps openai<3.0.0, so the "
-        "core floor must keep an explicit <3.0.0 ceiling (not just a >=X floor) or a "
-        "fresh install could still silently resolve the unmigrated httpx2 major"
+        f"openai specifier is {spec!r} -- litellm 1.104.0 (and every release since 1.84.0) "
+        "requires openai<3.0.0, so the core floor must keep an explicit <3.0.0 ceiling "
+        "(not just a >=X floor) or trelix[litellm] becomes unresolvable"
     )
 
 

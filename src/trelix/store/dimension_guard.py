@@ -2,8 +2,8 @@
 Embedding dimension mismatch guard.
 
 When a user switches embedding providers (e.g. Azure 3072-dim -> local 384-dim),
-the existing HNSW index contains vectors of the wrong dimension. trelix would
-silently return wrong results or crash with a cryptic sqlite-vec error.
+the existing vec0 table (declared FLOAT[old_dim]) holds vectors of the wrong dimension.
+trelix would silently return wrong results or crash with a cryptic sqlite-vec error.
 
 DimensionGuard:
 1. Records the dimension around Phase 3 of an index run (DimensionGuard.record) — before

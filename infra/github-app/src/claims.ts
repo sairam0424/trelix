@@ -20,8 +20,15 @@
  * review, never a skipped one.
  */
 
-/** Finished claims are remembered this long (24 hours). */
-export const DEFAULT_CLAIM_KEEP_MS = 24 * 60 * 60 * 1000;
+/**
+ * Finished claims are remembered this long (4 days). The redelivery sweep
+ * (.github/workflows/redeliver-failed-webhooks.yml) re-sends a failed delivery
+ * for as long as GitHub lists it, about 3 days, and does not record what it
+ * re-sent, so a claim that expired earlier would let that re-send start a
+ * second review of a commit already reviewed. The day on top covers "about":
+ * GitHub's retention is not exact and a scheduled run can start late.
+ */
+export const DEFAULT_CLAIM_KEEP_MS = 4 * 24 * 60 * 60 * 1000;
 
 /** Most finished claims remembered at once; about a megabyte of keys. */
 export const DEFAULT_MAX_KEPT_CLAIMS = 10_000;

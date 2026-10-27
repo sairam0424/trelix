@@ -81,15 +81,26 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GHCR_IMAGE = "ghcr.io/sairam0424/trelix"
 GH_REPO = "sairam0424/trelix"
 
-# (PyPI distribution name, top-level import name). trelix's smoke test uses its real
-# console script; the other three are pure libraries with no console script, so their
-# smoke test is the same "import it, print its __version__" the manual passes used.
+# (PyPI distribution name, top-level import name). trelix and trelix-mcp have a console
+# script and are smoked through it (_CONSOLE_SCRIPTS); trelix-langchain and
+# trelix-llama-index are pure libraries with no console script, so their smoke test is the
+# same "import it, print its __version__" the manual passes used.
 _PACKAGES: tuple[tuple[str, str], ...] = (
     ("trelix", "trelix"),
     ("trelix-mcp", "trelix_mcp"),
     ("trelix-langchain", "trelix_langchain"),
     ("trelix-llama-index", "trelix_llama_index"),
 )
+
+# Each of these is run as `<script> --version` and must print "<script> <version>". For
+# trelix-mcp an in-process `import trelix_mcp` cannot stand in for it: that reads a 4-line
+# __init__, so it passes while the command exits 1 on start (a missing or broken dependency, or
+# the server module failing to import). A fresh `pip install` gets the newest published core, so
+# this does NOT detect a stale `trelix>=` floor: `TestSatelliteCoreFloorsFollowTheCore` does.
+_CONSOLE_SCRIPTS: tuple[str, ...] = ("trelix", "trelix-mcp")
+
+# trelix-mcp is also imported in-process through its server module, not only its package.
+_IMPORT_SMOKE_MODULES: dict[str, str] = {"trelix-mcp": "trelix_mcp.server"}
 
 # helm-lint.yml's own matrix — the exact three backends CI templates on every push.
 _HELM_BACKENDS: tuple[str, ...] = ("sqlite", "qdrant", "lance")
@@ -157,6 +168,44 @@ def _truncate(text: str, limit: int = 2000) -> str:
 # ---------------------------------------------------------------------------
 # 1. PyPI installs
 # ---------------------------------------------------------------------------
+def _smoke_cases(
+    venv_dir: Path, dist_name: str, import_name: str, version: str
+) -> list[tuple[list[str], str, bool]]:
+    """One distribution's smoke cases: (command, expected stdout, stdout need only contain it).
+
+    A console script is run the way a user runs it. trelix-langchain and trelix-llama-index
+    have none, so they get the in-process import; trelix-mcp gets both, the import going
+    through its server module.
+    """
+    cases: list[tuple[list[str], str, bool]] = []
+    if dist_name in _CONSOLE_SCRIPTS:
+        command = [str(venv_dir / "bin" / dist_name), "--version"]
+        cases.append((command, f"{dist_name} {version}", True))
+    if dist_name != "trelix":
+        module = _IMPORT_SMOKE_MODULES.get(dist_name, import_name)
+        code = f"import {module}; print({import_name}.__version__)"
+        cases.append(([str(venv_dir / "bin" / "python"), "-c", code], version, False))
+    return cases
+
+
+def _smoke_failures(venv_dir: Path, dist_name: str, import_name: str, version: str) -> list[str]:
+    """Run a distribution's smoke cases in its venv and stop at the first one that fails."""
+    for command, expected, contains in _smoke_cases(venv_dir, dist_name, import_name, version):
+        smoke = _run(command, timeout=30)
+        label = " ".join([Path(command[0]).name, *command[1:]])
+        if smoke.returncode != 0:
+            return [
+                f"{dist_name}: smoke command `{label}` failed (exit {smoke.returncode}): "
+                f"{_truncate(smoke.stderr)}"
+            ]
+        printed = smoke.stdout.strip()
+        if not (expected in printed if contains else printed == expected):
+            return [
+                f"{dist_name}: smoke command `{label}` printed {printed!r}, expected {expected!r}"
+            ]
+    return []
+
+
 def check_pypi_installs(version: str) -> list[str]:
     """Fresh venv, `pip install <pkg>==<version>`, real smoke command, assert version.
 
@@ -192,30 +241,7 @@ def check_pypi_installs(version: str) -> list[str]:
                 )
                 continue
 
-            if dist_name == "trelix":
-                # The real console script, invoked the way a user invokes it -- not
-                # an in-process import, which could never have caught trelix-mcp's
-                # own console-script defect if it had been tested that way instead.
-                smoke = _run([str(venv_dir / "bin" / "trelix"), "--version"], timeout=30)
-                expected = f"trelix {version}"
-                match = expected in smoke.stdout.strip()
-            else:
-                smoke_code = f"import {import_name}; print({import_name}.__version__)"
-                smoke = _run([str(venv_python), "-c", smoke_code], timeout=30)
-                expected = version
-                match = smoke.stdout.strip() == expected
-
-            if smoke.returncode != 0:
-                failures.append(
-                    f"{dist_name}: smoke command failed (exit {smoke.returncode}): "
-                    f"{_truncate(smoke.stderr)}"
-                )
-                continue
-            if not match:
-                failures.append(
-                    f"{dist_name}: smoke command printed {smoke.stdout.strip()!r}, "
-                    f"expected {expected!r}"
-                )
+            failures.extend(_smoke_failures(venv_dir, dist_name, import_name, version))
         except subprocess.TimeoutExpired as exc:
             failures.append(f"{dist_name}: timed out running {exc.cmd!r}")
         except OSError as exc:

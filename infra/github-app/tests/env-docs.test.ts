@@ -9,6 +9,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CLAIM_KEEP_MS } from "../src/claims.js";
 
 const APP_DIR = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(APP_DIR, "..", "..");
@@ -27,7 +28,9 @@ const DOCUMENTED_VARIABLES = [
     "TRELIX_APP_CONCURRENCY",
     "TRELIX_APP_CONCURRENCY_PER_INSTALLATION",
     "TRELIX_APP_INSTALL_POLICY",
+    "TRELIX_APP_JOB_TIMEOUT_MINUTES",
     "TRELIX_APP_QUEUE_CAPACITY",
+    "TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION",
     "TRELIX_APP_REVIEWS_ENABLED",
 ];
 
@@ -102,6 +105,12 @@ describe("the README's environment table", () => {
         expect(rows.get("TRELIX_APP_QUEUE_CAPACITY")).toContain(
             "`20` (1 to 1000)",
         );
+        expect(
+            rows.get("TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION"),
+        ).toContain("`10` (1 to 1000)");
+        expect(rows.get("TRELIX_APP_JOB_TIMEOUT_MINUTES")).toContain(
+            "`17` (13 to 240)",
+        );
         expect(rows.get("TRELIX_APP_CONCURRENCY")).toContain("`2` (1 to 16)");
         expect(rows.get("TRELIX_APP_CONCURRENCY_PER_INSTALLATION")).toContain(
             "`1` (1 to 16)",
@@ -154,5 +163,17 @@ describe("the README's account of the redelivery backstop", () => {
     it("still matches the workflow: every 6 hours", () => {
         expect(workflow).toContain('cron: "0 */6 * * *"');
         expect(readme).toContain("runs every 6 hours");
+    });
+
+    it("is outlived by the dedupe memory: a finished claim is kept a day longer than the window the sweep can re-send in", () => {
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        // The workflow's own words: "manual redelivery (a 3-day window)".
+        const windowMatch = /\(a (\d+)-day window\)/.exec(workflow);
+        expect(windowMatch?.[1]).toBe("3");
+        const windowMs = Number(windowMatch?.[1]) * DAY_MS;
+
+        expect(DEFAULT_CLAIM_KEEP_MS).toBe(4 * DAY_MS);
+        expect(DEFAULT_CLAIM_KEEP_MS - windowMs).toBeGreaterThanOrEqual(DAY_MS);
+        expect(readme.replace(/\s+/g, " ")).toContain("kept for 4 days");
     });
 });

@@ -26,8 +26,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from trelix.core.index_check import IndexNotFoundError, require_index
 from trelix.core.models import SearchResult
-from trelix.federation.registry import RepoRegistry
+from trelix.federation.registry import RepoEntry, RepoRegistry
 from trelix.retrieval.fusion import reciprocal_rank_fusion
 from trelix.retrieval.retriever import Retriever
 
@@ -198,17 +199,45 @@ class FederatedRetriever:
         with self._cache_lock:
             self._cache[key] = (results, expiry)
 
+    def _split_by_index(self) -> tuple[list[RepoEntry], list[tuple[RepoEntry, IndexNotFoundError]]]:
+        """The queried repos (registry order, capped by `max_repos`) that have an index,
+        and those that do not, each with the error that says where its index should be."""
+        from trelix.core.config import IndexConfig
+
+        entries = self._registry.list()
+        if self._max_repos is not None:
+            entries = entries[: self._max_repos]
+        indexed: list[RepoEntry] = []
+        unindexed: list[tuple[RepoEntry, IndexNotFoundError]] = []
+        for entry in entries:
+            try:
+                require_index(IndexConfig.model_construct(repo_path=entry.path))
+            except IndexNotFoundError as exc:
+                unindexed.append((entry, exc))
+            else:
+                indexed.append(entry)
+        return indexed, unindexed
+
+    def unindexed_repos(self) -> list[tuple[RepoEntry, IndexNotFoundError]]:
+        """The queried repos that have no index yet, each with its `IndexNotFoundError`.
+
+        `retrieve` skips them: opening a missing index creates an empty one, which would
+        make a repo that was never indexed look indexed. Callers that want to tell the
+        user which repos were skipped (`trelix search-all`, the MCP
+        `federation_search_all` tool) ask here.
+        """
+        return self._split_by_index()[1]
+
     def _query_repos(self, query: str, k: int = 10) -> list[SearchResult]:
         """Execute fan-out query to all registered repos. No caching.
 
         Only the first `max_repos` entries (registry order) are actually
         queried if a cap is configured — see __init__'s max_repos docstring.
+        Repos with no index are skipped, not opened: see `unindexed_repos`.
         """
-        entries = self._registry.list()
+        entries, _ = self._split_by_index()
         if not entries:
             return []
-        if self._max_repos is not None:
-            entries = entries[: self._max_repos]
 
         per_repo_results: list[list[SearchResult]] = []
         per_repo_weights: list[float] = []

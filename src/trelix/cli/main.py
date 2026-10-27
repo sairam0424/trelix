@@ -16,7 +16,9 @@ from __future__ import annotations
 import errno
 import json
 import logging
+import math
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -32,6 +34,7 @@ from rich.table import Table
 
 from trelix.cli.progress import make_progress
 from trelix.core.console_safety import safe_text
+from trelix.core.index_check import IndexNotFoundError, require_index
 from trelix.federation.registry import RepoRegistry
 
 # Imported eagerly, unlike every other store import in this module, because it is the
@@ -41,10 +44,22 @@ from trelix.store.provenance import _PRUNE_MAX_FRACTION_DEFAULT
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Mapping, Sequence
 
-    from trelix.core.config import EmbedderConfig, IndexConfig
-    from trelix.core.models import IndexedFile
+    from pydantic import ValidationError
+
+    from trelix.core.config import EmbedderConfig, EmbeddingCacheConfig, IndexConfig
+    from trelix.core.models import Chunk, IndexedFile
+    from trelix.eval.harness import QueryRecord
+    from trelix.eval.suite_prepare import PreparedSuite
+    from trelix.eval.suite_run import SuiteRun
+    from trelix.eval.synthesis import SynthesisEvalHarness
+    from trelix.eval.synthesis_records import SynthesisRecord
+    from trelix.indexing.embedding_cache import EmbeddingCache
     from trelix.indexing.indexer import Indexer
+    from trelix.retrieval.retriever import Retriever
+    from trelix.retrieval.synthesizer import Synthesizer
+    from trelix.review.diff_parser import DiffHunk, DiffParser
     from trelix.review.reviewer import ReviewOutcome
     from trelix.store.db import Database
     from trelix.store.provenance import DriftReport, IndexProvenance, PrunePlan
@@ -87,9 +102,14 @@ warnings.filterwarnings("ignore", message=".*huggingface.*")
 # red that does not look like the bug it is.
 #
 # What status to report when the reader walks away is the application's policy, not
-# rich's and not click's, so it is decided here once for every command instead of
-# inside stats. A fix inside stats would have left search/telemetry/graph — which
-# share the consoles below — failing exactly the same way.
+# rich's and not click's, so it is decided here once for every command (eval-compare
+# excepted, below) instead of inside stats. A fix inside stats would have left
+# search/telemetry/graph — which share the consoles below — failing exactly the same way.
+#
+# ONE COMMAND IS THE EXCEPTION: `eval-compare` (see `_print_verdict_line`). Its exit
+# status IS the verdict and the design lets only PASS exit 0, so "the reader left,
+# exit 0" would turn a FAIL piped into `head` under `pipefail` into a green step. It
+# silences the stream the same way, but keeps the verdict's exit code.
 
 # EINVAL is in this set because of Windows and only because of Windows. Keeping the
 # set to these two is the point: ENOSPC or EACCES on stdout is a real failure a
@@ -129,10 +149,8 @@ class _PacifiedStream:
         return getattr(self._wrapped, name)
 
 
-def _exit_quietly_after_closed_consumer(stream: Any = None) -> NoReturn:  # noqa: ANN401
-    """Stop writing to `stream`, leave no traceback, exit 0."""
-    target = sys.stdout if stream is None else stream
-
+def _silence_closed_stream(target: Any) -> None:  # noqa: ANN401 - any text stream
+    """Make every later write to `target` land in the null device and flush without raising."""
     # Point the file descriptor at the null device first. This is the half that
     # works when the bytes are already buffered inside a real TextIOWrapper: the
     # shutdown flush still happens, it just lands in /dev/null (NUL on Windows).
@@ -158,6 +176,10 @@ def _exit_quietly_after_closed_consumer(stream: Any = None) -> NoReturn:  # noqa
     elif target is sys.stderr:
         sys.stderr = cast("Any", _PacifiedStream(sys.stderr))
 
+
+def _exit_quietly_after_closed_consumer(stream: Any = None) -> NoReturn:  # noqa: ANN401
+    """Stop writing to `stream`, leave no traceback, exit 0."""
+    _silence_closed_stream(sys.stdout if stream is None else stream)
     raise SystemExit(0)
 
 
@@ -234,6 +256,14 @@ def _print_error(label: str, detail: object) -> None:
     err_console.print(f"[red]{label}:[/red] {_safe_text(str(detail))}")
 
 
+def _print_configuration_error(exc: ValidationError) -> None:
+    """`Configuration error: <field>: <msg>` from the first problem pydantic reports."""
+    first_err = exc.errors()[0]
+    msg = first_err.get("msg", str(exc))
+    field = " -> ".join(str(x) for x in first_err.get("loc", []))
+    _print_error("Configuration error", f"{field}: {msg}" if field else msg)
+
+
 def _require_index(config: IndexConfig, repo: str) -> None:
     """Exit 1 unless `config`'s index database already exists.
 
@@ -241,16 +271,18 @@ def _require_index(config: IndexConfig, repo: str) -> None:
     constructing any of them opens the database, and opening a missing one creates it
     (schema and an empty vec0 table), which then defeats every later "No index found"
     check. Uses `db_path_resolved`, not `db_path_absolute`, because the latter creates
-    `.trelix/` and its `.gitignore` as a side effect of being read.
+    `.trelix/` and its `.gitignore` as a side effect of being read. The check itself is
+    `trelix.core.index_check.require_index`, shared with every other read surface; this
+    wrapper only turns its error into the CLI's message and exit code.
     """
-    db_path = config.db_path_resolved
-    if db_path.exists():
-        return
-    err_console.print(
-        f"[red]No index found at {_safe_text(str(db_path))}.[/red]"
-        f" Run trelix index {_safe_text(repo)} first."
-    )
-    raise typer.Exit(1)
+    try:
+        require_index(config)
+    except IndexNotFoundError as exc:
+        err_console.print(
+            f"[red]No index found at {_safe_text(str(exc.db_path))}.[/red]"
+            f" Run trelix index {_safe_text(repo)} first."
+        )
+        raise typer.Exit(1) from exc
 
 
 def _print_json(payload: object, *, indent: int | None = 2) -> None:
@@ -333,6 +365,50 @@ def _exit_if_review_not_run(
     )
     _write_review_outcome(outcome, config, REVIEW_NOT_RUN_EXIT_CODE)
     raise typer.Exit(REVIEW_NOT_RUN_EXIT_CODE)
+
+
+def _print_empty_review(message: str, *, json_output: bool) -> None:
+    """Report a local review that has nothing to show: `[]` under --json, else `message`.
+
+    With --json stdout must be the JSON array and nothing else (the `--pr` path does the
+    same inline), so the prose for a human is not printed at all.
+    """
+    if json_output:
+        _print_json([])
+        return
+    console.print(message)
+
+
+def _exit_if_git_ref_unresolved(parser: DiffParser, repo_path: str, refs: dict[str, str]) -> None:
+    """Exit 1, naming the option and ref, when git cannot resolve one of `refs`.
+
+    `refs` maps an option name to its value. A mistyped `--base` is the usual reason for a
+    failing `git diff`, so it gets a message that names the option; `_git_diff_hunks` reports
+    any other failure. Only the local git diff needs either; a `--diff FILE` never looks at
+    the refs.
+    """
+    for option, ref in refs.items():
+        if parser.ref_resolves(repo_path, ref):
+            continue
+        _print_error("Error", f"cannot resolve {option} {ref!r} to a git object")
+        raise typer.Exit(1)
+
+
+def _git_diff_hunks(parser: DiffParser, repo_path: str, base: str, head: str) -> list[DiffHunk]:
+    """Parse `git diff base head`; exit 1 when git could not produce the diff.
+
+    Refs that each resolve can still fail together (a blob against a commit, a timeout, output
+    that is not UTF-8). `from_git` turns that into [] and the command then reported "No changes
+    found in diff." with exit 0, so it is `git_diff` that is called here: an empty list from
+    this function means git found no changes.
+    """
+    from trelix.review.diff_parser import GitDiffError
+
+    try:
+        return parser.parse(parser.git_diff(repo_path, base, head))
+    except GitDiffError as exc:
+        _print_error("Error", f"git diff {base!r} {head!r} failed: {exc}")
+        raise typer.Exit(1) from exc
 
 
 def _no_findings_message(outcome: ReviewOutcome) -> str:
@@ -653,17 +729,25 @@ def index(
         if use_batch_api:
             config.use_batch_api = True
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     if resume_batch:
+        # The poll path hands vectors straight from OpenAI to the store and never consults
+        # the embedding cache, so with the cache on the wrapper would reach the Batch API
+        # method's own type guard and die with a message about CachedIndexEmbedder.
+        # Refused here, before Indexer() loads a model, with the way out named.
+        if config.embedding_cache.enabled:
+            _print_error(
+                "Cannot resume a Batch API job",
+                "TRELIX_EMBEDDING_CACHE_ENABLED=true is set, and the Batch API poll path "
+                "bypasses the cache. Re-run with TRELIX_EMBEDDING_CACHE_ENABLED=false to "
+                "collect the job, then re-enable it.",
+            )
+            raise typer.Exit(1)
         try:
             indexer = Indexer(config)
             job = indexer.db.get_pending_batch_job(config.repo_path)
@@ -740,6 +824,10 @@ def index(
     table.add_row("Files skipped", str(stats.get("files_skipped", 0)))
     table.add_row("Symbols extracted", str(stats.get("symbols_extracted", 0)))
     table.add_row("Chunks embedded", str(stats.get("chunks_embedded", 0)))
+    # Only when it happened, like "Chunks repaired" below: with the cache off (the default)
+    # the value is always 0 and a permanent row would read as a feature that was tried.
+    if stats.get("chunks_from_cache"):
+        table.add_row("Chunks from cache", str(stats["chunks_from_cache"]))
     # Only when it happened. A permanent "Chunks repaired 0" row invites reading its
     # absence as "not checked", which is a different thing that the stats command reports.
     if stats.get("chunks_reconciled"):
@@ -748,6 +836,10 @@ def index(
     if stats.get("errors"):
         table.add_row("[red]Errors[/red]", f"[red]{stats['errors']}[/red]")
     console.print(table)
+    # Stub Indexers in tests/unit/test_cli_batch_api_flags.py, test_prune.py and
+    # test_prune_refusal_steps.py set no embedder; the advisory never decides this exit code.
+    embedder = getattr(indexer, "embedder", None)
+    _print_flat_scan_advisory(config, getattr(embedder, "dimension", None))
 
     if prune:
         # The DELETIONS run after the index — a prune wants the freshest possible view of
@@ -1001,24 +1093,15 @@ _EMBED_PRICE_PER_MTOK_USD: dict[tuple[str, str], float] = {
 # it is not a token bill, and reporting $0.00 for them would read as "free".
 _LOCAL_EMBED_PROVIDERS = frozenset({"local", "local-code", "bge-code", "nomic-code"})
 
-# Which EmbedderConfig field holds the model name for each provider. There is no single
-# `model` attribute, so this is the mapping the price lookup keys on.
-_EMBED_MODEL_FIELDS = {
-    "openai": "openai_model",
-    "azure": "azure_embeddings_deployment",
-    "voyage": "voyage_model",
-    "local": "local_model",
-    "local-code": "local_code_model",
-    "bge-code": "bge_code_model",
-    "nomic-code": "nomic_code_model",
-    "bedrock-titan": "bedrock_titan_model",
-    "bedrock-cohere": "bedrock_cohere_model",
-    "cohere": "cohere_model",
-}
-
 
 def _embed_model_name(embedder: EmbedderConfig) -> str:
-    field = _EMBED_MODEL_FIELDS.get(str(embedder.provider))
+    """The model id the price lookup keys on. There is no single `model` attribute; the
+    per-provider field table is the embedding cache's (`EMBED_MODEL_FIELDS`), which names
+    the model for the cache fingerprint, so the two cannot drift apart. Imported here, not
+    at module level: the cache module pulls in the config and embedder packages."""
+    from trelix.indexing.embedding_cache import EMBED_MODEL_FIELDS
+
+    field = EMBED_MODEL_FIELDS.get(str(embedder.provider))
     return str(getattr(embedder, field, "") or "") if field else "unknown"
 
 
@@ -1060,6 +1143,9 @@ def _print_cost_preview(config: IndexConfig) -> None:
     chunk_count = 0
     token_count = 0
     no_symbols = 0
+    cache = _open_cache_for_preview(config)
+    cached_chunks = 0
+    cached_tokens = 0
 
     with make_progress(console) as progress:
         task = progress.add_task("Chunking (no embedding)…", total=len(to_embed))
@@ -1095,6 +1181,12 @@ def _print_cost_preview(config: IndexConfig) -> None:
             )
             chunk_count += len(chunks)
             token_count += sum(c.token_count for c in chunks)
+            if cache is not None:
+                cache, cached_chunks, cached_tokens = _add_cache_hits(
+                    cache, chunks, cached_chunks, cached_tokens
+                )
+    if cache is not None:
+        cache.close()
 
     table = Table(
         title="Cost preview (nothing embedded)", show_header=True, header_style="bold cyan"
@@ -1119,6 +1211,11 @@ def _print_cost_preview(config: IndexConfig) -> None:
         table.add_row("Repair tokens", f"{repair_tokens:,}")
     table.add_row("Chunks to embed", f"{chunk_count:,}")
     table.add_row("Embedding tokens", f"{token_count:,}")
+    # Only with a cache file to consult: these rows say what the real run will NOT send to
+    # the provider, and the two rows above keep their from-scratch meaning.
+    if cache is not None:
+        table.add_row("Chunks already cached", f"{cached_chunks:,}")
+        table.add_row("Tokens already cached", f"{cached_tokens:,}")
     console.print(table)
 
     if index_read_error is not None:
@@ -1153,8 +1250,83 @@ def _print_cost_preview(config: IndexConfig) -> None:
             "re-embed. Run [bold]trelix stats[/bold] for the count and the remedy."
         )
 
-    _print_cost_estimate(config, token_count + repair_tokens)
+    # Cached chunks are subtracted from the from-scratch count only. Repair chunks are not
+    # looked up: the preview is already an upper bound for them (docstring), and a repair
+    # that is in the cache merely costs less than quoted.
+    _print_cost_estimate(config, token_count - cached_tokens + repair_tokens)
     _print_cost_caveats(config)
+
+
+def _open_cache_for_preview(config: IndexConfig) -> EmbeddingCache | None:
+    """The embedding cache file this configuration would use, opened READ-ONLY, or None.
+
+    None when the cache is off, or when its file does not exist yet: the preview then
+    prices every chunk, which is what the real run would embed. Nothing is created —
+    `EmbeddingCache.open_readonly` connects with `mode=ro` and never touches the
+    directory, the same rule `_readonly_vec_conn` applies to the index — and the file is
+    opened at the width IT records, because `config.embedder.effective_dimension` is a
+    constant 384 for every `local` model and the preview has no embedder to ask. A file
+    that is not a readable trelix cache is reported and priced as if absent, so the
+    estimate stays an upper bound rather than a traceback.
+    """
+    if not config.embedding_cache.enabled:
+        return None
+    from trelix.indexing.embedding_cache import (
+        EmbeddingCache,
+        EmbeddingCacheError,
+        embedder_fingerprint,
+        resolve_cache_dir,
+    )
+
+    try:
+        cache_dir = resolve_cache_dir(config.embedding_cache)
+        return EmbeddingCache.open_readonly(
+            cache_dir / f"{embedder_fingerprint(config.embedder)}.db"
+        )
+    except EmbeddingCacheError as exc:
+        _print_cache_unreadable(str(exc))
+        return None
+
+
+def _print_cache_unreadable(detail: str) -> None:
+    """The preview's one note for a cache it cannot consult, at the open or at a lookup."""
+    console.print(
+        f"[yellow]The embedding cache could not be read[/yellow] "
+        f"({_safe_text(detail)}), so no cached chunk is subtracted below."
+    )
+
+
+def _add_cache_hits(
+    cache: EmbeddingCache, chunks: Sequence[Chunk], cached_chunks: int, cached_tokens: int
+) -> tuple[EmbeddingCache | None, int, int]:
+    """`(cache, cached_chunks, cached_tokens)` with the hits among `chunks` added.
+
+    A lookup that fails (a lock taken after the open: a concurrent run's end-of-run VACUUM,
+    say) prints the unreadable-cache note, closes the cache and returns `(None, 0, 0)`: from
+    here every chunk is priced, as if there were no cache, the hits already counted included,
+    or the priced figure would subtract tokens the table no longer shows.
+    """
+    try:
+        hits = _cached_chunks(cache, chunks)
+    except sqlite3.Error as exc:
+        _print_cache_unreadable(str(exc))
+        cache.close()
+        return None, 0, 0
+    return cache, cached_chunks + len(hits), cached_tokens + sum(c.token_count for c in hits)
+
+
+def _cached_chunks(cache: EmbeddingCache, chunks: Sequence[Chunk]) -> list[Chunk]:
+    """The chunks whose text the cache already holds a vector for.
+
+    Keyed by `text_key` — the wrapper's own key over `chunk_text`, which is exactly what
+    Phase 3 hands the embedder — so the preview and the run agree on what is a hit. A
+    lookup that fails (`sqlite3.Error`: a lock taken after the open) is the caller's.
+    """
+    from trelix.indexing.embedding_cache import text_key
+
+    keys = [text_key(c.chunk_text) for c in chunks]
+    found = cache.get_many(keys)
+    return [c for c, key in zip(chunks, keys, strict=True) if key in found]
 
 
 def _files_needing_embedding(
@@ -1392,11 +1564,7 @@ def search(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1458,6 +1626,17 @@ def search(
 # ask
 # ---------------------------------------------------------------------------
 
+# `--json` promises one JSON object on stdout, which only the synthesis paths can keep.
+_ASK_JSON_CONTEXT_ONLY = (
+    "--json needs LLM synthesis; with the local embedder and FLARE off, trelix ask prints the "
+    "retrieved context only. Use trelix search --json for machine-readable retrieval, or a "
+    "non-local --provider."
+)
+_ASK_JSON_AGENTIC_ENV = (
+    "--json is not available in agentic mode (TRELIX_RETRIEVAL_AGENTIC=true): the agent loop "
+    "prints its own result. Unset it or drop --json."
+)
+
 
 @app.command()
 def ask(
@@ -1473,9 +1652,21 @@ def ask(
             "--session", help="Resume a persisted agent session by ID (implies --agentic)."
         ),
     ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=(
+                "Print one JSON object (query, answer, abstained, abstain_reason, citations) "
+                "instead of streaming; errors go to stderr."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Ask a question — retrieval + LLM synthesis (requires OPENAI_API_KEY for full synthesis)"""
     _setup_logging(False)
+    if json_output and (agentic or session is not None):
+        raise typer.BadParameter("--json cannot be combined with --agentic or --session.")
 
     from pydantic import ValidationError as _PydanticValidationError
 
@@ -1490,11 +1681,7 @@ def ask(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1505,6 +1692,14 @@ def ask(
     # --agentic flag overrides the config field; --session implies --agentic
     if session is not None or agentic:
         config.retrieval.agentic_enabled = True
+    # Both refusals are decided from config alone, before the index is opened or the query
+    # embedded (the flag-form of the first one was a usage error above).
+    if json_output and config.retrieval.agentic_enabled:
+        _print_error("Error", _ASK_JSON_AGENTIC_ENV)
+        raise typer.Exit(1)
+    if json_output and config.embedder.provider == "local" and not config.retrieval.flare_enabled:
+        _print_error("Error", _ASK_JSON_CONTEXT_ONLY)
+        raise typer.Exit(1)
 
     try:
         if config.retrieval.agentic_enabled:
@@ -1530,50 +1725,108 @@ def ask(
         raise typer.Exit(1) from exc
 
     try:
-        synth = Synthesizer(config.embedder, llm_config=config.llm)
-        if config.retrieval.flare_enabled:
-            from trelix.retrieval.flare import FLARELoop
-
-            # Synthesizer.synthesize() (called inside FLARELoop.run()) already
-            # streamed every token to stdout as it arrived — printing the
-            # returned string here would print the whole answer a second time.
-            loop = FLARELoop(retriever, synth, config)
-            loop.run(query)
-        else:
-            context = retriever.retrieve(query)
-            # If provider=local (no API key), print the context text directly.
-            # Read the resolved provider off config, not the raw CLI arg — the
-            # effective value may come from TRELIX_EMBEDDER_PROVIDER when
-            # --provider wasn't passed.
-            if config.embedder.provider == "local":
-                console.print(
-                    Panel(f"[bold cyan]Context for:[/bold cyan] {_safe_text(query)}", expand=False)
-                )
-                if context.context_text:
-                    console.print(_safe_text(context.context_text))
-                else:
-                    console.print("[yellow]No relevant code found.[/yellow]")
-                return
-            # Escaped per token, not per answer: each print() renders in
-            # isolation, so a bracket pair split across two tokens can never
-            # form a tag, and a complete "[/!]" inside one token can no longer
-            # abort the stream mid-answer.
-            for token in synth.stream(context, config.retrieval):
-                # stream() never raises: it records the failure in last_error before
-                # yielding its banner / "not configured" placeholder. Neither is an
-                # answer, so neither goes to stdout.
-                if synth.last_error is not None:
-                    break
-                console.print(_safe_text(token), end="", highlight=False)
-            console.print()  # final newline
+        synth = Synthesizer(
+            config.embedder, llm_config=config.llm, stream_to_stdout=not json_output
+        )
+        answer = _ask_synthesize(config, retriever, synth, query, json_output)
     except Exception as exc:
         _print_error("Synthesis failed", exc)
         raise typer.Exit(1) from exc
 
+    if answer is None:  # context-only mode printed the retrieved context; nothing to verify
+        return
     # Outside the try: typer.Exit is a RuntimeError, which the handler above would catch.
     if synth.last_error is not None:
         _print_error("Synthesis failed", synth.last_error)
         raise typer.Exit(1)
+    _ask_emit(config, synth, query, answer, json_output)
+
+
+def _ask_synthesize(
+    config: IndexConfig, retriever: Retriever, synth: Synthesizer, query: str, json_output: bool
+) -> str | None:
+    """Run `ask`'s synthesis mode and return the answer text.
+
+    Returns None when context-only mode (local embedder, FLARE off) printed the retrieved
+    context instead; `ask` refused `--json` for that mode before retrieval. Under `--json`
+    nothing here reaches stdout: the plain path collects the tokens and the FLARE path's
+    Synthesizer was built with `stream_to_stdout=False`.
+    """
+    if config.retrieval.flare_enabled:
+        from trelix.retrieval.flare import FLARELoop
+
+        # Synthesizer.synthesize() (called inside FLARELoop.run()) already streamed every
+        # token to stdout as it arrived — the returned string is for verification and
+        # `--json` only; printing it would print the whole answer a second time.
+        return FLARELoop(retriever, synth, config).run(query)
+
+    context = retriever.retrieve(query)
+    # If provider=local (no API key), print the context text directly. Read the resolved
+    # provider off config, not the raw CLI arg — the effective value may come from
+    # TRELIX_EMBEDDER_PROVIDER when --provider wasn't passed.
+    if config.embedder.provider == "local":
+        console.print(
+            Panel(f"[bold cyan]Context for:[/bold cyan] {_safe_text(query)}", expand=False)
+        )
+        if context.context_text:
+            console.print(_safe_text(context.context_text))
+        else:
+            console.print("[yellow]No relevant code found.[/yellow]")
+        return None
+
+    tokens: list[str] = []
+    # Escaped per token, not per answer: each print() renders in isolation, so a bracket
+    # pair split across two tokens can never form a tag, and a complete "[/!]" inside one
+    # token can no longer abort the stream mid-answer.
+    for token in synth.stream(context, config.retrieval):
+        # stream() never raises: it records the failure in last_error before yielding its
+        # banner / "not configured" placeholder. Neither is an answer, so neither goes to
+        # stdout (nor into the answer).
+        if synth.last_error is not None:
+            break
+        tokens.append(token)
+        if not json_output:
+            console.print(_safe_text(token), end="", highlight=False)
+    if not json_output:
+        console.print()  # final newline
+    return "".join(tokens)
+
+
+def _ask_emit(
+    config: IndexConfig, synth: Synthesizer, query: str, answer: str, json_output: bool
+) -> None:
+    """Print what follows a synthesised answer: the JSON object under `--json`, otherwise the
+    verified `Sources:` footer when the context carried citation tags and the model answered.
+
+    Verification runs only when the context carried `citation_sources` (the prompt asked for
+    tags) and the model answered: with the flag off a `[C1]` in the answer is text, and an
+    abstention names what is missing, not sources. Either way `citations` is empty and no footer
+    is printed, so the JSON and the footer agree.
+    """
+    from trelix.retrieval.citations import citation_as_json, footer_lines, verify_citations
+
+    context = synth.last_context
+    sources = context.citation_sources if context is not None else ()
+    cited = bool(sources) and synth.last_abstain_reason is None
+    citations = verify_citations(answer, sources, Path(config.repo_path)) if cited else []
+    if json_output:
+        _print_json(
+            {
+                "query": query,
+                "answer": answer,
+                "abstained": synth.last_abstain_reason is not None,
+                "abstain_reason": synth.last_abstain_reason,
+                "citations": [citation_as_json(c) for c in citations],
+            }
+        )
+        return
+    if cited:
+        console.print()
+        for line in footer_lines(citations):
+            # soft_wrap: Rich would otherwise hard-wrap a row at the console width (80 columns
+            # in a pipe), breaking a long path mid-word; see _print_json. highlight=False as
+            # for the answer tokens above.
+            console.print(_safe_text(line), highlight=False, soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1602,11 +1855,7 @@ def query(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1682,11 +1931,7 @@ def call_graph(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1772,11 +2017,7 @@ def stats(
     try:
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1822,6 +2063,7 @@ def stats(
     table.add_row("DB size", f"{db_size_kb:.1f} KB")
     console.print(table)
     _print_coverage_remedy(coverage, repo, config)
+    _print_flat_scan_advisory(config, coverage.dimension)
 
     _print_provenance(provenance, commits_since(config, provenance.git_commit))
     if drift_report is not None:
@@ -2025,6 +2267,53 @@ def _print_coverage_remedy(coverage: _VectorCoverage, repo: str, config: IndexCo
         )
 
 
+def _sqlite_vector_rows(config: IndexConfig) -> int | None:
+    """Rows in the sqlite-vec table, or None when they cannot be counted.
+
+    A missing or unreadable index, or one with no `chunk_embeddings` table yet, means "no
+    advisory", never an error. `config.db_path_resolved` rather than `db_path_absolute`
+    because a read helper must not create `.trelix/` (see `_require_index`; `_vector_coverage`
+    predates `db_path_resolved`). The count is sentinel-inclusive on purpose: a flat scan pays
+    for every row, sentinels included, and this is the same number as
+    `SQLiteVectorStore.count()`.
+    """
+    try:
+        conn = _readonly_vec_conn(config.db_path_resolved)
+    except Exception:
+        return None
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()[0])
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def _print_flat_scan_advisory(config: IndexConfig, dimension: int | None) -> None:
+    """Tell the operator, on stderr, when the sqlite store has outgrown a flat scan.
+
+    Never changes the exit code: a non-zero status on a read command broke CI twice (see
+    `tests/unit/test_cli_closed_stdout.py`). Every real index state is an early return
+    (another backend, an unrecorded or non-positive width, an unreadable file, no table), and
+    there is no exception handler here on purpose, so a programming error surfaces in the
+    tests instead of being swallowed.
+    """
+    if str(getattr(config.store, "backend", "sqlite")) != "sqlite":
+        return
+    if not isinstance(dimension, int) or dimension < 1:
+        return
+    rows = _sqlite_vector_rows(config)
+    if rows is None:
+        return
+
+    from trelix.store.scale_advisory import flat_scan_advisory
+
+    message = flat_scan_advisory(rows, dimension)
+    if message is None:
+        return
+    err_console.print(f"[yellow]{_safe_text(message)}[/yellow]")
+
+
 def _print_provenance(provenance: IndexProvenance, behind: int | None) -> None:
     """Render what the index was built from, or say plainly that it is unknown."""
     if provenance.is_empty:
@@ -2112,9 +2401,10 @@ def _print_drift(report: DriftReport) -> None:
         )
     elif not report.walk_config_comparable:
         console.print(
-            "\n[dim]This index predates walk-config recording, so whether the walk used "
-            "the same ignore rules could not be checked. Treat [bold]missing[/bold] as "
-            "unverified.[/dim]"
+            "\n[dim]This index's walk config cannot be compared (it predates walk-config "
+            "recording, or was written under an older `.gitignore` digest scheme), so "
+            "whether the walk used the same ignore rules could not be checked. Treat "
+            "[bold]missing[/bold] as unverified.[/dim]"
         )
 
     if report.is_clean:
@@ -2222,11 +2512,7 @@ def link_tickets(
     try:
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2362,11 +2648,7 @@ def update_index(
             embedder=_build_embedder_config(provider),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2521,11 +2803,7 @@ def migrate_vectors(
         # Build config pointing at the existing SQLite index
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2663,11 +2941,7 @@ def watch(
             embedder=_build_embedder_config(provider),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -3121,6 +3395,28 @@ def telemetry(
 # eval
 # ---------------------------------------------------------------------------
 
+_EVAL_MAX_FAILURES_LISTED = 5
+
+
+def _exit_if_queries_failed(records: Sequence[QueryRecord]) -> None:
+    """Exit 1 when any query raised, after naming the first few.
+
+    A query that raised was scored 0.0 (never as a hit) and the run went on, so the
+    means `trelix eval` prints blend failures into misses and are not a measurement.
+    """
+    failed = [r for r in records if r.error is not None]
+    if not failed:
+        return
+    err_console.print(
+        f"[red]{len(failed)} of {len(records)} queries raised during retrieval and "
+        "were scored 0.0, so these scores are not a valid measurement.[/red]"
+    )
+    for record in failed[:_EVAL_MAX_FAILURES_LISTED]:
+        err_console.print(f"  {_safe_text(record.id)}: {_safe_text(record.error)}")
+    if len(failed) > _EVAL_MAX_FAILURES_LISTED:
+        err_console.print(f"  ... and {len(failed) - _EVAL_MAX_FAILURES_LISTED} more")
+    raise typer.Exit(1)
+
 
 @app.command()
 def eval(
@@ -3139,10 +3435,25 @@ def eval(
             ),
         ),
     ] = None,
+    per_query_out: Annotated[
+        str | None,
+        typer.Option(
+            "--per-query-out",
+            help=(
+                "Also write every query's scores and the aggregate to this JSON file "
+                "(schema_version 1), for comparing two runs query by query. The printed "
+                "results are the same with or without it."
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """Evaluate retrieval quality against a golden query set (nDCG@10, Recall@10, MRR)."""
+    """Evaluate retrieval quality against a golden query set (nDCG@10, Recall@10, MRR).
+
+    Exits 1 if any query raised: it is scored 0.0 and the printed means are not a
+    valid measurement.
+    """
     from trelix.core.config import IndexConfig
-    from trelix.eval.harness import EvalHarness
+    from trelix.eval.harness import EvalHarness, aggregate_metrics, write_per_query_file
 
     config = IndexConfig(repo_path=repo)
     if plan_cache_file is not None:
@@ -3158,7 +3469,7 @@ def eval(
         )
     harness = EvalHarness(config)
     try:
-        metrics = harness.run(golden)
+        records = harness.run_detailed(golden)
     except FileNotFoundError:
         console.print(f"[red]Golden file not found: {_safe_text(golden)}[/red]")
         console.print("Create a golden.jsonl with lines like:")
@@ -3168,6 +3479,7 @@ def eval(
         _print_error("Evaluation failed", exc)
         raise typer.Exit(1) from exc
 
+    metrics = aggregate_metrics(records)
     table = Table(title="Retrieval Evaluation Results")
     table.add_column("Metric", style="bold")
     table.add_column("Score", justify="right")
@@ -3191,6 +3503,109 @@ def eval(
     )
     console.print(table)
 
+    if per_query_out is not None:
+        error = write_per_query_file(per_query_out, records, metrics)
+        if error is not None:
+            _print_error("Could not write per-query results", error)
+            raise typer.Exit(1)
+    # After the file is written, so a run with failed queries still leaves its results
+    # (the file names every failed query; the screen lists the first five).
+    _exit_if_queries_failed(records)
+
+
+# The four trust rows of the `eval-synthesis` table: label, ratio key, denominator key, its noun.
+# The Direction cell names the denominator so a ratio is never read without its sample size.
+_TRUST_ROWS = (
+    ("Abstention precision", "abstention_precision", "n_abstained", "abstained"),
+    ("Abstention recall", "abstention_recall", "n_unanswerable", "unanswerable"),
+    ("Citation validity", "citation_validity", "n_cited_entries", "cited answers"),
+    ("Citation recall", "citation_recall", "n_expected_citation_entries", "expecting citations"),
+)
+
+
+def _synthesis_table(metrics: Mapping[str, float]) -> Table:
+    """The `eval-synthesis` results table: the four GroUSE means, the four trust ratios with
+    their denominators, then the three counts."""
+    table = Table(title="Synthesis Quality Results (GroUSE-style)")
+    table.add_column("Metric", style="bold")
+    table.add_column("Score", justify="right")
+    table.add_column("Direction", style="dim")
+    table.add_row("Hallucination rate", f"{metrics['hallucination_rate']:.4f}", "lower = better")
+    table.add_row("Completeness", f"{metrics['completeness']:.4f}", "higher = better")
+    table.add_row("Faithfulness", f"{metrics['faithfulness']:.4f}", "higher = better")
+    table.add_row("Overall", f"{metrics['overall']:.4f}", "higher = better")
+    for label, key, count, noun in _TRUST_ROWS:
+        direction = f"higher = better; of {int(metrics[count])} {noun}"
+        table.add_row(label, f"{metrics[key]:.4f}", direction)
+    table.add_row("Queries evaluated", str(int(metrics["n_queries"])), "")
+    table.add_row(
+        "Unanswerable queries", str(int(metrics["n_unanswerable"])), "not in the four scores above"
+    )
+    table.add_row(
+        "Unscoreable queries", str(int(metrics["unscoreable"])), "placeholder scores; see the log"
+    )
+    return table
+
+
+def _load_replay_answers(replay: str | None) -> dict[str, str] | None:
+    """The answers `--replay` names (None without it); an unusable file ends the command here,
+    before any index is opened."""
+    if replay is None:
+        return None
+    from trelix.eval._loading import ProblemsError
+    from trelix.eval.synthesis_records import load_replay
+
+    try:
+        return load_replay(Path(replay))
+    except ProblemsError as exc:
+        _print_error("Evaluation failed", exc)
+        raise typer.Exit(1) from exc
+
+
+def _check_synthesis_outputs(record: str | None, per_query_out: str | None) -> None:
+    """Exit 1, one line per problem and before anything is built or paid for, when `--record` or
+    `--per-query-out` cannot be written or both name one file; `eval-suite` checks its `--out` the
+    same way. Advisory: the write at the end of the run still reports a failure, because the
+    directory can change while the run is paid for."""
+    from trelix.eval.synthesis_records import output_file_problems
+
+    problems = output_file_problems(record, per_query_out)
+    for problem in problems:
+        # soft_wrap: one line per problem at any width, like `_print_verdict_line`.
+        err_console.print(
+            f"[red]{_safe_text(problem)}[/red]", emoji=False, highlight=False, soft_wrap=True
+        )
+    if problems:
+        raise typer.Exit(1)
+
+
+def _write_synthesis_outputs(
+    records: Sequence[SynthesisRecord],
+    metrics: Mapping[str, float],
+    per_query_out: str | None,
+    record: str | None,
+    harness: SynthesisEvalHarness,
+) -> None:
+    """Write the files `--per-query-out` and `--record` ask for. Both are attempted, so a path that
+    cannot be written never costs the other file (the recorded answers are the paid part of a
+    run); each failure is reported, and any failure ends the command with exit 1.
+    `harness.last_answers` is read only for `--record`."""
+    from trelix.eval.synthesis_records import write_replay_file, write_synthesis_per_query_file
+
+    failed = False
+    if per_query_out is not None:
+        error = write_synthesis_per_query_file(per_query_out, records, metrics)
+        if error is not None:
+            _print_error("Could not write per-query results", error)
+            failed = True
+    if record is not None:
+        error = write_replay_file(record, harness.last_answers)
+        if error is not None:
+            _print_error("Could not write the replay file", error)
+            failed = True
+    if failed:
+        raise typer.Exit(1)
+
 
 @app.command("eval-synthesis")
 def eval_synthesis(
@@ -3198,15 +3613,66 @@ def eval_synthesis(
     golden: Annotated[
         str, typer.Option("--golden", "-g", help="Path to golden JSONL file.")
     ] = ".trelix/golden_synthesis.jsonl",
+    per_query_out: Annotated[
+        str | None,
+        typer.Option(
+            "--per-query-out",
+            help=(
+                "Also write every query's scores and the aggregate to this JSON file "
+                "(schema_version 1), for comparing two runs query by query. The printed "
+                "results are the same with or without it. Its directory must exist; this is "
+                "checked before the run starts."
+            ),
+        ),
+    ] = None,
+    replay: Annotated[
+        str | None,
+        typer.Option(
+            "--replay",
+            help=(
+                "Score the answers recorded in this JSON file: no synthesis call is made. "
+                "Retrieval is unchanged, so the repository must be indexed, its LLM query "
+                "planner still runs when an LLM is configured (freeze it with "
+                "TRELIX_RETRIEVAL_PLAN_CACHE_FILE) and a non-local embedder still embeds the "
+                "query. The file must hold an answer for every golden query (a missing one "
+                "stops the run before any query, exit 1). Cannot be combined with --record."
+            ),
+        ),
+    ] = None,
+    record: Annotated[
+        str | None,
+        typer.Option(
+            "--record",
+            help=(
+                "After the run, write every answer the LLM produced to this JSON file in the "
+                "--replay format (mode 0600, written atomically, an existing file replaced), "
+                "so the same answers can be scored again later. Its directory must exist "
+                "(checked before the run starts) and it cannot be the --per-query-out file. "
+                "Cannot be combined with --replay."
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """Evaluate synthesis quality against a golden QA file (GroUSE-style)."""
+    """Evaluate synthesis quality against a golden QA file (GroUSE-style).
+
+    Prints the results table and nothing else on stdout: the answers are not echoed as they
+    stream; `--record` keeps them.
+    """
     from trelix.core.config import IndexConfig
     from trelix.eval.synthesis import SynthesisEvalHarness
+    from trelix.eval.synthesis_records import aggregate_synthesis_metrics
 
+    if replay is not None and record is not None:
+        raise typer.BadParameter(
+            "--replay and --record cannot be combined: a replay run produces no new answers "
+            "to record."
+        )
+    _check_synthesis_outputs(record, per_query_out)
     config = IndexConfig(repo_path=repo)
+    answers = _load_replay_answers(replay)
     harness = SynthesisEvalHarness(config)
     try:
-        metrics = harness.run(golden)
+        records = harness.run_detailed(golden, replay=answers)
     except FileNotFoundError:
         console.print(f"[red]Golden file not found: {_safe_text(golden)}[/red]")
         console.print("Create a golden_synthesis.jsonl with lines like:")
@@ -3219,16 +3685,269 @@ def eval_synthesis(
         _print_error("Evaluation failed", exc)
         raise typer.Exit(1) from exc
 
-    table = Table(title="Synthesis Quality Results (GroUSE-style)")
-    table.add_column("Metric", style="bold")
-    table.add_column("Score", justify="right")
-    table.add_column("Direction", style="dim")
-    table.add_row("Hallucination rate", f"{metrics['hallucination_rate']:.4f}", "lower = better")
-    table.add_row("Completeness", f"{metrics['completeness']:.4f}", "higher = better")
-    table.add_row("Faithfulness", f"{metrics['faithfulness']:.4f}", "higher = better")
-    table.add_row("Overall", f"{metrics['overall']:.4f}", "higher = better")
-    table.add_row("Queries evaluated", str(int(metrics["n_queries"])), "")
-    console.print(table)
+    # Pure, so outside the `try`: a failure here is a bug, not an evaluation failure.
+    metrics = aggregate_synthesis_metrics(records)
+    console.print(_synthesis_table(metrics))
+    _write_synthesis_outputs(records, metrics, per_query_out, record, harness)
+
+
+def _reject_nan(value: float) -> float:
+    """Make `--min-validated nan` a usage error like any other value outside 0 to 1.
+
+    click's range check misses it, because every comparison with nan is False, and a nan
+    threshold would make every v2 file fail with a message that asks for "nan".
+    """
+    if math.isnan(value):
+        raise typer.BadParameter("nan is not in the range 0.0<=x<=1.0.")
+    return value
+
+
+@app.command("eval-validate")
+def eval_validate(
+    golden: Annotated[str, typer.Argument(help="Path to the golden JSONL file to check.")],
+    repo: Annotated[
+        str | None,
+        typer.Option(
+            "--repo",
+            help=(
+                "Git repository to check every relevant_files path against. "
+                "Without it the path check is skipped."
+            ),
+        ),
+    ] = None,
+    rev: Annotated[
+        str, typer.Option("--rev", help="Revision of --repo the paths must exist at.")
+    ] = "HEAD",
+    min_per_stratum: Annotated[
+        int,
+        typer.Option(
+            "--min-per-stratum",
+            min=0,
+            help="v2 files: the fewest queries each kind present may have.",
+        ),
+    ] = 20,
+    min_validated: Annotated[
+        float,
+        typer.Option(
+            "--min-validated",
+            min=0.0,
+            max=1.0,
+            callback=_reject_nan,
+            help="v2 files: the least share of entries whose gold_status is validated or pooled.",
+        ),
+    ] = 0.95,
+) -> None:
+    """Check a golden file without running any query: schema, duplicates, paths, strata."""
+    from trelix.eval.golden_validate import RepoTreeError, read_repo_tree, validate_golden
+
+    path = Path(golden)
+    if not path.is_file():
+        _print_error("Golden file not found", golden)
+        raise typer.Exit(1)
+    try:
+        tree = read_repo_tree(repo, rev) if repo is not None else None
+        report = validate_golden(
+            path, tree=tree, min_per_stratum=min_per_stratum, min_validated=min_validated
+        )
+    except (RepoTreeError, OSError) as exc:
+        _print_error("Golden validation failed", exc)
+        raise typer.Exit(1) from exc
+
+    for line in report.lines():
+        # Printed as is, like `_print_json`: no markup, no ":name:" emoji, no wrapping. A user
+        # greps the golden file for what is printed here, so it must match byte for byte.
+        console.print(line, markup=False, emoji=False, highlight=False, soft_wrap=True)
+    if report.violations:
+        raise typer.Exit(1)
+
+
+def _print_verdict_line(target: Console, text: str) -> None:
+    """Print one `eval-compare` line, and keep the exit status when the reader has gone.
+
+    The consoles and the entry point turn a closed consumer into exit 0, which suits
+    `stats | grep -q`. Here the exit status is the verdict and only PASS may exit 0, so a FAIL
+    piped into `head` under `pipefail` must not come out green. The stream is silenced the
+    same way, so the lines still to come are discarded; the exit code is not.
+
+    The text comes from the files being judged (ids, error messages, config keys), so it goes
+    through `safe_text`, which escapes Rich markup and strips control bytes, and is printed
+    with markup ON so the escapes render as the literal brackets.
+    """
+    try:
+        target.print(_safe_text(text), emoji=False, highlight=False, soft_wrap=True)
+    except SystemExit:
+        return  # EPIPE: `_PipeSafeConsole.on_broken_pipe` has already silenced the stream
+    except OSError as exc:
+        if not _is_closed_consumer_error(exc):
+            raise
+        _silence_closed_stream(target.file)  # Windows reports EINVAL, which rich does not catch
+
+
+@app.command("eval-compare")
+def eval_compare(
+    base: Annotated[str, typer.Argument(help="Results file of the baseline run.")],
+    cand: Annotated[str, typer.Argument(help="Results file of the candidate run.")],
+    prereg: Annotated[
+        str | None,
+        typer.Option(
+            "--prereg",
+            help=(
+                "The experiment's pre-registration file (YAML). Required: it is checked by "
+                "hand, so forgetting it ends in REFUSED (exit 3), not in a usage error (exit 2)."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Judge a candidate run against a baseline under a pre-registration.
+
+    Prints the evidence and a last line `verdict: PASS`, `FAIL`, `INCONCLUSIVE` or `REFUSED`.
+    Exit code 0 is PASS, 1 FAIL, 2 INCONCLUSIVE and 3 REFUSED; a usage error also exits 2 but
+    prints no verdict line. Only PASS exits 0. Needs no git, no index and no embedder.
+    """
+    from trelix.eval.compare import compare_files
+
+    verdict = compare_files(base, cand, prereg)
+    if verdict.outcome == "REFUSED":
+        for reason in verdict.reasons:
+            _print_verdict_line(err_console, f"refused: {reason}")
+    for line in verdict.lines:
+        _print_verdict_line(console, line)
+    raise typer.Exit(verdict.exit_code)
+
+
+def _prepared_lines(prepared: PreparedSuite) -> tuple[str, ...]:
+    """What `eval-suite` verified before anything was indexed, one line each."""
+    spec = prepared.spec
+    return (
+        f"suite: {spec.name} (golden_version {spec.golden_version}, license {spec.license})",
+        f"repository: {spec.repo_url}",
+        f"sha: {spec.repo_sha}",
+        f"golden: sha256 {spec.golden_sha256}, {prepared.queries} queries, "
+        f"{prepared.gold_files} gold files",
+        f"plans: sha256 {spec.plans_sha256}, a recorded plan for every golden query",
+        f"clone: {prepared.clone}",
+    )
+
+
+def _print_prepared_suite(prepared: PreparedSuite) -> None:
+    """Print what `eval-suite --prepare-only` verified, one line each."""
+    lines = (*_prepared_lines(prepared), "prepared: every check passed; nothing was indexed or run")
+    for line in lines:
+        _print_verdict_line(console, line)
+
+
+def _print_suite_run(run: SuiteRun) -> None:
+    """Print what `eval-suite` verified, built and wrote, one line each.
+
+    The means are reported, never judged: only `eval-compare` says PASS or FAIL.
+    """
+    means = run.aggregate
+    for line in (
+        *_prepared_lines(run.prepared),
+        f"arm: {run.arm}",
+        f"run directory: {run.run_dir}",
+        f"index: built, embedding dimension {run.dimension}",
+        f"ndcg@10 {means['ndcg@10']:.4f}, recall@10 {means['recall@10']:.4f}, "
+        f"mrr {means['mrr']:.4f} over {int(means['n_queries'])} queries; "
+        f"rerank {run.rerank_summary}",
+        f"results: {run.out.absolute()}",
+    ):
+        _print_verdict_line(console, line)
+
+
+def _refuse_suite(problems: Sequence[str]) -> NoReturn:
+    """One `refused: ...` line per reason on stderr, then exit 1."""
+    for problem in problems:
+        _print_verdict_line(err_console, f"refused: {problem}")
+    raise typer.Exit(1)
+
+
+@app.command("eval-suite")
+def eval_suite(
+    suite: Annotated[str, typer.Argument(help="Path to the suite's suite.json.")],
+    arm: Annotated[
+        str | None,
+        typer.Option(
+            "--arm",
+            help=(
+                "Label of this run, [a-z0-9][a-z0-9_-]{0,62}, no default. One index is built "
+                "per arm and an arm's run directory is never reused; eval-compare binds its "
+                "comparison_id to two arms. Required unless --prepare-only."
+            ),
+        ),
+    ] = None,
+    out: Annotated[
+        str | None,
+        typer.Option(
+            "--out",
+            help=(
+                "Where to write results.json. Its directory must exist; this is checked "
+                "before anything is cloned. Required unless --prepare-only."
+            ),
+        ),
+    ] = None,
+    cache_dir: Annotated[
+        str | None,
+        typer.Option(
+            "--cache-dir",
+            help=(
+                "Where suite clones and per-arm indexes are kept. Default: "
+                "$XDG_CACHE_HOME/trelix/eval-suites, or ~/.cache/trelix/eval-suites."
+            ),
+        ),
+    ] = None,
+    prepare_only: Annotated[
+        bool,
+        typer.Option(
+            "--prepare-only",
+            help=(
+                "Verify the suite and its pinned clone, and run nothing. Refused together "
+                "with --arm or --out."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Run one arm of a suite: index its pinned clone once, replay the frozen plans, write results.
+
+    Exits 0 when results.json was written and no query raised. Exits 1 for a refusal (one
+    `refused:` line per reason on stderr), an index error or a frozen plan missing at run
+    time (no file is written in those cases, and the claimed run directory is left behind and
+    named), and for queries that raised after the file was written. Prints no PASS or FAIL:
+    `trelix eval-compare` judges two results files. Nothing from the cloned repository is
+    executed, imported or installed.
+    """
+    from trelix.eval.suite import SuiteError
+    from trelix.eval.suite_prepare import prepare_suite
+    from trelix.eval.suite_run import run_suite_file
+
+    if prepare_only:
+        if arm is not None or out is not None:
+            _refuse_suite(
+                [
+                    "--prepare-only runs nothing and takes no --arm or --out: drop it to run "
+                    "the arm, or drop them to verify the suite"
+                ]
+            )
+        try:
+            prepared = prepare_suite(suite, cache_dir)
+        except SuiteError as exc:
+            _refuse_suite(exc.problems)
+        _print_prepared_suite(prepared)
+        return
+    if arm is None or out is None:
+        _refuse_suite(
+            [
+                "--arm and --out are required to run a suite; pass --prepare-only to verify "
+                "it without running"
+            ]
+        )
+    try:
+        run = run_suite_file(suite, cache_dir, arm=arm, out=out)
+    except SuiteError as exc:
+        _refuse_suite(exc.problems)
+    _print_suite_run(run)
+    # After the file is written, as `trelix eval` does: the file names every failed query.
+    _exit_if_queries_failed(run.records)
 
 
 # ---------------------------------------------------------------------------
@@ -3447,11 +4166,23 @@ def review(
     """Review a git diff using trelix retrieval-augmented analysis."""
     _setup_logging(False)
 
+    from pydantic import ValidationError as _PydanticValidationError
+
     from trelix.core.config import IndexConfig
     from trelix.review.diff_parser import DiffParser
     from trelix.review.reviewer import DiffReviewer
 
-    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    # The same pair of handlers the other commands use. Without them an invalid
+    # TRELIX_LLM_BASE_URL (a ValidationError) or a bad TRELIX_RETRIEVAL_*_WEIGHT_* (a plain
+    # ValueError from RetrievalConfig) reached the user as Typer's traceback, locals included.
+    try:
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except _PydanticValidationError as exc:
+        _print_configuration_error(exc)
+        raise typer.Exit(1) from exc
+    except (ValueError, FileNotFoundError) as exc:
+        _print_error("Error", exc)
+        raise typer.Exit(1) from exc
 
     # ------------------------------------------------------------------
     # GitHub PR path
@@ -3604,16 +4335,23 @@ def review(
     # Local git diff path
     # ------------------------------------------------------------------
     parser = DiffParser()
+    # With --json every status line goes to stderr, so stdout is only the JSON array
+    # (the --pr path above does the same).
+    status_console = _status_console(json_output)
+    repo_path = str(Path(repo).resolve())
 
-    with _status_console(json_output).status("Parsing diff..."):
+    if not diff:
+        _exit_if_git_ref_unresolved(parser, repo_path, {"--base": base, "--head": head})
+
+    with status_console.status("Parsing diff..."):
         if diff:
             diff_text = Path(diff).read_text()
             hunks = parser.parse(diff_text)
         else:
-            hunks = parser.from_git(str(Path(repo).resolve()), base=base, head=head)
+            hunks = _git_diff_hunks(parser, repo_path, base, head)
 
     if not hunks:
-        console.print("[yellow]No changes found in diff.[/yellow]")
+        _print_empty_review("[yellow]No changes found in diff.[/yellow]", json_output=json_output)
         return
 
     # Limit to max_files unique files
@@ -3625,10 +4363,10 @@ def review(
         if len(seen_files) <= max_files:
             filtered.append(h)
 
-    console.print(f"Reviewing {len(filtered)} hunks across {len(seen_files)} files...")
+    status_console.print(f"Reviewing {len(filtered)} hunks across {len(seen_files)} files...")
 
     reviewer = DiffReviewer(config)
-    with _status_console(json_output).status("Retrieving context and generating review..."):
+    with status_console.status("Retrieving context and generating review..."):
         comments = reviewer.review(filtered)
 
     _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output, config=config)
@@ -3637,7 +4375,7 @@ def review(
     )
 
     if not comments:
-        console.print(_no_findings_message(reviewer.last_outcome))
+        _print_empty_review(_no_findings_message(reviewer.last_outcome), json_output=json_output)
         _finish_review(reviewer.last_outcome, config)
         return
 
@@ -3738,7 +4476,22 @@ def search_all(
             f"{total_registered - repos_queried} skipped by "
             f"TRELIX_FEDERATION_MAX_REPOS={max_repos}.[/yellow]"
         )
-    with _status_console(json_output).status(f"Searching {repos_queried} repos..."):
+    # A registered repo that was never indexed is skipped and named, not opened: opening
+    # it would create an empty index, and `search-all` would go on to report "No results"
+    # for a repo that was never searched. Only when nothing queried has an index is
+    # there nothing to search at all, which is an error like every other read command's.
+    unindexed = fed.unindexed_repos()
+    for entry, missing in unindexed:
+        err_console.print(
+            f"[yellow]Skipping {_safe_text(entry.alias)}:[/yellow] {_safe_text(str(missing))}"
+        )
+    if unindexed and len(unindexed) == repos_queried:
+        err_console.print("[red]None of the queried repos has an index.[/red]")
+        raise typer.Exit(1)
+
+    with _status_console(json_output).status(
+        f"Searching {repos_queried - len(unindexed)} repos..."
+    ):
         results = fed.retrieve(query, k=k)
 
     if not results:
@@ -4380,6 +5133,146 @@ def audit_prune(
         )
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------------------
+# cache sub-app (the on-disk index-time embedding cache, TRELIX_EMBEDDING_CACHE_*)
+# ---------------------------------------------------------------------------
+
+cache_app = typer.Typer(help="Manage the on-disk embedding cache (TRELIX_EMBEDDING_CACHE_*).")
+app.add_typer(cache_app, name="cache")
+
+# A cache file is `<32 hex chars of embedder fingerprint>.db`; SQLite may leave a `-journal`
+# beside it. Anything else in the directory — a stray note, a subdirectory, another
+# program's file — is not ours and is never opened or removed, so pointing
+# TRELIX_EMBEDDING_CACHE_DIR at the wrong place cannot cost anything but cache files.
+_CACHE_FILE_NAME = re.compile(r"[0-9a-f]{32}\.db")
+_CACHE_FILE_OR_JOURNAL_NAME = re.compile(r"[0-9a-f]{32}\.db(-journal)?")
+
+
+def _embedding_cache_location() -> tuple[EmbeddingCacheConfig, Path]:
+    """The cache settings and the directory they resolve to, from `TRELIX_EMBEDDING_CACHE_*`
+    alone: no repository argument, no IndexConfig, no index opened, nothing created. A bad
+    value is the same `Configuration error` line `trelix index` prints."""
+    from pydantic import ValidationError as _PydanticValidationError
+
+    from trelix.core.config import EmbeddingCacheConfig
+    from trelix.indexing.embedding_cache import EmbeddingCacheError, resolve_cache_dir
+
+    try:
+        cfg = EmbeddingCacheConfig()
+        return cfg, resolve_cache_dir(cfg)
+    except _PydanticValidationError as exc:
+        _print_configuration_error(exc)
+        raise typer.Exit(1) from exc
+    except EmbeddingCacheError as exc:  # no HOME and no passwd entry to resolve ~/.cache
+        _print_error("Configuration error", exc)
+        raise typer.Exit(1) from exc
+
+
+def _cache_files(cache_dir: Path, name: re.Pattern[str]) -> list[Path]:
+    """Direct children of `cache_dir` whose whole name matches, sorted — the directory
+    listing order is the filesystem's, and the output order must not be. A directory that
+    happens to carry a cache file's name is not ours and is left alone by both commands; a
+    symlink is kept for `clear`, which unlinks it without following it, and skipped by `gc`,
+    which never trims a file outside the directory. A cache directory that exists
+    but cannot be listed (owned by another user, say) is `Embedding cache unreadable`, exit
+    1: the exit-code tables in CLI_REFERENCE promise a line, not a traceback."""
+    try:
+        return sorted(
+            path
+            for path in cache_dir.iterdir()
+            if name.fullmatch(path.name) and (path.is_symlink() or not path.is_dir())
+        )
+    except OSError as exc:
+        _print_error("Embedding cache unreadable", exc)
+        raise typer.Exit(1) from exc
+
+
+def _print_no_embedding_cache(cache_dir: Path) -> None:
+    console.print(f"No embedding cache at {_safe_text(str(cache_dir))}.")
+
+
+@cache_app.command("gc")
+def cache_gc(
+    max_mb: int | None = typer.Option(
+        None,
+        "--max-mb",
+        min=1,
+        help=(
+            "Trim every cache file to about this many MB, evicting its least recently used "
+            "rows. Default: TRELIX_EMBEDDING_CACHE_MAX_MB (4096 when unset)."
+        ),
+    ),
+) -> None:
+    """Trim the embedding cache files to their size cap (least recently used rows first)."""
+    from trelix.indexing.embedding_cache import EmbeddingCacheError
+
+    cfg, cache_dir = _embedding_cache_location()
+    if not cache_dir.is_dir():
+        _print_no_embedding_cache(cache_dir)
+        return
+    max_bytes = (cfg.max_mb if max_mb is None else max_mb) * 1024 * 1024
+    failed = False
+    for path in _cache_files(cache_dir, _CACHE_FILE_NAME):
+        if path.is_symlink():  # `clear` unlinks it; `gc` never reaches outside the directory
+            continue
+        # Each file is trimmed on its own and a bad one does not stop the rest; the exit
+        # code says afterwards that not every file was handled.
+        try:
+            console.print(_safe_text(_trim_cache_file(path, max_bytes)))
+        except (EmbeddingCacheError, sqlite3.Error, OSError) as exc:
+            _print_error("Embedding cache unreadable", exc)
+            failed = True
+    if failed:
+        raise typer.Exit(1)
+
+
+def _trim_cache_file(path: Path, max_bytes: int) -> str:
+    """Trim one file and describe it: `<name>: <rows> -> <rows> rows, <bytes> -> <bytes> bytes`.
+
+    Opened with `dimension=None`: `gc` has no embedder to compare the recorded width
+    against, so the file's own `meta.dimension` is trusted and a width check cannot fire.
+    """
+    from trelix.indexing.embedding_cache import EmbeddingCache
+
+    cache = EmbeddingCache.open(path, dimension=None)
+    try:
+        rows_before = cache.row_count()
+        bytes_before = path.stat().st_size
+        cache.enforce_size_cap(max_bytes)
+        rows_after = cache.row_count()
+        bytes_after = path.stat().st_size
+    finally:
+        cache.close()
+    return f"{path.name}: {rows_before} -> {rows_after} rows, {bytes_before} -> {bytes_after} bytes"
+
+
+@cache_app.command("clear")
+def cache_clear() -> None:
+    """Delete every embedding cache file (and journal sidecar) in the cache directory."""
+    _cfg, cache_dir = _embedding_cache_location()
+    if not cache_dir.is_dir():
+        _print_no_embedding_cache(cache_dir)
+        return
+    removed = 0
+    freed = 0
+    failed = False
+    for path in _cache_files(cache_dir, _CACHE_FILE_OR_JOURNAL_NAME):
+        # A symlink is unlinked, never followed — `lstat` and `unlink` both act on the link
+        # itself — so the directory can never reach outside itself.
+        try:
+            size = path.lstat().st_size
+            path.unlink()
+        except OSError as exc:
+            _print_error("Could not remove", exc)
+            failed = True
+            continue
+        removed += 1
+        freed += size
+    console.print(f"Removed {removed} file(s), {freed} bytes, from {_safe_text(str(cache_dir))}")
+    if failed:
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------

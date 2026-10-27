@@ -7,7 +7,8 @@ similarity by joining query tokens against the index.
 Performance note: at 10k chunks × 128 tokens = 1.28M rows. The
 idx_sparse_token index makes token lookups O(log n). Full dot-product
 over 1.28M rows takes ~50ms on SQLite; acceptable for a 7th RRF leg.
-For >100k chunks, consider moving to Qdrant's native sparse support.
+SparseStore always lives in the SQLite file, whatever TRELIX_STORE_BACKEND is; there is no
+alternative sparse backend.
 """
 
 from __future__ import annotations

@@ -6,6 +6,1284 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.5.0] — 2026-10-27
+
+### Security
+- **`trelix-mcp --transport http` is guarded from the first release that serves it.** DNS
+  rebinding and drive-by browser requests: the REST API's Host/Origin check is on by default
+  (loopback
+  names, a specific bind address, `--allowed-host`, `TRELIX_MCP_ALLOWED_HOSTS` with fallback
+  `TRELIX_API_ALLOWED_HOSTS`; `*` as the whole value of the variable in use turns it off with a
+  warning, and `--allowed-host '*'` is refused; FastMCP's own guard and the SDK's DNS-rebinding
+  check stay off so there is one allow-list). A reachable port: a bearer token
+  (`TRELIX_MCP_AUTH_TOKEN`, fallback `TRELIX_API_AUTH_TOKEN`; `hmac.compare_digest`, a fixed 401
+  body with `WWW-Authenticate: Bearer`, no header value logged) is required for any non-loopback
+  bind unless `--allow-unauthenticated`. Path escape: at least one `--root` or
+  `TRELIX_ALLOWED_REPO_ROOTS` is required (exit 2 without), so every tool `repo_path` a remote
+  client names is confined. Information leak: an exception a tool did not expect answers
+  `Error calling tool '<name>'`, or a fixed retry text for an `httpx` timeout or a 429 status
+  error, with no path or traceback; stdio keeps its unmasked texts.
+- **The advisory `zizmor` job now reports no findings** (`zizmor 1.30.1` over `.github/`: one
+  informational and three high before; two ignored with reasons now). It stays advisory.
+  - *Fixed, `cache-poisoning` (twice).* `release.yml` publishes to PyPI, and its `test` and
+    `smoke-test-built-artifacts` jobs restored the Hugging Face model cache with `actions/cache`,
+    which also saves. Both now use `actions/cache/restore`: a release run can read the cache
+    `ci.yml` writes (when its ref can see it) and can no longer write it. A cold cache only costs
+    time (the prefetch step after each restore downloads the model).
+  - *Hardened, `verify-release.yml`.* It runs only for a `workflow_dispatch` or a successful
+    `push` run (a `v*` tag) of this repository, with `contents: read` and `actions: read`
+    (`packages: read` dropped); it already passed event data through `env:` only, and a test now
+    pins that. A hand-started `Docker Publish` backfill no longer starts it: run `Verify Release`
+    from the Actions tab.
+  - *Accepted, `dangerous-triggers`.* `workflow_run` stays (the chosen design): it verifies after
+    both tag-triggered workflows finish, and the guards above make it safe.
+  - *Accepted, `superfluous-actions` (GitHub Release step).* `gh release create` could replace the
+    pinned action, but the publish path cannot be exercised before a real tag.
+- **`Docker Publish` no longer pushes images for a tag that `Release` would refuse.** `release.yml`
+  stops a `v*` tag whose `CHANGELOG.md` has no `## [X.Y.Z]` section, or whose section is dated to a
+  day other than the tag's UTC creation day, before anything reaches PyPI. `docker-publish.yml`
+  starts from the same tag push but only compared the tag with `pyproject.toml`, so such a tag still
+  pushed `:X.Y.Z`, `:X.Y.Z-local`, `:latest` and `:latest-local` to GHCR, where a pushed tag is hard
+  to take back (deleting it is manual, and anyone who pulled `:latest` already has the image). Both
+  CHANGELOG checks now run before the GHCR login and the build, as the same scripts as
+  `release.yml` (a test keeps them identical). The images published for a valid release are
+  unchanged (the job now does a full-history checkout with tags, which is slower; `.dockerignore`
+  keeps `.git/` out of the image). A `workflow_dispatch` backfill behaves as before: the checks, and
+  the full-history checkout that the date check reads, apply to tag pushes only. A real tag release was not run; a test runs both scripts
+  in a scratch git repository, including either side of UTC midnight.
+- **Dependency security updates for the VS Code extension workspace.** Five Dependabot security PRs
+  (open since 2026-09-29 for two, 2026-10-02 for three) targeted `main`; they
+  ship in this release: `undici` 7.29.0 to 7.30.0 (10 advisories, two of them high:
+  GHSA-w293-vg96-wgc3 and GHSA-rfgv-xxqx-mfg5), `fast-uri` 3.1.6 to 3.1.8 (three advisories, two
+  high: GHSA-qw65-cvwx-89v3 and GHSA-58mr-gqgx-xq4g, and medium GHSA-hrr3-gc8f-f4qj), `hono` 4.13.5 to
+  4.13.12, `ip-address` 10.5.0 to 10.7.2 and `brace-expansion` 5.0.9 to 5.0.12. They affect
+  `workspace-vscode` only, not the Python packages or the GitHub App. `npm audit` for that workspace
+  went from 13 findings to 8, all in development tooling (`@vscode/vsce`, `mocha`), when they were
+  applied on 2026-10-04; the production tree reported none. Production-tree advisories reported
+  since then are fixed in the entry below.
+- **Production dependencies of the VS Code extension and the GitHub App are patched.** This is a
+  lockfile-only update made on 2026-10-27 (no `package.json` changes, no development-only package
+  changed version). `workspace-vscode` takes `@modelcontextprotocol/sdk` 1.30.1 to 1.32.1 (five
+  advisories, three of them high), `proxy-addr` 2.0.7 to 2.0.8 (critical: GHSA-jqcg-44mw-7w3h, IP
+  spoofing through an IPv4-mapped IPv6 trust subnet), `body-parser` 2.3.0 to 2.4.0 (high:
+  GHSA-27r3-jxmh-p828, denial of service through trailing bytes after a compressed request body),
+  `zod` 4.4.3 to 4.6.7 (high), `fast-uri` 3.1.8 to 3.1.9 (medium) and `ip-address` 10.7.2 to 10.7.4
+  (medium). `qs` 6.16.0 to 6.16.1 and `content-type` 2.0.0 to 2.1.0 (the copy `body-parser` uses)
+  move because `body-parser` 2.4.0 requires them; neither has an advisory. `infra/github-app` takes
+  the four it shares: `proxy-addr`, `body-parser`, `qs` and `content-type`, to the same versions.
+  `npm audit --omit=dev` now reports no findings for `workspace-vscode` or `infra/github-app`, and
+  still none for `packages/trelix-typescript`. Findings in development tooling are not part of this
+  entry.
+- **The release job's build tools are pinned.** `release.yml` ran `pip install build twine`, so the
+  job that builds what is uploaded to PyPI took whatever version of either tool was newest on the day
+  of the tag. It now installs `build==1.6.1` and `twine==7.0.0`, checked together on 2026-10-05:
+  `python -m build` made the sdist and wheel of `trelix`, `trelix-mcp`, `trelix-langchain` and
+  `trelix-llama-index`, and `twine check` (also with `--strict`) passed on all eight files. Nothing
+  proposes a bump of these pins (Dependabot does not read a `run:` line), so a bump is made by hand
+  and must be re-verified the same way. The two tools' own dependencies still float, and so does
+  `hatchling`, the build backend, which stays unpinned in `pyproject.toml`: a `[build-system]` pin
+  would bind every downstream build of the sdist (an accepted trade-off). A test fails when either
+  tool goes back to a range or to no version.
+- **The `trelix-mcp` federation tools no longer overwrite a file that is not a repository
+  registry.** `config_path` was confined to `~/.config/trelix/` and `<cwd>/.trelix/` but not to
+  registry files. `RepoRegistry.load` reads any file it cannot parse (`.trelix/index.db`, the
+  operator's env file) as an empty registry that keeps the path, and `federation_add_repo` or
+  `federation_remove_repo` then saved registry JSON over it, so any MCP client could destroy it: an
+  agent over stdio (a prompt-injected one included) and, over the HTTP transport, a client holding
+  the bearer token. A `config_path` now needs a name ending in `.json` and a file that is
+  missing, empty, or a JSON object with a `repos` list; anything else answers
+  `config_path is not a repository registry` on all four federation tools and is never written. The
+  first `federation_add_repo` still creates a missing file.
+- **`federation_remove_repo` writes the registry only when it removed an entry.** An unregistered
+  alias used to rewrite the file (reformatted, or created if it was absent). It still answers
+  `removed: false` with `error: null`, and now writes nothing.
+- **With `--root` or `TRELIX_ALLOWED_REPO_ROOTS`, `federation_list_repos` and
+  `federation_remove_repo` stay inside the roots too.** The roots already confine every tool
+  `repo_path`, the path of `federation_add_repo` and what `federation_search_all` searches; the
+  registry tools now follow. `federation_list_repos` lists and counts only the entries inside the
+  roots, and every response carries `repos_outside_roots` (how many were left out), the key
+  `federation_search_all` reports. `federation_remove_repo` answers an alias whose repository is
+  outside the roots exactly like an unregistered one and writes nothing. The entries stay in the
+  file, and without roots nothing changes (no new key).
+- **A refused federation `config_path` no longer names the server's directories.** The refusal
+  carried the two allowed directories (under the home and the working directory) and the resolved
+  path in the result. It is now one of two fixed texts, `config_path is not inside an allowed config
+  directory` or `config_path is not a repository registry`; the detail goes to the server log as a
+  warning (escaped, cut to 100 characters). The `error` key and the rest of each result are
+  unchanged.
+
+### Fixed
+- **`trelix-mcp --transport http` (new in this release) keeps a request path from forging a log
+  record, and its Host/Origin 403 names the variable it reads.** The warning for a request refused
+  by the bearer check logs the path in quotes with control characters escaped and cut at 100
+  characters, as the Host/Origin guard already logs a hostile header
+  (`Rejected POST '/mcp': missing or invalid bearer token`), so a request for
+  `/mcp%0aWARNING%20...`, whose `%0a` the server decodes to a newline, cannot put a second, forged
+  record
+  in the log. The Host/Origin 403 of `trelix-mcp` names `TRELIX_MCP_ALLOWED_HOSTS` and
+  `--allowed-host`, not the REST API's `TRELIX_API_ALLOWED_HOSTS`, which `trelix-mcp` reads only
+  when the MCP variable is unset (`docker-compose.yml` and the Helm chart always set it); its
+  cross-site 403 does not name the REST variable either, and neither suggests `*`, which would
+  switch the check off. The REST API's bodies are unchanged.
+- **`trelix-mcp` keeps at most `TRELIX_MCP_RETRIEVER_CACHE_SIZE` (default 8) Retrievers; the least
+  recently used is dropped, not closed.** The cache had no bound, and each entry may hold an
+  embedding model (`local` provider). A value that is not an integer of at least 1 stops the
+  server at start-up with exit code 2, like the other `TRELIX_MCP_*` limits.
+- **`trelix-mcp` answers every invalid input with a tool error that names the argument.** Measured
+  through an in-process client before the fix: a `repo_path` that did not exist, or held only
+  whitespace, was not a tool result at all but a JSON-RPC "Invalid request parameters" error
+  (`IndexConfig` rejects it with a pydantic `ValidationError`, which FastMCP forwards as a protocol
+  error instead of masking it into a result), so a client such as the VS Code extension saw an
+  exception that named no argument; a blank `repo_path` meant the server's working directory (the
+  read tools opened its index, creating an empty one if there was none, and `index_codebase`
+  indexed it); a file failed with `[Errno 20] Not a directory`; a blank `query` was searched by
+  `search_code`, `graph_search_mcp` and
+  `federation_search_all`, and `ask_agent` persisted a session for it; `get_symbol` and
+  `blast_radius` answered a blank name with an empty result; `federation_add_repo` registered a
+  blank alias, a blank, relative, missing or file path, and a weight of 0 or less;
+  `federation_remove_repo`, `agent_clear_session` and `ask_agent` accepted a blank alias or
+  `session_id`; and a blank `config_path` on the four federation tools resolved to the server's
+  working directory and was refused with a 200 `error` dict that named the allowed roots and that
+  directory, none of which the caller had passed; and on Python 3.12 and 3.13 a `repo_path` whose
+  name the filesystem rejects (a component over 255 bytes) escaped as FastMCP's generic `Error
+  calling tool` text carrying the whole path (3.14's pathlib already answered "does not exist").
+  Each is now `isError: true` with one text block naming the argument, what was given (cut to 200
+  characters) and what is valid, for example
+  `repo_path is not a directory: '<path>'; pass the repository root, not a file in it.`; nothing
+  is opened or created first. A repository with no index is answered as the entry on read surfaces
+  that no longer create an empty index (below) describes. Unchanged on purpose: `k` and
+  `limit` outside their range are clamped (as documented), `federation_remove_repo` of an
+  unregistered alias stays a no-op, the federation tools keep their `error` key for a duplicate
+  alias, a full registry, a non-blank `config_path` outside the allowed roots and a registry with
+  nothing indexed (a client contract), and a wrong type or a value outside a
+  `Literal` is rejected by FastMCP itself with pydantic's text. The checks live in
+  `trelix_mcp.arguments`; `docs/MCP_GUIDE.md` has the table (section 8, Errors).
+- **Every `trelix-mcp` result carries a text block, including the empty ones.** FastMCP sends `[]`
+  and `None` as `structuredContent` alone, so `blast_radius` with no dependents (or an unknown
+  symbol), `graph_search_mcp` with no hits and `get_symbol` for an unknown symbol had no text
+  block, so a client that reads only the first text block had nothing to parse (the VS Code
+  extension defaults to `null` and `[]` for that case); they now carry `[]` or `null` as text,
+  equal to the structured content. `blast_radius`'s truncation note, new in this release, names what
+  can still be raised, decided from what cut the list (the budget, the limit, or both) so that a
+  raise it names shows more (except when `limit` is exactly the number of dependents the budget
+  holds), or says that nothing can be raised and the remaining dependents cannot be
+  fetched with this tool. `federation_search_all` with some registered repos indexed and some not
+  returned the indexed ones with no sign of the rest; the additive `repos_unindexed` key names the
+  skipped aliases (the `error` response when none is indexed is unchanged). Two documentation
+  changes: the trelix-mcp README's Tools paragraph links section 8 of `docs/MCP_GUIDE.md`, and that
+  guide says the `search_code` trace directory has no ignore file of its own (`.trelix/.gitignore`,
+  one level up, covers it).
+- **`trelix review --json` on a local diff printed text ahead of the JSON, so stdout did not
+  parse.** The `Reviewing N hunks across M files...` line went to stdout, and "No issues found.",
+  "No changes found in diff." and "No findings in the hunks that were reviewed." took the place of
+  an empty array. With `--json` the progress line now goes to stderr and stdout is exactly one JSON
+  array in every case: the findings, or `[]` for no findings, an empty diff, a review that did not
+  run (exit 3) and a partial review with no findings (exit 4). This is what `--pr` without
+  `--post-comments` already did, and `docs/CLI_REFERENCE.md` now says so. Without `--json` nothing
+  changes.
+- **`trelix review` said "No changes found in diff." and exited 0 when `git diff` failed.** The
+  failure (an unknown `--base`, a blob compared with a commit, a timeout, output that is not UTF-8) was
+  read as an empty diff. A local git diff now checks `--base` and `--head` first (each must name one
+  object that exists, in any syntax that names a single revision, so the empty tree still works as the
+  base for a repository's first commit and a pair of blobs such as `HEAD~1:f` and `HEAD:f` still
+  compares; a range such as `A..B` never worked here and is rejected), and exits 1 with
+  `cannot resolve --base 'REF' to a git object` on stderr. Any other `git diff` failure exits 1 with
+  `git diff 'BASE' 'HEAD' failed: ...`. A `--base` that is also the name of a directory (a branch `docs`
+  in a repository with a `docs/` directory) is now read as the branch; `git diff` had refused it as
+  ambiguous. Refs that resolve but differ in nothing still say so and exit 0, and `--diff FILE` never
+  looks at the refs. **A caller that passed a missing ref (including the default `HEAD~1` in a
+  repository with a single commit) and relied on exit 0 now gets exit 1.**
+- **Extended thinking (`TRELIX_LLM_THINKING_ENABLED=true`) failed on Claude models that only
+  accept adaptive thinking.** trelix always asked for a token budget
+  (`thinking={"type": "enabled", "budget_tokens": N}`, and `reasoning_config` on Bedrock), which
+  the Claude API reference lists as rejected on Claude 5 and newer (fable, mythos, opus, sonnet
+  and haiku) and on Opus 4.7 and 4.8. Only two of those models were called: on Bedrock Converse
+  (us-east-1), `us.anthropic.claude-sonnet-5` and `us.anthropic.claude-sonnet-5-5` rejected the
+  budget request with `"thinking.type.enabled" is not supported for this model. Use
+  "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.` and accepted
+  `{"thinking": {"type": "adaptive"}}`. The other listed models, and the direct Anthropic API
+  (a 400 for `budget_tokens`, Opus 4.6 and Sonnet 4.6 still accepting it), follow the Claude API
+  reference and were not measured, because no API key was available. On
+  Bedrock the error also contains the words "not supported", which the model-unavailable check
+  matches, so the backend read it as "model not available on demand", logged a misleading
+  "unavailable" warning and, with the default fallback model, moved the instance to Haiku 4.5
+  for the rest of its life (and raised when the fallback was the same model).
+  `thinking_mode_for_model()` in the new `trelix.llm.thinking` reads the model id numerically
+  (`claude-sonnet-5-5` is 5.5, `claude-sonnet-4-5-20250929` is 4.5 with a date) in every bare and
+  prefixed model-id form (`anthropic.`, `us.anthropic.`, `global.anthropic.` prefixes, dated and
+  `-v1:0` suffixes; ARNs are not recognised by name) and
+  classifies Claude 5 and newer in every family, and Opus 4.7 and newer, as adaptive-only. Both
+  backends now send `{"thinking": {"type": "adaptive"}}` to those: the Anthropic backend as
+  `thinking`, the Bedrock backend in `additionalModelRequestFields`, where `temperature` is
+  omitted instead of forced to `1.0`. `TRELIX_LLM_THINKING_BUDGET_TOKENS` is not used for those
+  models. Because the model decides whether to think, a response may carry no thinking block
+  (`ChatResponse.thinking` is then `None`); whether a harder question returns readable reasoning
+  text under the default display setting was not measured (only an easy question was called, and
+  it returned none). Every other model id, including ones trelix has never
+  seen, keeps exactly the request it had before. A model the table does not know yet that
+  rejects the budget shape is handled at runtime: the backend switches that model to adaptive,
+  retries once, logs one warning naming the model, and remembers (per backend instance and per
+  model, so a Bedrock fallback model keeps its own shape); other errors are not swallowed.
+  `docs/CONFIGURATION.md`, `docs/PROVIDERS.md`, `docs/USER_GUIDE.md` and `.env.example` describe the
+  behaviour, and
+  `docs/PROVIDERS.md` and `.env.example` no longer say the Bedrock backend ignores the thinking
+  flag (it has sent `reasoning_config` since 3.3.0) or that Anthropic forces `temperature=1.0`
+  (the Anthropic backend never sends a temperature).
+- **GitHub App: small gaps left by the first App releases.** An async logger whose promise rejects
+  (the `logError` given to `createApp`, or the writer of the job-failure logger) was not covered by
+  "the response does not depend on the log": nobody awaited the promise, so the rejection went
+  unhandled, which ends a Node 24 process. It is now reported like a throw (the same fixed console
+  line, quoting nothing) and still not awaited. Tests now pin the manifest's exact permissions
+  (`pull_requests: read`, `checks: write`, `contents: read`) and event (`pull_request`), so widening
+  one no longer passes CI. `github-app-ci.yml` now also runs when `redeliver-failed-webhooks.yml`
+  changes (that workflow builds and runs the App's script). Comments and docs: `sanitize.ts` and the
+  App README wrote the ASCII `@` where the sanitiser's replacement `＠` (U+FF20) is meant, and the
+  `createApp` comment still said `server.ts` only loads the config and listens.
+- **One installation could fill the hosted GitHub App's whole wait line.** The review queue has one
+  bounded line of waiting reviews shared by every installation, so an installation that sent many
+  `pull_request` events took every waiting slot and all the others were answered `503` "review queue
+  is full". The queue now also caps the waiting reviews of one installation
+  (`TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION`, default half of `TRELIX_APP_QUEUE_CAPACITY` rounded
+  up, so 10 of 20). A delivery over the cap is answered with the same `503` body and `Retry-After` as
+  a full line, its dedupe claim is given back, and one log line names the installation id and the
+  pull request, nothing else from the delivery. Running reviews do not count against the cap (they
+  stay limited by `TRELIX_APP_CONCURRENCY_PER_INSTALLATION`), the share frees as soon as one of the
+  installation's reviews starts, and a repeat of a commit that is already queued is still answered as
+  a duplicate. One installation alone now has at most 10 reviews waiting (and one running) by
+  default, not 20; raise the setting to get that back.
+- **A review that never finished held its running slot for ever and stalled the hosted GitHub App's
+  queue.** The checkout, the index and the `trelix review` child each have a timeout, but the App sets
+  none on an installation-token request or a GitHub API call (Node's `fetch` gives up on a
+  response that stays silent for 5 minutes, but not on one that keeps trickling in), and a child
+  that ignores its kill never ends, so a job that hung there held its slot for ever. The queue
+  now has a per-job deadline, `TRELIX_APP_JOB_TIMEOUT_MINUTES` (default 17; 13 to 240): when it
+  elapses the slot is taken back, the claim is released, the failure is logged once through the
+  existing job-failure logger as a `JobTimeoutError`, and the next review starts. The default is the
+  checkout (2 minutes), index (5) and review (5) time limits one after the other plus 5 minutes, so a
+  slow review that is still working is not cut. The least you can set is one minute more than those
+  three, which is all the token requests and the Check post, with no time limit of their own, then
+  get. The hung work itself cannot be stopped: if it settles later that is ignored (it does
+  not free a slot a second time or start a job), and it may still post its Check.
+- **The hosted GitHub App forgot a finished review after 24 hours, although the redelivery sweep can
+  re-send a failed delivery for about 3 days.** The sweep keeps no record of what it re-sent, so a
+  redelivery after the claim expired started a second review of a commit that already had one. The
+  claim is now kept 4 days (the 3-day window of `redeliver-failed-webhooks.yml` plus a day), and a
+  test reads the window from the workflow. Memory is still bounded by the 10,000-claim cap (about a
+  megabyte and a half), not by time. A commit that got a verdict is now ignored for 4 days if it is
+  sent
+  again, not 1: push a new commit to review it sooner.
+- **The GitHub App's review queue had the gap the loggers just had, in its own `onError`.**
+  `onError` is typed to return nothing and only a synchronous throw was caught, so an async one that
+  rejected was an unhandled rejection. The queue now uses `reportIfRejected` (from
+  `error-handler.ts`) and a rejection gets the same fixed console line as a throw (`[queue] a job
+  failed; the error could not be logged`), without quoting the error.
+- **`trelix ask` exited 0 with an empty stdout when the LLM reply carried no answer.** It
+  affects anyone who points `OPENAI_BASE_URL` at an endpoint that answers HTTP 200 but is not an
+  OpenAI-compatible chat API (an HTML page from a wrong URL, a proxy that ignores
+  `stream=True`), and anyone whose model streams only empty or whitespace-only content. For
+  those replies the openai SDK returns a stream that yields no chunk (checked on openai 2.44.0:
+  zero chunks for an HTML body and for a JSON body), the synthesizer recorded no error, and
+  `ask` reported success, so a script or CI job saw an empty answer as a pass.
+  `Synthesizer.stream()` and `Synthesizer.synthesize()` (the call FLARE makes) now record
+  `The LLM returned no answer: the endpoint may not be an OpenAI-compatible chat API,
+  OPENAI_BASE_URL (or a proxy in front of it) may be wrong, or the model returned nothing.`
+  when the answer has no non-whitespace character (a large context handled by GraphRAG map-reduce
+  keeps its own `GraphRAG synthesis produced no answer` message), and `ask` ends as it does for any
+  other
+  synthesis failure: that message on stderr, no banner on stdout, exit `1`, with and without
+  `TRELIX_RETRIEVAL_FLARE=true`. A "not configured" error keeps its own message, and an empty
+  retrieval ("No relevant code found") is still not an LLM failure. `GET /ask` is unchanged (it
+  never reads `last_error`, so an empty answer is still a bare `data: [DONE]`), and so is
+  `--agentic`, whose fallback is documented.
+- **The review workflow's check counted the annotations, not the findings.** GitHub takes at most 50
+  annotations per request, and `trelix-review.yml` titled a clean-exit check "trelix found N issue(s)"
+  with N the number of annotations sent, so a review with 60 findings read "found 50" (the verdict
+  already judged every finding). The title and summary now give the real count, and the summary says
+  how many findings have no inline annotation ("10 of them could not be shown as inline annotations
+  (GitHub allows 50 per check)"), as the GitHub App and the "incomplete" check already did. The App
+  README states it.
+- **`trelix-mcp` no longer advertises a `resources.subscribe` capability it does not serve.**
+  `server.py` replaced `get_capabilities` on the MCP server to force `resources.subscribe: true`
+  into the capabilities sent at connect time, but trelix-mcp registers no `resources/subscribe`
+  handler, so a client that trusted the flag and sent that request got JSON-RPC "Method not
+  found" (measured in process with fastmcp 4.0.10 and mcp 2.3.0, over both the `initialize`
+  handshake and `server/discover`). The patch is deleted and the server reports
+  `resources.subscribe: false`, derived from what is registered. Any MCP client that gated on the
+  capability now sees `false`; the `subscribe_resource` and `unsubscribe_resource` tools are
+  unchanged apart from the `subscribe_resource` description text (see
+  `docs/BACKWARDS_COMPATIBILITY.md`) and the annotations and position of both in `tools/list`. The
+  docs also said `trelix watch` pushes
+  `notifications/resources/updated` to MCP clients. It does not: `trelix watch` runs in its own
+  process, where the subscription registry is empty, and nothing in trelix-mcp starts a watcher,
+  so no client receives those notifications. `docs/MCP_GUIDE.md` (sections 12 and 17), the
+  trelix-mcp README, `CONFIGURATION.md`, `USER_GUIDE.md`, `FAQ.md`, `GETTING_STARTED.md` and
+  `ROADMAP.md` now say what works today.
+- **The first `trelix index --prune` after an upgrade was refused with advice that could not
+  clear it.** The refusals said "Re-index with this version, then prune", but right after an
+  upgrade the tree is unchanged, and a plain `trelix index` (default batch pipeline) prints
+  "Nothing to index — all files up to date." and returns before it writes provenance, so the
+  same refusal came back until some file happened to change. The refusals now name
+  `TRELIX_INCREMENTAL=false trelix index <repo>`, run once under the environment and
+  `--provider` that built the index and followed by a separate prune (0 chunks embedded over an
+  unchanged tree), or a rebuild where a re-index would be refused again (a walk config recorded
+  with no history, as 3.1.2 did; an older `.gitignore` digest scheme; several walk configs). The
+  refusals for a given index that name a step all name the same one. No check changed, and for an
+  index that recorded a
+  walk config the step still cannot clear a changed walk (pinned on real runs). The step only
+  certifies the walk as it is now, not the one that wrote the rows, so the refusal says to check
+  the listed files against the disk before `--yes`: for an index that recorded no walk config,
+  and for the plain upgrade, where it re-stamps the version without proving anything about the
+  rows. A record under an older `.gitignore` digest scheme was also mislabelled: the prune
+  refusal said "records no walk config" and `stats --drift` said it "predates walk-config
+  recording". `--prune`, `--yes`, `--prune-max-percent`, `--dry-run`, the six checks and the
+  upgrade step are now in `docs/CLI_REFERENCE.md`, and each refusal in
+  `docs/TROUBLESHOOTING.md`.
+- - **`trelix eval` exited 0 when queries raised.** A query whose retrieval raised was scored 0.0
+  and logged as a warning, and the run went on and printed means
+  that blended those zeros in with real misses; nothing in the exit code or the table said so. It
+  now prints the number of failed queries and the first five messages (each cut at 200 characters),
+  and exits 1 (a golden query with no frozen plan in a replayed `--plan-cache-file` is not covered
+  by this: it has always stopped the run with exit 1). The table is still printed first, and
+  `--per-query-out` (new in this release) writes
+  its file before the command exits; the file names every failed query. `EvalHarness.run()` is
+  unchanged: it still returns the mean with the failed queries counted as 0.0.
+- **The read surfaces beyond the CLI no longer create an empty index on a repository that was never
+  indexed, and most now say so.** 3.4.2 fixed `search`, `ask`, `query`, `call-graph` and `graph`;
+  the MCP tools, the REST read routes, the LangChain and LlamaIndex retrievers, `trelix
+  search-all` and `trelix review` still built a `Retriever`, `GraphBuilder` or `Database` first,
+  and opening a missing index creates it (schema plus an empty vec0 table). Each answered as if it
+  had searched (`{"results": []}`, `200` with zero counts, `[]`), and the file it left behind made
+  the repository look indexed, so a later `trelix search` said "no results" instead of "not
+  indexed". One check, `trelix.core.index_check.require_index` (filesystem only; the CLI's
+  `_require_index` now uses it), runs before anything is opened, and each surface reports in its
+  own form with the CLI's words (`No index found at <repo>/.trelix/index.db. Run trelix index
+  <repo> first.`): the eight MCP tools that need an existing index (`search_code`, `get_symbol`,
+  `blast_radius`, `build_knowledge_graph`, `graph_search_mcp`, `ask_agent`, `agent_list_sessions`
+  and `agent_clear_session`) return a tool error (`isError: true`) and the `trelix_mcp.resources`
+  handlers reply `{"error": ...}`; `/search`, `/ask`, `/stats`, `/graph`,
+  `/graph/communities`, `/graph/visualize` and `/graph/search` answer HTTP `400` (after
+  authentication and containment; `POST /index` and `POST /parse` are untouched); `TrelixRetriever`
+  and `TrelixIndexRetriever` raise `IndexNotFoundError`, a `FileNotFoundError` that pickles and
+  copies (a process-pool worker hands it to its parent intact). `trelix search-all`
+  and the MCP `federation_search_all` skip a registered repo with no index (which also stops them
+  creating the directory of a registered path that does not exist); `search-all` names each on
+  stderr and exits `1` when every repo it would query is unindexed. `trelix review` keeps working
+  on an unindexed repository, from the diff alone (the PR workflow tolerates a failed `trelix
+  index` and reviews anyway); it only stops creating the empty index. **Behaviour change:** a
+  caller that read the empty answer as "nothing found" now gets an error; run `trelix index`,
+  `index_codebase` or `POST /index` first (see `docs/BACKWARDS_COMPATIBILITY.md`). Not covered
+  here, and unchanged: `trelix eval`, `eval-synthesis`, `telemetry`, `agent sessions` and `taint`
+  do not check yet, and neither does `FederatedRetriever.record_exports` (a library method that no
+  CLI or MCP path calls).
+- **`get_symbol` and the `trelix://` resource readers closed no database connection.** Each call
+  opened a `Database` and left it to the garbage collector, so a long-running `trelix-mcp` kept a
+  file handle (and, in WAL mode, a `-wal` and `-shm` pair) open per call until collection. They now
+  close it on every path: found, not found, and when a query raises. A test spies on every
+  `Database` these open and requires each to refuse a query afterwards.
+- **VS Code: `N dependents` and `@trelix /impact` show the real count when `trelix-mcp` cuts a long
+  `blast_radius` list.** In the release that ships the MCP output budget the server cuts a long
+  `blast_radius` array and reports the real count in `_meta.trelix.total_available`. The extension
+  read only the array in the first text block, so the lens and the chat command would have shown at
+  most the cut length with no sign that the list was cut. `blastRadius()` now also reads that field
+  and returns `{ entries, total }`; `total` is the field when it is an integer at least as large as
+  the entries received, and otherwise (no `_meta`, an older server, a malformed or smaller value)
+  the entry count. When the list was cut, the lens title reads `150 dependents (showing 100)` (the
+  Peek References popup still lists the entries it has) and `@trelix /impact` says
+  `has 150 dependent(s), showing the first 100`. An uncut list reads as before. No new setting and
+  no new server call; `limit` is not passed.
+- **`docs/OBSERVABILITY.md` described the OpenTelemetry integration as planned, not as it runs.**
+  It said every retrieval leg span carries the query text (trelix handed it over, but
+  `opentelemetry-util-genai` records `gen_ai.retrieval.query.text` only when
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `SPAN_ONLY` or `SPAN_AND_EVENT`; the default
+  `NO_CONTENT` drops it, so by default no query text reaches a span), that metrics cover embedding
+  only (the same library records a `gen_ai.client.operation.duration` histogram for every retrieval
+  leg span once a `MeterProvider` exists), that the library was `1.0b0` at time of writing (1.2b0 is
+  current; the `otel` extra accepted `>=1.0b0` in 3.4.3 and now requires `>=1.2b0`; 1.2b0 renamed
+  the cache-write and `top_k`
+  attributes), and it linked the GenAI conventions in the core `semantic-conventions` repository,
+  whose pages are now "Moved" stubs: the conventions live in `semantic-conventions-genai`, which has
+  no tags, so the link pins a commit. The library link now points at the `opentelemetry-util-genai`
+  1.2b0 tag in `opentelemetry-python-genai`. The primary-source spike behind these corrections
+  (pinned sources, the inference attribute table with requirement levels, the content opt-in and
+  the Logs-signal path, the util-genai 1.0b0 vs 1.2b0 API differences, the cache-token names and
+  the metrics the library already records) is `docs/reports/otel-genai-semconv-spike-2026-10-07.md`
+  (roadmap C-8, requirement R-C6-01). This entry changes no package code (the new `otel` floor has
+  its own entry);
+  `tests/unit/test_observability_doc_pins.py` pins the sentence about when trelix installs its
+  `MeterProvider` (on the first counted embedding provider call; never for `bge-code` or
+  `nomic-code`) to the embedder code.
+- **Documentation that no longer matched the code is corrected.** `CONTRIBUTING.md` named
+  `TRELIX_QUERY_EXPANSION_ENABLED` and `TRELIX_FLARE_ENABLED` as the switches for query expansion and
+  FLARE; neither binds anything (the settings are `TRELIX_RETRIEVAL_HYDE_FALLBACK`,
+  `TRELIX_RETRIEVAL_MULTI_QUERY` and `TRELIX_RETRIEVAL_FLARE`). Seven links (five to the `bge-code`
+  section of `docs/PROVIDERS.md`, two to the `intent_hint` section of `docs/USER_GUIDE.md`) pointed
+  at anchors that do not exist, and `docs/integrations/vscode-plugin.md` named a file that does not
+  exist. `SECURITY.md` said the line of a posted review comment comes from the parsed diff; it comes
+  from the model's reply. Its `file:line` citations are now symbol names, and it says that
+  `search_code` writes one JSON trace of the query to `.trelix/debug/` on every call, with no cap, no
+  rotation and no switch. `docs/MCP_GUIDE.md` said four tool groups where it lists five, and three
+  resources where the server registers four. Test, command, tool and resource counts that had
+  drifted are removed from `CONTRIBUTING.md`, `docs/USER_GUIDE.md` and `docs/WHY_TRELIX.md`. No code
+  changes.
+- **The Helm chart rolls the pod when a Secret it manages changes.** The API token, the
+  `trelix-mcp` token and the Qdrant and embedder keys reach the containers as environment
+  variables, which a container reads once, when it starts. A `helm upgrade` with a new
+  `apiAuth.token`, `mcp.auth.token` or a plaintext `apiKey` updated the Secret but left the
+  Deployment unchanged (two `helm template` renders with different tokens gave a byte-identical
+  Deployment), so nothing rolled and the old token stayed valid until the pod restarted for
+  another reason.
+  The pod template now carries a `checksum/secret` annotation, the hash of the Secret the chart
+  renders, so that upgrade replaces the pod; nothing is written when every credential comes
+  from an `existingSecretName`. The chart cannot see a Secret it does not own: after changing
+  one, run `kubectl rollout restart deployment/<fullname>` (the chart README and the install
+  notes now say so for each token). When the chart does own a Secret, upgrading to this chart
+  version replaces the pod once, and so does a later change of the chart `version` alone,
+  because the Secret's `helm.sh/chart` label is part of the hash. Chart version 0.2.8.
+- **`trelix eval-synthesis` checks `--record` and `--per-query-out` before the run starts.** Both
+  flags are new in this release, and their files are written only after every golden query has been
+  answered, so without this check a missing directory would be found after the run had been paid for
+  (and, for `--record`, the recorded answers lost), and when both flags named one file the second
+  write would silently replace the first. The command exits `1` before the
+  index is opened, with one line per problem, when the directory of either file does not exist or
+  cannot be written to, when a path is a directory, or when the two flags name the same file (also
+  when one is written relative and the other absolute, or reached through a symlinked directory);
+  for example `--record: directory /x/y does not exist`. A `--replay` run gets the same check. The
+  write after the run is still attempted and still reports a failure (the directory can change while
+  the run is paid for).
+
+### Added
+- **`trelix-mcp --transport http` serves MCP over Streamable HTTP** on `127.0.0.1:8766/mcp`
+  (stateless; both the 2025-11-25 and 2026-07-28 protocol eras), with the Host/Origin guard on
+  (unless the allowed hosts are `*`), a bearer token from `TRELIX_MCP_AUTH_TOKEN` (fallback
+  `TRELIX_API_AUTH_TOKEN`) when set, unauthenticated `GET /health`, masked unexpected errors, and a
+  start-up error (exit 2) for a non-loopback bind without a token or for no root (no `--root` and no
+  `TRELIX_ALLOWED_REPO_ROOTS`). New flags `--transport stdio|http`,
+  `--host`, `--port`, `--path`, `--allowed-host`, `--stateful` and `--allow-unauthenticated` (the
+  last six are `--transport http` only and a usage error on stdio); a port in `--host`, a blank
+  `--host` or `--path`, and an `--allowed-host` that is `*` or not one hostname or IP address (a
+  comma list, a URL, a wildcard, a blank) are refused (pass the port with `--port` and repeat
+  `--allowed-host` for more than one; the guard goes off only for `*` in `TRELIX_MCP_ALLOWED_HOSTS`,
+  or in `TRELIX_API_ALLOWED_HOSTS` while the MCP one is unset or blank) and `--host [::1]` binds
+  `::1`. stdio with no flags is unchanged by this transport; the server instructions and result
+  limits described in the entries below apply to it too. See `docs/MCP_GUIDE.md` section 19.
+- **`trelix-mcp --transport http` has a real-socket end-to-end test**
+  (`tests/e2e/test_mcp_http_e2e.py`). It starts the installed `trelix-mcp` as a child process on a
+  free loopback port with a bearer token and one `--root`, waits for `GET /health`, and checks over
+  TCP that a missing or wrong token is `401` with `WWW-Authenticate: Bearer` and the wrong value is
+  never logged, that a foreign `Host` is `403`, that `fastmcp.Client` initializes and lists the 15
+  tools in both protocol eras, that a `repo_path` outside the root is refused, and that SIGTERM
+  exits 0. It needs no model and no network beyond 127.0.0.1, runs in CI's `e2e` job and in the
+  release smoke job against the built wheels, and skips where `trelix-mcp` is not on PATH. No
+  product change.
+- **GenAI `chat` spans for every LLM call, behind `TRELIX_OTEL_ENABLED`** (roadmap C-8, requirement
+  R-C6-02; PR 3 of 4). `build_chat_client()` returns the backend wrapped in a `TracedChatClient`
+  (`src/trelix/llm/otel.py`) when the flag resolves true from the environment, and every
+  `complete()`, `stream()` and `tool_call()` emits one `chat {request model}` span through the same
+  `TelemetryHandler` as the retrieval legs (same instrumentation scope, no new provider). Every span
+  carries `gen_ai.operation.name`, `gen_ai.provider.name` (`openai`, `azure.ai.openai`, `anthropic`,
+  `aws.bedrock`, `gcp.gemini` or `gcp.vertex_ai`, and the custom value `litellm`),
+  `gen_ai.request.model` (the backend's active id: the Azure deployment, the LiteLLM model, Bedrock's
+  possibly swapped id) and `gen_ai.request.max_tokens` (the effective cap). A `complete()` span adds
+  `gen_ai.response.model`, `gen_ai.response.finish_reasons` (the provider's raw word),
+  `trelix.finish_reason` (the normalised one), `gen_ai.usage.input_tokens` (input plus cache read
+  plus cache write, as the GenAI Anthropic conventions require), `gen_ai.usage.output_tokens` and
+  the two cache counts when non-zero; `stream()` and `tool_call()` spans carry request attributes
+  only (`ToolCallResponse` has no usage; a stream is not buffered). A backend exception ends the
+  span `ERROR` with `error.type` and the status description both set to the exception's class name
+  (never `str(exc)`, which can echo a provider error body) and is re-raised unchanged. Prompt,
+  system instruction and reply text reach a span only under `TRELIX_OTEL_CAPTURE_CONTENT=true` AND
+  a span content mode in `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`; `stream()` replies
+  and images never do. The off path returns the same backend object and type as before and imports
+  nothing from `opentelemetry` (one memoised `RetrievalConfig()` read per process). With the flag
+  on but `opentelemetry-util-genai` not installed, one WARNING per process names the cause and the
+  bare backend is returned. The wrapper exposes the backend's `_client` by identity (the
+  synthesizer, the planner's decomposition path and GraphRAG read it to choose the
+  `TrelixChatClient` path over a legacy raw-OpenAI path) and nothing else. The placeholder reply of
+  an unconfigured backend is recorded like any other (`gen_ai.response.model="none"`). With a
+  `MeterProvider` installed, the library also records `gen_ai.client.operation.duration` for
+  every chat span and `gen_ai.client.token.usage` for `complete()` spans. `docs/OBSERVABILITY.md` §
+  LLM chat spans has the
+  attribute table, the provider map and the stream lifecycle; `scripts/mutation.py` gains the
+  `llm.otel` scope and deselects the new span test file (the global TracerProvider is one-shot).
+  Decisions taken: the `otel` extra floor (under Changed), the placeholder span, request-only
+  `stream()`/`tool_call()` spans, the custom `litellm` value, the one-time WARNING and the
+  class-name-only error text.
+- **One `trelix.review` span per reviewed hunk, carrying `trelix.review.hunk_status`** (roadmap
+  C-8, requirement R-C6-02, PR 4 of 4). With `TRELIX_OTEL_ENABLED=true`, `DiffReviewer.review()`
+  opens a `trelix.review` span around each hunk it attempts; the hunk's `trelix.retrieve` span, its
+  legs and its `chat` span(s) nest under it, and once the hunk's status is known the span carries
+  `trelix.review.hunk_status` = `reviewed`, `truncated`, `refused`, `parse_failed` or `error` (the
+  status is decided after the reply has returned, so it cannot sit on the chat span). A review that
+  meets the no-credentials placeholder stops after the first hunk and emits one span (`error`,
+  carrying the SDK's record of that exception: its class, the backend's constant placeholder text
+  and a stack trace) however many hunks the outcome counts. The exception text of any other failed
+  call never reaches the span. `pipeline_stage_span` gains `set_attribute()` for attributes known
+  only after a stage started. Off by default; no span and no `opentelemetry` import when the flag
+  is off.
+- **`trelix-mcp --root PATH` (repeatable) and `TRELIX_ALLOWED_REPO_ROOTS`** confine every
+  `repo_path`, `federation_add_repo.path` and `trelix://repo/...` URI to those roots; a tool
+  call whose `repo_path` or `federation_add_repo.path` is outside answers `isError` with
+  'repo_path is not inside an allowed repository root' (with `path` in place of `repo_path` for
+  `federation_add_repo.path`); a `trelix://repo/...` read outside fails with a resource error
+  that carries the 'repo_path is not inside an allowed repository root' text;
+  `federation_search_all` skips registry entries outside the roots and reports
+  `repos_outside_roots`. A blank `--root` value is a startup error. Stdio with no root is
+  unchanged.
+- **A Claude Code plugin.** `claude plugin marketplace add sairam0424/trelix` then
+  `claude plugin install trelix@trelix` installs the `trelix-mcp` server (launched as
+  `uvx --from trelix-mcp==<newest published release> trelix-mcp`, so the plugin trails this
+  repository by one release and never points at an unpublished version) and a skill,
+  `/trelix:use-trelix-index`, that says when to search with trelix and when to fall back to grep.
+  Tool names are `mcp__plugin_trelix_trelix__<tool>`. Five decisions, recorded in
+  `plugins/trelix/README.md`: the server command carries no `trelix[local]` extra (the opt-in
+  command is documented, because that extra pulls PyTorch); this first version pins the published
+  3.4.3, which has no `--tools` flag and sends no server instructions, so the skill carries that
+  guidance until a pin-bump PR follows this release; `plugin.json`'s `version` is the
+  pin, or `<pin>.N` for a plugin-only change (a literal test that also compares it with the
+  `.mcp.json` pin, so a pin bump that forgets `version` fails) and a contents hash in
+  `tests/unit/test_claude_plugin_manifest.py` makes
+  every plugin edit loud (it cannot see whether `version` was bumped with it);
+  `claude plugin validate --strict` runs in CI (the bullet below) and before committing; and the
+  pin check is offline only (a released CHANGELOG section, not newer than the trelix-mcp
+  stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
+  pin the manifests, the pin form (an exact `==` to a version with a released CHANGELOG section,
+  not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
+  server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
+  agents: `docs/integrations/AGENTS_SNIPPET.md`.
+- **`TRELIX_OTEL_CAPTURE_CONTENT` (default `false`): trelix's own gate in front of OpenTelemetry's content
+  opt-in** (roadmap C-8, requirement R-C6-03, PR 2 of 4). Retrieval leg spans hand their `query_text` to
+  `opentelemetry-util-genai` only when this flag is on; where the text then goes is still decided by
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (default `NO_CONTENT`; read once when tracing
+  starts on `opentelemetry-util-genai` 1.2b0, re-read per span on 1.0b0 and 1.1b0): `SPAN_ONLY` puts it
+  on span attributes; `EVENT_ONLY`/`SPAN_AND_EVENT`, or
+  `OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT=true`, also emit one `gen_ai.client.inference.operation.details`
+  log record per chat call on the Logs signal (content-free under `NO_CONTENT`); trelix installs no
+  `LoggerProvider`, so these go nowhere unless the host configures one. With the trelix flag on and the
+  upstream mode `NO_CONTENT`, trelix logs one WARNING saying so (best effort: parallel legs on the
+  first query may repeat it), decided from the memoised
+  handler rather than a re-read of the environment. A host that opted another library into content
+  capture no longer receives trelix's query text (and, with the chat spans above, prompts and repository code)
+  without asking for it. A malformed value behaves like a malformed `TRELIX_OTEL_ENABLED`.
+  `docs/OBSERVABILITY.md` gains a "Content capture" section; `docs/CONFIGURATION.md` and `.env.example`
+  list both names.
+- **The Claude Code plugin tells Claude at session start whether the repository has a trelix
+  index** (files, symbols, when and from which commit it was built, how many commits HEAD is
+  ahead, which embedder provider), from a stdlib-only script (`plugins/trelix/scripts/session_start.py`,
+  run by a `SessionStart` hook on `startup`, `resume` and `clear` with a 15 s timeout) that opens
+  the index read-only, creates no directory or database under the project (SQLite may leave
+  `index.db-wal` and `index.db-shm` files beside an existing WAL index), and never blocks the
+  session: exit 0 on
+  every path, nothing on stdout on an error (one `trelix session_start: skipped (<reason>)` line
+  on stderr, which Claude Code keeps in its debug log), at most 1,000 characters. It prints one of
+  three literal lines: `trelix: no index at <repo>/.trelix/index.db. Call
+  index_codebase(repo_path="<repo>") before search_code; until then, use grep.`; the same for an
+  index that `is empty (0 files)` (what a search on the pinned release leaves behind); or
+  `trelix: <repo> is indexed: N files, M symbols; built <when> from commit <12 hex> (= HEAD |
+  HEAD is 1 commit ahead | HEAD is N commits ahead | distance from HEAD unknown); embedder
+  <provider>. Pass repo_path="<repo>" to every trelix tool.` `CLAUDE_PROJECT_DIR` names the
+  project; the hook's stdin `cwd` is used only when it is unset or does not name a directory.
+  Tests pin the hook file (one event, one command), the script's import roots (no `trelix`, no
+  network), each line, the cap and the exit-0 behaviour on bad input; `plugins/trelix/scripts`
+  joins the ruff scope in CI and `make lint`; the plugin README, the skill, the integration guide
+  and SECURITY.md describe the line and what the hook runs; the plugin version moves to
+  `3.4.3.1` (a plugin-only change on the same pin; the next entry moves it on to `3.4.3.2`).
+- **CI runs `claude plugin validate --strict` on the marketplace and the plugin** (roadmap B-3,
+  PR 4 of 4). The `TypeScript SDK` job of `ci.yml` runs Claude Code's own validator, through an
+  exactly pinned `npx -y @anthropic-ai/claude-code@<version>` from the repository root, over
+  `.claude-plugin/marketplace.json` and `plugins/trelix/`, with warnings treated as errors, so a
+  manifest Claude Code would warn on (an unquoted `${CLAUDE_PLUGIN_ROOT}`, an unrecognised field,
+  a missing `version`) fails CI instead of reaching users; the offline tests keep pinning the
+  shapes this repository chose. The validator runs with
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the package download is its only network use.
+  A test pins the step (its three command lines, the working directory, the position after the
+  Node setup, no masking) and requires every `npx` in every workflow to carry an exact `@X.Y.Z`;
+  the Claude Code version is a literal in `ci.yml` and that test only. The plugin version moves
+  to `3.4.3.2` (a README sentence; same pin).
+- **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
+  of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
+  answer the question; this one tags the context and instructs the model, and the entries below read
+  the model's tags). With the flag on, every block header of the assembled context carries a tag, `[C1] [Lines
+  42-67] AuthMiddleware.verify`, numbered in rendered order with one number per symbol (a compressed
+  body carries its tag on each kept-span header; the intent preambles are not tagged), and
+  `RetrievedContext.citation_sources` records the path, lines and qualified name each tag refers to.
+  The synthesis system prompt (plain `ask`, FLARE and eval synthesis alike) then ends with an
+  instruction to write a block's tag after each sentence that relies on it and to cite only tags that
+  appear in the context; GraphRAG map-reduce prefixes its group headers with the same numbers and adds
+  one line to each of its prompts. The tag number is the only thing the model is asked to write about
+  a source. With the flag off (the default) the assembled context, the prompts and every command's
+  output are unchanged byte for byte (the assembler's frozen-digest and `v2.12.0` back-compat tests
+  cover the context; a prompt equality test covers the three synthesis paths). The flag is read by
+  every Retriever, so `trelix review`'s per-hunk context and REST `/ask` see the tags too when it is
+  on; `trelix ask --provider local` prints them with the context. No live model call was made: how
+  well a model follows the instruction is what the synthesis eval changes later in this series exist
+  to measure.
+- **A verifier for the `[C#]` markers a model writes** (third of six changes toward
+  `trelix ask` answers that cite the retrieved code; the next entry wires it into `trelix ask`). `trelix.retrieval.citations.verify_citations(answer,
+  sources, repo_root)` classifies every distinct `[C1]`..`[C999]` marker of an answer, in order of
+  first appearance, as `valid`, `file_missing` (the tag's path is no longer a file under the
+  repository root), `line_out_of_range` (the cited chunk ends past the file's current line count) or
+  `unknown` (no retrieved chunk carries that tag), each stale case with a one-line detail ending in
+  `re-index`. Nothing is taken from the model's text but a marker's digits: path, lines and symbol
+  come from `RetrievedContext.citation_sources`, and the only file access is one newline count per
+  distinct cited file. Lines are counted as the extractors count them, `count("\n") + 1`: a
+  newline-terminated 7-line file has 8 lines, so its whole-file `<module>` symbol (`1-8` from the
+  Python parser) verifies as `valid` on a fresh index. The module joins the mutation driver's scope
+  as `retrieval.citations`.
+- **`trelix ask --json`, and a verified `Sources:` footer after a cited answer** (fourth of six
+  changes toward `trelix ask` answers that cite the retrieved code).
+  `--json` prints exactly one JSON object on stdout, `{query, answer, abstained, abstain_reason,
+  citations}`, and nothing else: `answer` is the whole answer, the `INSUFFICIENT_EVIDENCE:` line or
+  the no-results notice; `abstained` is `true` for either abstention, which exits `0` like an
+  answer and leaves `citations` empty; each element of `citations` is `{marker, status, path,
+  lines, symbol, detail}`, `lines` as `"70-80"`, and `path`, `lines`, `symbol` are `null` for a
+  marker no retrieved chunk carries.
+  A synthesis failure leaves stdout empty and exits `1`, under `TRELIX_RETRIEVAL_FLARE=true` too:
+  the Synthesizer's own notices stay off stdout under `--json`. `--json` is refused before the
+  index is opened: with `--agentic`/`--session` as a usage error (exit `2`), with
+  `TRELIX_RETRIEVAL_AGENTIC=true` (exit `1`, the agent loop prints its own result) and in
+  context-only mode (`--provider local`, FLARE off: exit `1`, pointing at `trelix search --json`).
+  In human mode, when `TRELIX_RETRIEVAL_CITATIONS=true` tagged the context and the model answered,
+  a blank line and a `Sources:` footer follow the streamed answer: `  [C2]
+  src/auth/middleware.py:70-80 AuthMiddleware.bearer` for a marker that verifies, `  [C3]
+  unverified (line_out_of_range): <detail>` otherwise, `Sources: none cited.` for an answer without
+  markers. The answer text is never rewritten (it has already streamed), and the path, lines and
+  symbol in both renderings come from the index, never from the model. With the flag off nothing is
+  verified (a `[C1]` the prompt never asked for is text), no footer is printed and stdout is byte for
+  byte what it was. Also: a cited file the process can no longer read is reported as `file_missing`
+  with the error's name (`could not be read (PermissionError); re-index`) instead of crashing the
+  footer after the answer streamed; `Synthesizer(stream_to_stdout=False)` and
+  `Synthesizer.last_context` are new; REST `GET /ask`, `trelix review` and the MCP `ask_agent`
+  tool are unchanged. The mutation driver's throwaway tree now carries `plugins/` and
+  `.claude-plugin/` (the Claude Code plugin tests read them from the tree root) and
+  `retrieval.citations` was re-measured on this tree: 155 mutants, 154 killed, 1 survived, so its
+  `survived` ceiling moves `0` → `1` for one equivalent mutant (`and` → `or` in the `lines` guard
+  of `citation_as_json`, where a `Citation` has both line fields set or both `None`).
+- **`trelix eval-synthesis` reads golden v2 lines, keeps one record per query and measures abstention
+  and citations** (fifth of six changes toward `trelix ask` answers that cite the retrieved code and
+  abstain when it does not answer the question; landed as two stacked PRs: the schema, the records and
+  the per-query file first, then the abstention and citation metrics over those records). A golden
+  line may carry `answerable` (`true`/`false`; absent means `true`), `gold_answer` (a non-empty string,
+  stored and never scored) and `expected_citations` (a list of non-empty repo-relative paths, read as a
+  set); a field of another type, or a line that is JSON but not an object, is refused with its line
+  number and no query runs (a non-object line used to crash the run). The harness keeps one
+  `SynthesisRecord` per line (`run_detailed`) with fifteen fields: `id`, `query`, `answerable`, the
+  abstention facts `abstained` and `abstain_reason` (`no_results` when the retrieval found nothing,
+  `insufficient_evidence` when the answer opens with `INSUFFICIENT_EVIDENCE:`; derived from the
+  retrieval and the answer, never from the model's own flags), the four GroUSE scores, the citation
+  facts `citations_total`, `citations_valid`, `citation_statuses` (a count for each status that
+  occurs, among `valid`, `file_missing`, `line_out_of_range` and `unknown`),
+  `expected_citations_hit` and `expected_citations_total` (a hit is an
+  expected path that a `valid` marker refers to), and `error`. Markers are verified only when the
+  retrieval tagged its blocks: with `TRELIX_RETRIEVAL_CITATIONS` off (the default) a `[C1]` in an
+  answer is noise, every count taken from the answer's markers is 0 and the citation rows
+  measure nothing (`Citation recall` still reads `of N expecting citations`); the prompt asks
+  for `INSUFFICIENT_EVIDENCE:` only for a tagged context too, so in practice only an empty retrieval
+  registers as an abstention and the two abstention rows measure little. Set the flag for the run
+  you measure. The four GroUSE means run over the answerable records; the aggregate's
+  sixteen keys are `hallucination_rate`, `completeness`, `faithfulness`, `overall`, `n_queries`,
+  `unscoreable`, `n_unanswerable`, and the ratios with their denominators beside them:
+  `abstention_precision` (unanswerable among the abstained, of `n_abstained`), `abstention_recall`
+  (abstained among the unanswerable, of `n_unanswerable`), `citation_validity` (mean per-answer
+  `citations_valid / citations_total`, of `n_cited_entries`), `citation_recall` (mean per-line
+  `expected_citations_hit / expected_citations_total`, of `n_expected_citation_entries`), plus the
+  sums `citations_total` and `citations_valid`; every ratio is `0.0` on a zero denominator, and a
+  record whose query raised is in `n_queries` and `unscoreable` and out of every abstention and
+  citation count, with its placeholder scores kept in the four means. The table gains the rows
+  `Abstention precision`, `Abstention recall`, `Citation validity` and `Citation recall`, each
+  `Direction` cell naming its denominator (`higher = better; of 2 abstained`), and the rows
+  `Unanswerable queries` and `Unscoreable queries` (that count existed and was never printed). A v1
+  file returns the numbers it always did: three lines where the second query's retrieval raises still
+  report `hallucination_rate 0.3333` and `unscoreable 1.0`, because an errored record keeps its
+  placeholder scores inside the means. `--per-query-out FILE` writes `{"schema_version": 1,
+  "harness": "synthesis", "records": [...], "aggregate": {...}}` through the same hardened writer as
+  `trelix eval` (sorted keys, `citation_statuses` included, mode 0600, atomic; exit `1` if it cannot
+  be written); `schema_version` stays 1, nothing having been released between the two halves. The
+  module docstring's ninth failure mode is now worded for `line_out_of_range`. `eval.synthesis_records`
+  joins `scripts/mutation.py`'s scope with its baseline regenerated. Answers on this path are capped
+  at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`) while plain
+  `trelix ask` streams at 12,000: pre-existing, documented now.
+- **`trelix eval-synthesis --record` and `--replay`: score recorded answers without a synthesis call** (sixth and
+  last of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does
+  not answer the question). `--record FILE` writes every answer the run produced as
+  `{"schema_version": 1, "answers": {query: answer}}` (ASCII-escaped, sorted keys, mode 0600, atomic,
+  an existing file replaced). The file is written after the table, together with `--per-query-out`:
+  both are attempted, a failure of either is reported (`Could not write the replay file: ...`, `Could not
+  write per-query results: ...`) and is exit `1`, so a bad `--per-query-out` path cannot cost the
+  recorded answers of a paid run. `--replay FILE` scores those answers again: no synthesis call is
+  made and no Synthesizer is built, but retrieval is unchanged. It needs the index, runs its LLM
+  query planner (up to a call per query when an LLM is configured; set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`
+  on the live run too and the replay reads the plans back) and, for a non-local embedder, embeds the
+  query. Abstention, citation verification and scoring are the live run's code path, so a replay of a
+  run's own recorded answers reproduces its records and aggregate exactly when no query's retrieval
+  failed, no golden query repeats and retrieval returns the same context (tested on the six-line
+  example of `eval/README.md` and on a v1 file, with a stub retriever), and a scoring change can be
+  measured on frozen answers instead of a fresh sample. A file that cannot be used (over 20 MB, not
+  JSON, another `schema_version`, a non-string answer, an unknown key) is refused with its problems
+  in one message (the first 20, then a count of the rest) before the index is opened, and a
+  golden query the file lacks stops the run before any
+  query (`replay file has no answer for 2 queries: 'a', 'b'`); both are exit `1`,
+  and the two flags together are a usage error, exit `2`. Answers are keyed by the query text, so two
+  identical golden queries share one. A query whose retrieval raised has no answer to record, so
+  `--record` leaves it out and replaying that file is refused until the query is fixed, removed or
+  answered by hand in the JSON (recording `""` would score an invented answer against a retrieval that
+  may now succeed). These are recorded answers, unrelated to `trelix eval-suite`'s replay of frozen
+  query plans.
+- **Per-query eval results and the statistics to compare two runs** (first of three changes toward
+  comparing retrieval runs honestly; the golden file format and the comparison command are in the entries below).
+  - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
+    `split`, `ndcg`, `recall`, `mrr`, `top10` (the first ten distinct files retrieved) and `error`.
+    `run()` is the mean of these records and returns the same values as before. A golden entry without
+    an `id` is numbered by its 1-based position (`q0001`); `kind`, `lang` and `split` are `null` unless
+    the entry has them. A query that raised carries its message (at most 200 characters) and 0.0 scores.
+  - `trelix eval --per-query-out PATH` writes `{"schema_version": 1, "records": [...], "aggregate":
+    {...}}` as ASCII-escaped JSON with sorted keys and mode 0600, atomically: a temporary file with a
+    random name beside PATH is renamed over it, and a symlink at PATH is replaced, not followed. A path
+    that cannot be written (missing directory, no file name) is a one-line error and exit 1. The printed
+    results are unchanged by the flag.
+  - New `trelix.eval.stats` (numpy only): `paired_bootstrap` (percentile interval and two-sided
+    bootstrap p-value for the mean paired difference; the same resampled queries are applied to both
+    runs), `mde` (`2.8 * sigma_d / sqrt(n)`, the minimum detectable effect at 80 percent power and 5
+    percent two-sided error) and `holm` (Holm-Bonferroni step-down). See `eval/README.md`.
+- **Opt-in on-disk cache of index-time embeddings** (`TRELIX_EMBEDDING_CACHE_ENABLED`, default
+  `false`; nothing is written when off, and indexing is byte-identical to before). With it on,
+  `Indexer` wraps its embedder in `CachedIndexEmbedder` (`src/trelix/indexing/embedding_cache.py`):
+  every chunk text is looked up by its sha256 in one SQLite file per **embedder fingerprint**
+  (provider, model id, the width knobs that change a vector for the same model id, the declared
+  width) under `TRELIX_EMBEDDING_CACHE_DIR` (absolute path; default
+  `$XDG_CACHE_HOME/trelix/embeddings`, a relative `XDG_CACHE_HOME` being ignored as the XDG spec
+  requires, else `~/.cache/trelix/embeddings`), and only the
+  de-duplicated misses reach the provider. A fresh index of unchanged text makes no embedding
+  calls and stores the same float32 bytes (a real-`Indexer` test pins both). The index-run stats
+  dict (the CLI's `Done.` line, the MCP `index_codebase` result) and `index_file()`'s result gain
+  `chunks_from_cache`, present on every `ok` result and 0 when off, in both the batch and the
+  streaming pipeline; the REST `IndexResponse` is unchanged. The directory is created `0o700`
+  and each file created `0o600`. `TRELIX_EMBEDDING_CACHE_MAX_MB` (default `4096`, per file,
+  minimum 1) is a least-recently-used trim applied after each run, not a limit during one, and
+  a trim that fails (file locked or deleted) is logged, never fatal; the cap is measured against
+  the file's live pages, so a trim whose `VACUUM` another indexer's lock defeated does not evict
+  the same fraction again on the next run (at most a small residual from partially emptied pages,
+  then none; the rest is reclaimed space). Refused before any model is
+  loaded: `--use-batch-api`/`TRELIX_USE_BATCH_API` with the `openai` provider while the cache is
+  on, and `trelix index --resume-batch` with the cache on (the Batch API path never consults the
+  cache; the plan's miss-partition before `submit_batch` is replaced by this refusal), a relative
+  `TRELIX_EMBEDDING_CACHE_DIR`, and an unusable directory; a cache file of another width or
+  schema is named and refused. `embed_query` is not cached here (that is
+  `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`). The hosted GitHub App forwards every `TRELIX_*` host
+  variable except `TRELIX_APP_*` and `TRELIX_GIT_TOKEN` into its `trelix index` child, so setting
+  this on a multi-tenant host would share one cache across tenants; SECURITY.md has the section.
+  The `trelix cache` command group is the next entry.
+- **`trelix cache gc` and `trelix cache clear`, and the cache in `trelix index`'s output** (the
+  command group the bullet above deferred). `trelix cache gc [--max-mb N]` trims every cache file
+  (`<fingerprint>.db` in `TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`,
+  else `~/.cache/trelix/embeddings`) to the cap, least recently used rows first, and prints
+  `<name>: <rows> -> <rows> rows, <bytes> -> <bytes> bytes` per file in name order; the default
+  cap is `TRELIX_EMBEDDING_CACHE_MAX_MB`, which is a trim applied after each index run and by this
+  command, not a limit during a run. Each file is opened at the width it records (no embedder is
+  loaded, no width check can fail); a file that cannot be opened or trimmed is reported as
+  `Embedding cache unreadable` and the rest are still trimmed, exit 1 afterwards (`gc` creates
+  nothing: an empty file is refused before SQLite touches it, and a symlink is never opened); a
+  directory that exists but cannot be listed is the same line and exit 1 at once, for both
+  commands; a directory that happens to carry a cache file's name is left alone by both, and
+  `gc` skips every symlink, whatever it points at (`clear` unlinks the link without following it).
+  `trelix cache clear`
+  deletes every `<fingerprint>.db` and `.db-journal` directly in that directory (nothing else, no
+  recursion, a symlink is unlinked and never followed) and prints `Removed N file(s), M bytes,
+  from <dir>`. With no cache directory both print `No embedding cache at <dir>.` and exit 0;
+  neither takes a repository argument or opens an index. The Index Summary gains a `Chunks from
+  cache` row when the count is above zero. `trelix index --dry-run` with the cache on opens the
+  cache file read-only (`EmbeddingCache.open_readonly`, new; it creates nothing and never reads
+  the configured width, which is a constant 384 for every `local` model), adds `Chunks already
+  cached` and `Tokens already cached` rows, and prices `Embedding tokens - Tokens already cached
+  + Repair tokens`; an absent file adds no rows; one that cannot be read, at the open or at a
+  lookup (a concurrent run's end-of-run `VACUUM` holding the lock), is reported and priced as
+  absent. `trelix index --resume-batch` with the cache on is refused before any model is loaded
+  (`Cannot resume a Batch API job`, exit 1, the way out named), as the bullet above says; the
+  refusal is now also in `docs/CLI_REFERENCE.md`'s exit codes. The CLI's cost preview takes the
+  per-provider model-field table from the cache module (`EMBED_MODEL_FIELDS`) instead of a
+  private copy.
+- **Golden file format v2 and `trelix eval-validate`** (second of three changes toward comparing
+  retrieval runs honestly; no score is computed any differently).
+  - A golden line may add `id`, `lang`, `kind` (`nl`, `keyword`, `commit` or `issue`), `source`,
+    `gold_status` (`validated`, `pooled` or `unreviewed`) and `split` (`dev` or `test`). All are
+    optional: a file that uses none of them loads and scores exactly as before, and other keys are
+    still ignored. A field that is present with the wrong type or value (a `kind` of `"code"`, an
+    empty `id`, a `null`) is now refused by `trelix eval` with its line number, like every other
+    unusable entry. The allowed values live in the new `trelix.eval.golden`. An existing golden
+    file that already uses one of these key names for something else (an `id` of `7`, a `split` of
+    `"train"`, an empty `source`) must be edited before `trelix eval` accepts it.
+  - `trelix eval-validate GOLDEN [--repo PATH] [--rev REV] [--min-per-stratum N] [--min-validated
+    FRACTION]` checks a golden file without running a query. Every line must be schema-valid, no two
+    queries may be equal once stripped and case-folded, no two `id`s may be equal, and with `--repo`
+    every `relevant_files` path must exist at `--rev` (default `HEAD`; read with `git ls-tree`). In a
+    file where some entry has a `kind` or a `gold_status`, each kind that occurs needs at least
+    `--min-per-stratum` queries (default 20), and at least `--min-validated` (default 0.95) of the
+    entries need a `gold_status` of `validated` or `pooled`. Each violation is one `line N: ...` or
+    `file: ...` line on stdout, the `line N` ones in line order and the `file` ones last; the exit
+    code is 0 with none and 1 with any, or for a missing golden file, a `--repo` that is not a git
+    repository or an unknown `--rev`. A threshold outside its range, `--min-validated nan` included,
+    is a usage error (exit 2). It reads the golden file only: a malformed `<stem>-metadata.json`
+    beside it, which `trelix eval` refuses, is not reported. The shipped `eval/golden.jsonl` passes.
+    See `eval/README.md` and `docs/CLI_REFERENCE.md`.
+- **`trelix-mcp` describes its own tools: annotations, a fixed order, server instructions and a
+  `--tools core` profile.** All additive: no tool is renamed or removed and no argument or result
+  changes.
+  - *Annotations.* `tools/list` carries `readOnlyHint`, `destructiveHint`, `idempotentHint` and
+    `openWorldHint` (`false` throughout) for every tool, from one table in
+    `trelix_mcp/tool_metadata.py`. Only `search_code`, `get_symbol` and `blast_radius` are
+    read-only, and a test checks that each leaves `.trelix/index.db` byte-identical (current
+    schema, telemetry off). That is a claim about the index database, not every file. Three things
+    write, and the test records each: `TRELIX_TELEMETRY_ENABLED=true` adds a `query_telemetry` row
+    per `search_code`, the first open of an index written by an older trelix migrates it, and every
+    `search_code` that completes writes a JSON trace of the query to `.trelix/debug/` (the file name
+    is the time to the second plus the first 60 characters of the query, with punctuation replaced,
+    so the same query repeated within that second replaces the file; the database is unchanged).
+    `agent_clear_session` and `federation_remove_repo` are destructive;
+    `index_codebase` is idempotent. The federation reader tools (`federation_list_repos`,
+    `federation_search_all`) stay not read-only until that test covers them.
+  - *Order, instructions, cache hint.* `tools/list` follows a literal list (indexing and search
+    first, the two subscription tools last; they used to come first). The server sends
+    `instructions` (under 2,000 characters) that name only tools that exist (and, under
+    `--tools core`, only the tools that profile lists), and `cache_ttl=300`,
+    `cache_scope="private"`. FastMCP has one server-wide setting for the hint, so
+    `resources/read` carries it too: a client that opts in to caching can show `trelix://` resource
+    content up to five minutes old.
+  - *`trelix-mcp --tools core|full`.* The default `full` lists all 15 tools, as before. `core` lists
+    seven (`index_codebase`, `search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`,
+    `graph_search_mcp`, `ask_agent`); the rest are hidden, not removed, and a call to one is answered
+    as an unknown tool. `repo_map` and `exact_search` are not in `core` because they do not exist in
+    this server yet. Any other value is a usage error (exit 2). `docs/MCP_GUIDE.md` section 8 has the
+    table. Five guides (`MCP_GUIDE`, `TROUBLESHOOTING`, `INSTALLATION_GUIDE`, `USER_GUIDE`,
+    `integrations/vscode-plugin`) said `trelix-mcp` takes no arguments; `MCP_GUIDE`,
+    `TROUBLESHOOTING`, `USER_GUIDE` and `integrations/vscode-plugin` now list its flags (`--help`
+    and `--version`, which already worked; `--tools`, above; `--root` and the HTTP flags, in their
+    own entries), and `INSTALLATION_GUIDE` points at `--transport http` and `--help`.
+- **`trelix eval-compare` with a pre-registered decision rule, and the `results.json` format** (third
+  change toward comparing retrieval runs honestly, and the judging half of it: `trelix eval-suite`,
+  below, is the command that writes `results.json` for a whole suite). No retrieval default changes.
+  - `trelix eval-compare BASE CAND --prereg EXP.yaml` judges a candidate run against a baseline under a
+    pre-registration, needs no git, no index and no embedder, and is the only producer of PASS. Exit
+    code 0 is PASS, 1 FAIL, 2 INCONCLUSIVE and 3 REFUSED, and the last stdout line of every real
+    outcome is `verdict: PASS`, `FAIL`, `INCONCLUSIVE` or `REFUSED` (a usage error also exits 2 and
+    prints no verdict line; a refusal prints one `refused: ...` line per reason on stderr). Queries
+    are paired by `id` and resampled with a fixed seed, so the output is identical for identical files.
+    Text that comes from the files is printed on one line, so a value cannot forge a `verdict:` line.
+    When a reader of stdout or stderr stops reading (`| head`), the remaining lines are dropped and
+    the exit code is still the verdict's; the commands that print through the shared consoles exit 0 on a closed pipe, which would
+    have turned a FAIL into success under `pipefail`.
+  - The pre-registration is a YAML file with ten required keys and no defaults:
+    `schema_version` (`1`), `experiment_id`,
+    `comparison_id` (`<baseline arm>..<candidate arm>`), `primary_metric` (`ndcg@10`), `direction`
+    (`increase`), `expected_effect`, `alpha` (at most 0.05), `family_size`, `min_queries` (at least 20)
+    and `cost_class` (`flag` 0.01, `index` 0.02 or `heavy` 0.03, the smallest nDCG@10 gain worth
+    shipping). `alpha / family_size` may not fall below 0.001. Unknown keys, duplicate keys and YAML
+    anchors are refused. The rule: a candidate query that raised is FAIL; fewer than `min_queries` is
+    INCONCLUSIVE; a confidently worse nDCG@10, or a confidently lower Recall@10 (by more than 0.02), is
+    FAIL; an `expected_effect` below the minimum detectable effect, no demonstrated gain, a gain below
+    the hurdle, or an unresolved recall guard is INCONCLUSIVE; anything else is PASS. Holm is not
+    applied (`family_size` widens the intervals by Bonferroni) and `stats.mde` keeps its fixed 2.8, so
+    the minimum detectable effect does not tighten with `alpha / family_size`.
+  - The decision set is taken from the baseline file's `split` labels (the `test` records when every
+    record has one, all records when none has; a mixture is refused), the two files must label every
+    query alike, and `min_queries` is compared with the size of that set. A run is refused, not judged,
+    when the suites differ in name, golden version, repository URL or commit, licence or the hashes of
+    the golden and plans files; when a run was not frozen-plan and rerank-off; when the runs cover
+    different queries; when `comparison_id` does not name the two arms (swapped arguments); or when the
+    baseline has an error. A different `trelix_version`, `embedder` or `pipeline.config` is printed as
+    a `note:`, not refused.
+  - New `trelix.eval.results` owns `results.json` schema_version 1 (`build_results`, `write_results`,
+    `load_results`; a round trip test holds the writer and the reader together, and the writer refuses
+    what the reader would, a NaN or a non-JSON value in `pipeline.config` included), and
+    `trelix.eval.prereg` the pre-registration. `results.json` is a different document from the
+    `--per-query-out` file and that file is refused with a pointed message. See `eval/README.md` and
+    `docs/CLI_REFERENCE.md`.
+- **`trelix-mcp`: `detail` on the search tools, `limit` on `blast_radius`, `max_body_chars` on
+  `get_symbol`, and three keys on list responses.** The arguments are additive, and their defaults
+  keep each tool's old meaning, except that `blast_radius` returns at most 100 dependents (it
+  returned all of them)
+  and `get_symbol` cuts a body over 20,000 characters (`max_body_chars=0` restores it).
+  - `detail` (`"detailed"`, the default and unchanged, or `"concise"`) on `search_code`,
+    `graph_search_mcp` and `federation_search_all`. `concise` drops each result's `body` and adds a
+    one-line `signature`: the first line of the symbol's signature, at most 200 characters, or the
+    first line of its body when the signature is blank.
+  - `blast_radius(limit=100)`, clamped to 1..500.
+  - `get_symbol(max_body_chars=20000)`: a longer body is cut and `body_truncated` is `true`; `0`
+    means no limit; a negative value is an error result.
+  - `search_code` and `federation_search_all` responses gain `page_size` (the `k` the server used),
+    `truncated` and `omitted`; `agent_list_sessions` gains the same three. The `federation_search_all`
+    error and empty-registry responses keep their shorter shape.
+  - Two environment variables, `TRELIX_MCP_MAX_K` and `TRELIX_MCP_MAX_RESULT_CHARS` (below).
+- **`suite.json` and a hardened, verified clone of its pinned repository** (groundwork for the command
+  that runs a suite: `trelix eval-suite --prepare-only` does only what this entry describes. It
+  indexes nothing, replays nothing and writes no `results.json`; the next entry adds the run. No
+  retrieval default changes).
+  - A suite is one repository at one 40-hex commit, a golden file and a file of frozen plans, named by
+    `suite.json` (`name`, `golden_version`, `repo.url`, `repo.sha`, `repo.license`, and a `path` and
+    `sha256` for each file). Every key is required; unknown and repeated keys are refused; all problems
+    are reported together. The hashes are over the raw bytes, so a line-ending rewrite refuses the
+    suite. Before anything is cloned the golden file must validate like `trelix eval-validate` (without
+    its v2 strata thresholds) and the plans file must hold a plan for every golden query, checked by the
+    planner's own cache class so the key rules cannot differ from a run. An empty or absent plans file
+    is refused: the planner would treat it as "record" and call the LLM for every query.
+  - The clone is made in `<cache>/clones/<sha>/<name>.partial`, checked out at the pin, verified, and
+    moved into place with one rename. Every git child gets a built environment (git's global and system
+    configuration pointed at the null device, `GIT_ALLOW_PROTOCOL`, no terminal prompt, no LFS smudge, no
+    optional index locks, and nothing else named `GIT_*`), `-c core.hooksPath=<null device>`, `git -C`
+    on a directory the run created and the URL after `--`; a clone has a 1800 s limit and every other
+    command 120 s. Nothing from the repository is executed, imported or installed. `repo.url` must be
+    `https://github.com/<owner>/<repo>`, optionally ending in `.git`, with no credentials, port, query
+    or fragment and owner and repo names GitHub allows, so a `suite.json` that arrives in a pull
+    request cannot make a CI job contact `localhost`, an internal address or any other host (the hosts
+    are the one constant `ALLOWED_REPO_HOSTS` and the refusal names them). A local path or `file://`
+    URL is accepted only through the `allow_local=True` keyword of the Python API (`load_suite`,
+    `ensure_clone`, `prepare_suite`), which the tests use and the command line never sets; public
+    repositories only, since git gets no credentials.
+    An existing clone is re-verified (HEAD is the pin, the worktree is pristine with ignored files
+    counted, the origin URL matches, and it is neither shallow nor partial) and is never repaired or
+    deleted; a `.partial` left by a killed run is refused with its path and never deleted. The cache is
+    `$XDG_CACHE_HOME/trelix/eval-suites` or `~/.cache/trelix/eval-suites`, or `--cache-dir`.
+  - Every gold path must exist at the pin and be in the set `FileWalker` would index with
+    `walker.follow_symlinks = false` (the default follows symlinks without resolving them, so a tracked
+    symlink to a file outside the clone would be read and indexed). On this repository 2 of the 54
+    queries of `eval/golden.jsonl` (lines 43 and 46) have gold files only under `packages/`, which the
+    default walker ignores: they would score 0 in every arm, so a suite over this repository must leave
+    them out. The refusal names the first five paths and counts the rest. A `.gitignore` line or a
+    `package.json` in the clone that makes the walker raise (`!` alone, `[z-a]`, a manifest nested
+    200,000 levels deep) is one `refused: the walker failed on the clone: ...` line as well, not a
+    traceback that comes back on every run. The walker also opens `.gitignore` and `package.json` by
+    name and reads them through a symlink wherever it points (`follow_symlinks = false` covers only
+    the files it iterates; a linked `.gitignore` shapes the walk, and a `package.json` linked to
+    `/dev/zero` or a FIFO is never read to its end), so a tracked symlink with either name, spelled in
+    any case (a case-insensitive filesystem opens a tracked `.GITIGNORE` as `.gitignore`), at any
+    depth, is refused before the walk: one `refused: the clone tracks N symlink(s) named .gitignore or
+    package.json, ...` line naming the first five.
+  - `trelix eval-suite SUITE.json [--cache-dir DIR] --prepare-only` prints the repository, the commit,
+    the two hashes, the number of golden queries and of gold files, and the clone path, and exits 0; any
+    refusal exits 1 with one `refused: ...` line per reason, and without `--prepare-only` it runs one
+    arm (the next entry). New modules `trelix.eval.suite`, `suite_git`,
+    `suite_gold` and `suite_prepare`. See `eval/README.md`.
+- **`trelix eval-suite SUITE.json --arm NAME --out results.json` runs one arm of a suite** (the second
+  half of the suite work, part 2 of 2: it adds the run to the groundwork above). It prepares the suite exactly as
+  `--prepare-only` does, builds ONE index for ONE arm from the verified clone with the local
+  embedder, replays the frozen plans and writes a `results.json` (schema_version 1) that
+  `trelix eval-compare` reads. Exit 0 when the file was written and no query raised; 1 for every
+  refusal (one `refused: ...` line per reason on stderr; `--arm` missing or not
+  `[a-z0-9][a-z0-9_-]{0,62}`, `--out` in a missing directory or itself a directory, both checked
+  before anything is cloned; `--prepare-only` given together with `--arm` or `--out`), for an index
+  that reports any error or cannot be built at all (an `OSError`, or the `ImportError` of a missing
+  `local` extra) or a golden query without a frozen plan at run time (no file is written in those
+  cases, and the refusal ends with a line naming the claimed run directory as left behind), and for
+  queries that raised after the file was written; 2 for a usage error. No retrieval default changes.
+  - One index per arm, in `<cache>/arms/<sha>/<name>/<arm>/`, claimed with `exist_ok=False`: an
+    existing run directory is refused (`arm 'X' already has a run directory at PATH: choose another
+    --arm or delete it`), there is no reuse option, and the command never deletes
+    anything that was already there (it removes only the `.partial` clone directory it created
+    itself, when the clone fails or Ctrl-C interrupts it).
+    The harness reads copies of the verified golden and plans bytes in that directory (re-hashed as
+    they are read), never the committed files.
+  - A fixed set of settings is forced to literal values whatever the
+    environment or `~/.config/trelix/env` says: no file summaries, no batch API, `embedder.provider`
+    `local`, `walker.follow_symlinks` false, `chunker.contextual` false, `store.backend` `sqlite` in
+    the run directory, `rerank`, `hyde_fallback_enabled`, `multi_query_enabled` and `flare_enabled`
+    false, and the plans copy as `plan_cache_file`. The rest of the effective configuration of
+    `walker`, `parser`, `chunker`, `store`, `retrieval`, `indexer` and `sparse` is recorded in the
+    file's `pipeline.config` with every field named like a secret (`key`, `secret`, `token`,
+    `password`, `endpoint`, `url`, `uri`: a `store.qdrant_url` may carry credentials) and the two
+    per-arm paths removed, and `chunker.max_tokens_per_chunk`, `retrieval.context_token_budget` and
+    `sparse.top_k_tokens` kept by name because each changes the index or the ranking; an `--out` that
+    already exists is refused before anything is cloned (each arm needs its own results file);
+    `embedder` records the provider, the local model, the dimension and the
+    `sentence-transformers` version (`null` when not installed).
+  - The whole index build and query run get the same switched-off git configuration the clone did
+    (`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` the null device, `GIT_CONFIG_NOSYSTEM`,
+    `GIT_ALLOW_PROTOCOL=https`, no terminal prompt, no LFS smudge, no optional locks; restored
+    afterwards) and have `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR` and
+    `GIT_OBJECT_DIRECTORY` removed for the same span, because the Indexer's own `git` in
+    `trelix.store.provenance` inherits the process environment and runs with `cwd=` and no `-C`.
+    Ten real index builds of a tree with two byte-identical files agree record for record, so the
+    insertion order of parsed files did not need to change.
+  - `make eval-suite EVAL_SUITE=... EVAL_ARM=...` (results in `.trelix/eval-suite/results.json` by
+    default, a run artifact, never committed), `trelix.eval.suite_run`, `trelix.eval.suite_git.isolated_git`,
+    `trelix.eval.suite_prepare.prepare_spec`. See `eval/README.md`, "Suites".
+  - Three nits from the review of the groundwork: a `golden-metadata.json` sidecar that is a directory
+    or unreadable is a refusal, not a traceback; a `<name>.partial` beside an already-verified clone is
+    refused with the same text as before a clone exists; and the README says a sidecar that is not
+    valid JSON is a refusal while any other shape yields no labels; the one shape it does not cover
+    is a `queries` value that is `null`, a boolean or a number, which still ends in a `TypeError`
+    traceback.
+- **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
+  llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
+  bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
+  server, because Ollama has no `max_completion_tokens` field and silently ran unbounded before. A
+  model tag under 20B parameters, or one with no readable size, logs one warning per LLM client
+  built (a review on an indexed repository builds two: the planner's and the reviewer's). A URL
+  without `http(s)://` and a host, one carrying a user name and password, or one containing
+  whitespace or a control character (a trailing newline from a secret store, which the URL parser
+  would otherwise drop silently) is a configuration error that names the variable and never the
+  value (`hide_input_in_errors` now covers the whole `TRELIX_LLM_*` section, so no LLM
+  configuration error echoes the value given, a provider typo included); `trelix review` now reports it as `Configuration error` and exits 1 like the other commands
+  instead of raising through Typer, and reports a plain-`ValueError` config error (a bad
+  `TRELIX_RETRIEVAL_*_WEIGHT_*`) as `Error`. `TRELIX_LLM_BASE_URL` with another
+  `TRELIX_LLM_PROVIDER` is ignored with one warning per LLM client built. `OPENAI_BASE_URL` keeps
+  working as before when the new variable is unset. A keyless local-server client is a usable
+  client, so with the variable set `search` and `query` plan through that server too (one call per
+  distinct query); the zero-LLM-call recipe in the FAQ, README, getting-started, user and
+  why-trelix guides and `SECURITY.md` now requires it unset as well as the chat credential.
+- **`trelix review` reports a hunk as `truncated` (`detail: prompt_truncated`) when a local server
+  cut the prompt.** Ollama drops the head of a prompt that exceeds its context length and answers
+  HTTP 200 with a normal finish reason (the system prompt is the first thing to go); the only trace
+  is a `prompt_tokens` smaller than the prompt. With `TRELIX_LLM_BASE_URL` set, a reported count
+  below 0.85 x the cl100k_base count of what was sent marks the hunk unreviewed, nothing is salvaged
+  from the reply and the hunk is not retried. Exit codes 3/4 and the outcome record are unchanged in
+  shape (the workflow and the GitHub App validate `status` only and never read `detail`). The check
+  needs `usage` in the reply and the cl100k_base encoding on disk; when either is missing it warns
+  once and stays out of the way. `trelix ask` (a stream) and the query planner's tool call are not
+  checked.
+- **`TRELIX_LLM_LOCAL_CONTEXT_TOKENS`** tells the model-aware context budget
+  (`TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null`) the context length of the server behind
+  `TRELIX_LLM_BASE_URL`, instead of falling back to 12,000 for a tag `context_windows` does not
+  know. Optional, `1024` to `2000000`, blank is unset; the budget is then
+  `int(TRELIX_LLM_LOCAL_CONTEXT_TOKENS × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`, and an
+  explicit integer budget still wins. Setting it without `TRELIX_LLM_BASE_URL` is a configuration
+  error that names both variables and never the value.
+- **e2e: `trelix review` against a stdlib OpenAI-compatible fake server on `127.0.0.1`** (good,
+  cut-off, prompt-truncated, garbage-body and prose replies; exit 4 and the outcome record
+  asserted). `tests/e2e/fake_openai_server.py` is `http.server` plus `threading`, binds port 0,
+  answers `/v1/chat/completions` as JSON or as SSE when the request streams, and records every
+  request; the installed `trelix` console script runs as a real subprocess with a scrubbed
+  environment, so the `trelix-local` bearer, the `max_tokens` field, the `prompt_truncated`
+  detail and the secret-free `Configuration error` for a URL carrying a credential are proven at
+  the process boundary. Runs in CI's `e2e` job and in the release smoke job against the built
+  wheel, never in `make test`.
+- **`docs/OFFLINE.md`: running trelix without a cloud key.** Ollama and llama-server settings for the
+  `openai` backend through `TRELIX_LLM_BASE_URL`, why the context length should be 64k and how
+  `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` sizes the retrieval budget, what the prompt-truncation check
+  (0.85 x the cl100k_base count) does and does not catch, the 20B model-size floor the warnings
+  assume (an assumption, not a measurement: the candidate models are listed as unmeasured against
+  R-C4-05's bar), the planner calls every search makes once the variable is set, the one-time
+  prefetch for the embedder (`HF_HUB_OFFLINE`), the grammars and tiktoken (`TIKTOKEN_CACHE_DIR`; the
+  default cache is under the temp directory), and a troubleshooting table keyed on the outcome-file
+  details (`exception:NotFoundError`, `prompt_truncated`, `exception:APIConnectionError`, ...).
+  Linked from `docs/README.md`, the user guide, the FAQ and TROUBLESHOOTING.md; the three warnings
+  that already pointed at it now resolve.
+- **A sqlite-vec flat-scan benchmark and its first committed report.**
+  `python scripts/bench_vector_search.py` builds a `vec0` table per (dimension, rows) cell from
+  seeded unit vectors, times `k`-nearest queries after a warm-up and writes warm p50/p95/p99,
+  insert rate, file size, platform (OS, Python, SQLite, sqlite-vec, numpy, CPU count, load
+  averages, free scratch disk) and, per width, the row count where p95 passes 100 ms
+  (interpolated between measured sizes, or extrapolated and flagged). The report
+  `docs/reports/vector-search-bench-2026-10-07-apple-m4-shared.json` was measured on
+  apple-m4-shared (Apple M4, 10 CPUs, macOS 27.0.1 / Darwin 27.0.0 arm64, Python 3.12.12,
+  SQLite 3.50.4, sqlite-vec 0.1.9, load average 23.9 at start): p95 passes 100 ms near 32,765
+  rows at 384 dimensions, 12,979 at 768 and 28,956 at 1024, measured on a shared machine, so the
+  thresholds are conservative. The 768 value sits below both neighbours, which an exact flat
+  scan (cost proportional to rows x width) cannot produce: its 10k-row cell absorbed a load
+  spike (inserts ran at 1,512 rows/s against 22,729 at 384 and 3,403 at 1024, and its p95 was
+  4.5x its p50 where the other two 10k cells were at 2.3x). The whole grid is load-dominated,
+  not just that cell: the three 100k-row p95s are 334 / 345 / 335 ms across 384 / 768 / 1024
+  where a flat scan predicts 1 : 2 : 2.67, and a quiet one-off taken while designing the
+  script (same Python, SQLite and sqlite-vec; 384 x 100k read 45 ms where this run read
+  334 ms) put the crossings near 220,000 / 53,000 / 41,000 rows, so the 384 value is the
+  furthest from a quiet reading (0.15x), 768 next (0.24x) and 1024 nearest (0.71x). All three
+  crossings, and the three literals the flat-scan advisory (next entry) pins to
+  them, are placeholders until a run on a quiet machine replaces this file. It is manual, not a
+  test, and its scratch files need up to ~5 GB; the numbers describe that machine, not a
+  guarantee.
+- **`trelix index` and `trelix stats` print a `Flat-scan advisory` when the sqlite store holds
+  more vectors than the measured threshold for the index's width.** The sqlite backend is an
+  exact flat scan (no stable sqlite-vec release has shipped an HNSW or any other ANN index, and the
+  `<0.1.10` pin keeps the ivf/diskann pre-releases out), so p95 search
+  latency grows with rows x width. The thresholds (p95 past 100 ms near 32,765 rows at 384
+  dimensions, 12,979 at 768 and 28,956 at 1024 on apple-m4-shared, measured on a shared
+  machine, so the thresholds are conservative; the nearest measured width at or above the
+  index's width applies, scaled above 1024) come from the committed benchmark report
+  `docs/reports/vector-search-bench-2026-10-07-apple-m4-shared.json`, and a test pins the table
+  to it. The line goes to stderr, names the file and `TRELIX_STORE_BACKEND=lance` or `qdrant`,
+  never changes the exit code (a corrupt recorded width of 0 or less is skipped, so `stats`
+  still exits 0), creates no `.trelix/`, prints only when the recorded width is a positive
+  number, and not on `qdrant`/`lance`. The docs that called the sqlite store an HNSW index or
+  named a 100k/500k threshold now say "exact flat scan" and point at the measured table
+  (CLI_REFERENCE, CONFIGURATION, GLOSSARY, FAQ, WHY_TRELIX, TROUBLESHOOTING, PROVIDERS); the
+  `TRELIX_STORE_HNSW*` settings (and the unaliased `hnsw_ef_construction`) are documented as
+  accepted and inert.
+- **`docker compose --profile mcp up` and the Helm chart's `mcp.enabled` deploy
+  `trelix-mcp --transport http`.** `docker-compose.yml` gains an opt-in `trelix-mcp` service
+  (profile `mcp`, published on `127.0.0.1:8766` only, serving the `/repo` mount, with a
+  healthcheck on `/health`; the container exits 2 without `TRELIX_MCP_AUTH_TOKEN`); plain
+  `docker compose up` is unchanged. The chart gains `mcp.*` values, off by default, that add a
+  `trelix-mcp` container to the same pod serving the same PVC, a Service port `mcp`, a Secret key
+  and a Host allow-list of the release's Service names plus `mcp.allowedHosts`; it refuses to
+  render with `mcp.enabled` and no token, or without persistence. Default renders are unchanged
+  except the chart label (chart `version` 0.2.6 to 0.2.8). `helm upgrade --reuse-values` from
+  chart 0.2.6 reuses the old release's values, which lack `mcp`, and fails to render: use
+  `--reset-then-reuse-values`, or add `--set mcp.enabled=false`. The image must ship
+  `trelix-mcp --transport`; see `helm/trelix/README.md` and `docs/MCP_GUIDE.md` section 19.
+
+### Changed
+- **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows
+  the declared return type of its `retry()` decorator to its own wrapper class, which made mypy
+  reject `with_retry()`'s `Callable[[F], F]` contract and turned every CI run red; the decorator
+  return now carries a version-agnostic `type: ignore` that states that contract. No runtime
+  change: the decorated functions, the backoff and the Retry-After handling are the same.
+- **The `trelix-mcp` command line moved to `trelix_mcp.cli`.** `trelix_mcp.server` keeps the
+  FastMCP server and every tool; its `main()` is now a two-line entry point that calls
+  `trelix_mcp.cli.main()`, so `[project.scripts]` (`trelix_mcp.server:main`) and every
+  `import trelix_mcp.server` are unchanged. Internal, no user-visible change from the move: the
+  flags (`--help`, `--version`, `--tools core|full`, `--root PATH`; the last two are new in this
+  release, see their entries), their texts and exit codes are the same as before the move. Done
+  ahead of the Streamable HTTP transport so that the transport's command line does not add to
+  `server.py` (1,432 lines before the move).
+- **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim
+  space in vec0 tables, which trelix's `DELETE`+`INSERT` upsert and `--prune` rely on; 0.1.9 is
+  the release the vec0 contract tests were verified against; the ceiling keeps the 0.1.10
+  pre-releases (ivf/diskann) out until they are tested: PEP 440 sorts every `0.1.10aN` below
+  `0.1.10`, but `<0.1.10` does not match a pre-release of
+  `0.1.10`. `pip install` already resolved 0.1.9, so nothing changes for a fresh install.
+  `tests/unit/test_dependency_floor_guards.py` now pins the requirement string and the installed
+  release (`sqlite_vec.__version__` and `select vec_version()`), so a venv on an older release
+  fails one test with the reason instead of running on it silently.
+- **The retriever's per-query debug trace is written beside the index, not beside the source.**
+  `Retriever._debug_dir` is `<directory of store.db_path>/debug/`, which is the same
+  `<repo>/.trelix/debug/` as before for the default `db_path`; an index kept elsewhere
+  (`TRELIX_STORE_DB_PATH` outside the repository, or a `trelix eval-suite` run) now gets its traces
+  there and the source tree stays untouched. Found by the first two-arm suite run: the trace landed
+  in the shared clone, and the second arm refused a worktree that was no longer pristine.
+- **Plain `trelix ask` and `GET /ask` no longer call the LLM on an empty retrieval, and an answer
+  can abstain** (second of six changes toward `trelix ask` answers that cite the retrieved code and
+  abstain when it does not answer the question). `Synthesizer.stream()`, behind plain `trelix ask`
+  with a non-local embedder and REST `/ask`, used to send the model `No relevant code found.` as the
+  whole code context and stream whatever it said; `synthesize()` (FLARE, `eval-synthesis`) already
+  answered with the notice and made no call. Both now answer with the one literal
+  `[trelix] No relevant code found — cannot synthesize an answer.`
+  (`trelix.retrieval.citations.NO_RESULTS_MESSAGE`) and make no LLM call; `trelix ask` exits `0`
+  (an unconfigured LLM is still reported first, as before) and REST `/ask`
+  streams that line then `[DONE]`. A caller that parsed the streamed text sees the notice where an
+  ungrounded answer was; there is no toggle (`docs/BACKWARDS_COMPATIBILITY.md`). With
+  `TRELIX_RETRIEVAL_CITATIONS=true` the citation instruction gains a fourth sentence: when the
+  context does not contain what the question needs, reply with exactly one line starting
+  `INSUFFICIENT_EVIDENCE:` followed by what is missing, and nothing else. That line is an answer: it
+  streams as one, `trelix ask` exits `0` with it on stdout and nothing on stderr,
+  `Synthesizer.last_error` stays `None`, and the new `Synthesizer.last_abstain_reason` says
+  `"insufficient_evidence"` (or `"no_results"`) once the whole answer is in; a stream closed early
+  records nothing. FLARE's uncertainty phrases gain `insufficient_evidence:`, so an abstention
+  triggers its re-retrieval. GraphRAG map-reduce prompts carry the cite lines but not the
+  abstention sentence, so a GraphRAG answer cannot abstain by protocol. With the flag off the
+  prompts are unchanged; the line is recognised either way. No live model call was made.
+- **Retrieval `query_text` is now emitted only when `TRELIX_OTEL_CAPTURE_CONTENT=true` as well.** Before,
+  trelix handed the text to every leg span and the upstream `SPAN_ONLY` mode alone put
+  `gen_ai.retrieval.query.text` on it; hosts that relied on the upstream variable alone must set the
+  trelix flag too. (The other way round, the trelix flag without the upstream mode, logs one WARNING.)
+- **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
+  `resolve_allowed_roots`, `is_within_allowed_roots`; `resolve_allowed_roots` now takes any number
+  of explicit roots, otherwise same bodies) so `trelix-mcp` can apply
+  the same rule to its `repo_path` arguments; `trelix.api.app` keeps the old private names bound to
+  them. `trelix.api.request_guard.is_health_probe` (the `GET`/`HEAD /health` exemption) is public for
+  the same reason, with the old private name kept. No behaviour change: the REST API's containment and
+  request-guard tests pass unchanged, and `tests/unit/test_confinement.py` pins the helpers directly.
+- **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):
+  `bridgecrewio/checkov-action` 12.3125.0 to 12.3126.0,
+  `docker/build-push-action` 7.3.0 to 7.4.0, `github/codeql-action` (`init`, `analyze`, `upload-sarif`)
+  4.38.1 to 4.38.2, `trufflesecurity/trufflehog` 3.97.6 to 3.97.9. npm: `supertest` 7.2.2 to 7.3.0 (the
+  GitHub App's tests), `@types/node` 26.6.2 to 26.6.3 (`packages/trelix-typescript`, `workspace-vscode`),
+  `@modelcontextprotocol/sdk` 1.30.0 to 1.30.1 (`workspace-vscode`). Deliberately not taken: the
+  `openai` ceiling stays `<3.0.0` (every `litellm` release since 1.84.0 requires `openai<3.0.0`, and
+  `trelix[litellm]` asks for `litellm>=1.90.2`, so `openai>=3` would make it
+  unresolvable), and the GitHub App image stays on Node 24
+  (an LTS line supported until 2028-04-30; Node 26 enters LTS on 2026-10-28, revisit then). The `trufflehog` pin
+  moves the wrapper action only: the scanner version stays set by `version:` in `security-scan.yml`.
+- **GitHub App: the time limits of a review's stages moved to `src/review-timeouts.ts`** (checkout 2
+  minutes, index 5, review child 5; values unchanged) so the queue's deadline is sized from them. The
+  README documents the two new settings and the longer claim.
+- **The `openai<3.0.0` comments and messages name the one real reason.** The comment in
+  `pyproject.toml` and the text in `test_llm_sdk_floor_guards.py` cited `litellm` "through
+  1.102.0", and the text in `test_dependency_floor_guards.py` said the retry layer does not
+  recognise the `httpx2` transport; `core/retry.py` has recognised `httpx2` since 3.3.0. They now
+  state what was checked on
+  2026-10-05: `litellm` 1.104.0 (the latest) and every release since 1.84.0 require
+  `openai>=2.20.0,<3.0.0`, and `uv pip compile` of `litellm>=1.90.2` with `openai>=3.0.0` has no
+  solution. The comment on the removed `plaid` extra no longer calls `openai>=3.0.0` the core floor
+  (the core is `openai>=2.20.0,<3.0.0`). The requirement and what the tests assert are unchanged;
+  one test is renamed to `test_openai_ceiling_matches_litellm_requirement`.
+- **The sdist size comment in `pyproject.toml` is current.** It said the released sdist is ~1.9 MiB;
+  3.4.3 on PyPI is 4.16 MiB and a build of a clean `git archive` of `develop` was about 4.2 MiB on
+  2026-10-05. The incident figures (928 MB, 158 MiB, 329 MB) are left as they were.
+- **More of the release workflows' safety rules are pinned by tests.** The check that no step in
+  `release.yml` can save a cache now also flags a `setup-*` step given a cache input (`cache`,
+  `enable-cache` or `package-manager-cache`) that is not `false`. A setup action whose cache is on by
+  default and that names no input is left to zizmor. For `verify-release.yml`, no step or `env:` may
+  use the `secrets` context, no step may use an `actions/cache` action or a setup action's cache, and
+  the `workflow_run` trigger must watch exactly `Release` and `Docker Publish`, the names of those
+  two workflows. Each new rule has a fixture that must be flagged.
+- **`trelix-mcp` now requires `fastmcp>=4.0.10` (was `>=4.0.0`).** Its tool metadata passes
+  `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
+  `server.disable(names=, components=)`. 4.0.10 is the release those were run against (4.0.0 to
+  4.0.9 were not tested), and `tests/unit/test_dependency_floor_guards.py` pins it.
+- **`starlette>=1.0.1` is now a declared dependency of `trelix-mcp`.** The Streamable HTTP
+  transport (`trelix_mcp.http`, see Added) imports `starlette` directly; it was already installed
+  through `fastmcp`, so nothing new is resolved.
+- **`trelix-mcp` list results are bounded, and a cut says so.** A tool result costs a client twice
+  (FastMCP sends a dict result as a text block, where every quote is escaped, and as
+  `structuredContent`): measured with 100,000-character bodies, `search_code` at `k=100` was about
+  97,000 characters of text and 197,000 on the wire, over Claude Code's 25,000-token cap for one tool
+  result. The code is in `trelix_mcp/budget.py`.
+  - **`k` above 50 is now clamped** (`k` on the search tools and `limit` on `agent_list_sessions`
+    go to `1..TRELIX_MCP_MAX_K`); `TRELIX_MCP_MAX_K=<n>` raises the cap.
+  - **A long result is now cut, with a note,** to fit `TRELIX_MCP_MAX_RESULT_CHARS` (default 15,000;
+    `0` turns the cut off). The budget counts what a client is sent, so the whole response is at
+    most 30,000 characters and its text under 15,000. A cursor-paged response sets `truncated` and
+    `omitted`, and `next_cursor` points at the first dropped result, so paging loses and repeats
+    nothing. A bare array (`blast_radius`, `graph_search_mcp`) keeps the JSON array as its first text
+    block, which the VS Code extension reads, and adds a note block and `_meta.trelix`; the
+    `graph_search_mcp` note points at `detail="concise"`, as a larger `k` cannot help there. One
+    result is always kept, so paging advances.
+  - **`agent_list_sessions` cuts each session's `query` (its most recent prompt) to 300 characters** and
+    sets `query_truncated: true` on a session it cut. The prompt has no bound of its own.
+  - **`blast_radius` returns at most 100 dependents by default** (it returned all of them); `limit`
+    raises that to 500 (it has no offset), and the character cut still applies (about 108 dependents
+    fit with short paths, about 84 with 72-character ones). The VS Code "N dependents" lens and the
+    `@trelix /impact` chat command read the real count from `_meta.trelix.total_available` and say how many
+    they list (see the VS Code entry under Fixed).
+    **`get_symbol` cuts a body over 20,000 characters** (`max_body_chars=0` restores it).
+  - A negative `cursor` returned a slice taken from the end of the list; it is now an error result.
+    An unusable `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` stops `trelix-mcp` at start-up
+    with exit code 2. `docs/MCP_GUIDE.md` and `docs/BACKWARDS_COMPATIBILITY.md` describe the limits.
+  - Not covered: `build_knowledge_graph` and `federation_list_repos` are not cut.
+- **The `otel` extra now requires `opentelemetry-util-genai>=1.2b0`** (it accepted `>=1.0b0`). The
+  chat spans need two things that exist only from 1.2b0: `suspend()`, which detaches a `stream()`
+  span from the caller's context while the stream is drained (without it every span the consumer
+  opens mid-stream would nest under the chat span), and the `gen_ai.usage.cache_write.input_tokens`
+  attribute name (1.0b0 and 1.1b0 emit `gen_ai.usage.cache_creation.input_tokens`, which the GenAI
+  registry no longer has). Verified against 1.2b0 on 2026-10-07; `pip install 'trelix[otel]'` picks
+  it up, and `tests/unit/test_dependency_floor_guards.py` pins the floor. Nothing changes for a
+  default install: the extra is optional.
+- **`trelix.retrieval.otel_tracing` keeps every public name; the OTLP metrics wiring moved.** The
+  metrics endpoint mapping, the `MeterProvider` builder and the embedding counter definitions now
+  live in `trelix.retrieval.otel_metrics` and are re-exported, so `otel_tracing.py` stays under the
+  500-line limit with the `is_enabled_from_env()` and `handler_from_env()` helpers the LLM factory
+  uses. No behaviour change; the metrics tests (`tests/unit/test_otel_metrics*.py`) were not touched
+  by the move.
+- **`trelix eval-synthesis` prints the results table only.** The answers used to stream to stdout as
+  each query was synthesised (the Synthesizer's live token stream, the path `trelix ask` uses), ahead of
+  the table, with the `[trelix] ...` notices; they no longer do. A script that read answers from that
+  stream uses `--record`. A run with no LLM configured logs one warning instead of one notice per
+  query, so a table of zeros still says why.
+- **The `dev` extra now requires `pytest>=9.0` and `pytest-asyncio>=0.24`** (it accepted
+  `pytest>=8.2.0` and `pytest-asyncio>=0.23.0`). The test configuration in `pyproject.toml` sets
+  `strict = true`, a pytest 9 key, and `asyncio_default_fixture_loop_scope`, which pytest-asyncio
+  reads from 0.24. On the older releases both are ignored (pytest only warns about an unknown
+  key), so strict xfails, strict config parsing and unique parametrization ids were not enforced.
+  `pip install -e ".[dev]"` already resolves newer releases, and
+  `tests/unit/test_dependency_floor_guards.py` pins both floors. Nothing changes for a default
+  install: the extra is for contributors.
+- **`.env.example` lists the `lance` backend, and the installation guide marks `TRELIX_STORE_HNSW`
+  inert.** `TRELIX_STORE_BACKEND` now reads `sqlite | qdrant | lance` in `.env.example`, which also
+  gets a commented Lance block (`LANCE_URI`, `LANCE_TABLE`) and points at the `Flat-scan advisory`
+  that `trelix index` and `trelix stats` print. The installation guide's settings table said
+  `TRELIX_STORE_HNSW` uses an HNSW index for the vector leg; it is accepted and read nowhere (the
+  sqlite store is always an exact flat scan), as the provider guide and the CLI reference now say.
+  The rest of the docs now describe the sqlite store the same way, and the `lance` backend is
+  no longer described as providing an ARM-native HNSW index: trelix builds no index on a Lance
+  table, so a search is an exact scan there too. No behaviour changes.
+
 ## [3.4.3] — 2026-10-04
 
 ### Security
@@ -5380,7 +6658,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/sairam0424/trelix/compare/v3.4.3...v3.5.0
 [3.0.1]: https://github.com/sairam0424/trelix/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/sairam0424/trelix/compare/v2.12.0...v3.0.0
 [2.12.0]: https://github.com/sairam0424/trelix/compare/v2.11.1...v2.12.0

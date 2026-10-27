@@ -17,6 +17,7 @@ from trelix.llm.client import (
     TrelixChatClient,
 )
 from trelix.llm.finish_reasons import BEDROCK_STOP_REASONS, normalise
+from trelix.llm.thinking import ThinkingModeMemory, is_enabled_thinking_rejection
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -86,6 +87,9 @@ class BedrockBackend(TrelixChatClient):
         # the no-temperature request instead of re-triggering the same
         # ValidationException every time.
         self._temperature_rejected = False
+        # Thinking shape per model (budget vs adaptive): classified from the id, corrected
+        # at runtime for unknown ids; per model as the active model can swap. See thinking.py.
+        self._thinking_modes = ThinkingModeMemory()
         # Guards writes to _model/_temperature_rejected in _try_with_fallback()
         # -- Indexer's file-summarization pipeline hands a single chat-client
         # instance to a ThreadPoolExecutor (see indexer.py's own "all five
@@ -221,26 +225,36 @@ class BedrockBackend(TrelixChatClient):
                 "tools": [self._convert_tool(t) for t in tools],
                 "toolChoice": ({"tool": {"name": force_tool}} if force_tool else {"auto": {}}),
             }
-        if not self._temperature_rejected:
-            # Anthropic-on-Bedrock rejects a reasoning request unless
-            # temperature=1.0 -- forced regardless of an explicit
-            # temperature= argument, same as complete()/stream() do below.
-            # Both branches are gated on _temperature_rejected: once a model
-            # is known to reject the field outright, a thinking=True call
-            # must not re-add it and re-trigger the same ValidationException
-            # on every single reasoning call for the rest of this instance's
-            # life -- see _try_with_fallback()'s retry-and-remember contract.
-            request["inferenceConfig"]["temperature"] = (
-                1.0 if thinking else self._config.temperature
-            )
         if thinking:
-            request["additionalModelRequestFields"] = {
-                "reasoning_config": {
-                    "type": "enabled",
-                    "budget_tokens": self._config.thinking_budget_tokens,
-                }
-            }
+            self._apply_thinking(request, request["modelId"])
+        elif not self._temperature_rejected:
+            # Gated on _temperature_rejected: a model known to reject the field must
+            # not get it re-added -- see _try_with_fallback()'s retry-and-remember.
+            request["inferenceConfig"]["temperature"] = self._config.temperature
         return request
+
+    def _apply_thinking(self, request: dict[str, Any], model_id: str) -> None:
+        """Shape the thinking part of *request* for *model_id*: additionalModelRequestFields
+        and the temperature that goes with it. Budget models get ``reasoning_config`` and,
+        because Anthropic-on-Bedrock rejects it otherwise, a forced temperature=1.0 (dropped
+        once _temperature_rejected). Adaptive-only models get ``{"thinking": {"type":
+        "adaptive"}}`` and no temperature (live on claude-sonnet-5 and -5-5: accepted with or
+        without 1.0); the model decides whether to think, so the response may carry no
+        reasoningContent block. Re-run by _try_with_fallback() on a model swap or a learned
+        mode, so it rewrites both fields."""
+        inference = request["inferenceConfig"]
+        if self._thinking_modes.mode_for(model_id) == "adaptive":
+            request["additionalModelRequestFields"] = {"thinking": {"type": "adaptive"}}
+            inference.pop("temperature", None)
+            return
+        budget = self._config.thinking_budget_tokens
+        request["additionalModelRequestFields"] = {
+            "reasoning_config": {"type": "enabled", "budget_tokens": budget}
+        }
+        if self._temperature_rejected:
+            inference.pop("temperature", None)
+        else:
+            inference["temperature"] = 1.0
 
     def _convert_tool(self, openai_tool: dict[str, Any]) -> dict[str, Any]:
         fn = openai_tool["function"]
@@ -300,6 +314,29 @@ class BedrockBackend(TrelixChatClient):
             "temperature" in msg and "deprecated" in msg
         )
 
+    def _rejects_enabled_thinking(self, exc: Exception, request: dict[str, Any]) -> bool:
+        """True when Bedrock says this model refuses the budget thinking shape (confirmed
+        live on claude-sonnet-5 and -5-5). Only a request still carrying ``reasoning_config``
+        can match, which is what bounds the switch to one."""
+        if "reasoning_config" not in (request.get("additionalModelRequestFields") or {}):
+            return False
+        msg = str(exc)
+        is_validation = "ValidationException" in type(exc).__name__ or "ValidationException" in msg
+        return is_validation and is_enabled_thinking_rejection(msg)
+
+    def _switch_to_adaptive_thinking(self, request: dict[str, Any]) -> None:
+        """Remember that the request's model needs adaptive thinking and rebuild *request*
+        in that shape. Keyed on request["modelId"], not self._model, which another thread
+        may have swapped."""
+        model_id = request["modelId"]
+        if self._thinking_modes.remember_adaptive(model_id):
+            logger.warning(
+                "Bedrock model %r rejected budget thinking; using adaptive thinking "
+                "for it from now on.",
+                model_id,
+            )
+        self._apply_thinking(request, model_id)
+
     @with_retry(max_attempts=5)
     def _call_with_retry(self, fn: Any, request: dict[str, Any]) -> Any:
         # Retries transient failures (ThrottlingException / 5xx, surfaced as
@@ -318,28 +355,25 @@ class BedrockBackend(TrelixChatClient):
           - temperature no longer accepted by this model generation -> drop
             it and remember, so every later call on this instance skips
             straight to the no-temperature request
-        Looped rather than a single retry: if swapping to the fallback model
-        lands on a model that *also* rejects temperature (a real possibility
-        -- the two conditions are independent per-model facts, and
-        TRELIX_LLM_BEDROCK_FALLBACK_MODEL is operator-configurable), the
-        second adjustment still gets a chance instead of propagating
-        uncaught. Each condition can only fire once per call: the model-swap
-        guard (`self._model != self._fallback_model`) and the fact that
-        `temperature` is removed from `request` the first time it's dropped
-        both make a repeat match on the same condition impossible, so this
-        cannot loop more than twice. Neither condition applying, or a retry
-        that still fails for an unrelated reason, re-raises immediately.
+          - budget thinking (reasoning_config) refused by this model -> switch
+            the request to adaptive thinking and remember it for that model
+        Looped rather than a single retry: the conditions are independent
+        per-model facts (TRELIX_LLM_BEDROCK_FALLBACK_MODEL is operator-
+        configurable), so a model swap can land on a model that needs another
+        adjustment. The swap fires at most once per call (guard:
+        `self._model != self._fallback_model`), the temperature drop at most
+        once (it is removed, and `_temperature_rejected` keeps it from being
+        re-added), and the thinking switch at most once per model (it only
+        matches a request still carrying `reasoning_config`, which a model
+        swap puts back when it re-shapes the thinking fields for the fallback)
+        -- so a call makes at most four retries, five requests. Anything else,
+        or a retry that still fails for an unrelated reason, re-raises.
 
-        Checked in this specific order -- _rejects_temperature() before
-        _is_model_unavailable() -- because the two predicates are not
-        mutually exclusive string-matchers, and temperature-rejection is
-        the narrower, more specific one. _is_model_unavailable() matches on
-        the generic substring "not supported" among others; if AWS ever
-        phrases a temperature-rejection message containing that phrase
-        (plausible AWS-style wording, though not the current live-confirmed
-        text), checking model-availability first would misclassify it,
-        permanently and incorrectly abandoning a perfectly usable primary
-        model instead of just dropping temperature and staying on it.
+        Checked in this order -- the two specific rejections before
+        _is_model_unavailable() -- because that predicate matches the generic
+        substring "not supported", which the live-confirmed thinking rejection
+        contains: checked first, it would abandon a usable primary model for
+        the fallback. Any temperature wording containing it has the same hazard.
         """
         while True:
             try:
@@ -355,6 +389,9 @@ class BedrockBackend(TrelixChatClient):
                         self._temperature_rejected = True
                     request["inferenceConfig"].pop("temperature")
                     continue
+                if self._rejects_enabled_thinking(exc, request):
+                    self._switch_to_adaptive_thinking(request)
+                    continue
                 if self._is_model_unavailable(exc) and self._model != self._fallback_model:
                     logger.warning(
                         "Bedrock model %r unavailable (%s). Falling back to %r.",
@@ -365,6 +402,8 @@ class BedrockBackend(TrelixChatClient):
                     with self._state_lock:
                         self._model = self._fallback_model
                     request["modelId"] = self._fallback_model
+                    if "additionalModelRequestFields" in request:
+                        self._apply_thinking(request, self._fallback_model)
                     continue
                 raise
 

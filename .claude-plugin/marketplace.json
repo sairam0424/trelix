@@ -1,0 +1,15 @@
+{
+  "name": "trelix",
+  "description": "trelix for Claude Code: the trelix-mcp code-search server and a skill that says when to search with it and when to fall back to grep.",
+  "owner": {
+    "name": "sairam0424",
+    "url": "https://github.com/sairam0424"
+  },
+  "plugins": [
+    {
+      "name": "trelix",
+      "source": "./plugins/trelix",
+      "description": "Hybrid BM25 + vector + call-graph code search over a local index (search_code, get_symbol, blast_radius, graph tools, ask_agent)."
+    }
+  ]
+}

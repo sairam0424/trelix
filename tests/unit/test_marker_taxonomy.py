@@ -194,10 +194,11 @@ def _collect_or_skip(path: str, gate_module: str | None, marker: str) -> frozens
     without that extra. Measured with watchfiles hidden at ``sys.meta_path``: this
     parametrised test skipped as designed while the control went red.
 
-    That is not hypothetical for CI. ``watchfiles`` is in NO extra the unit job
-    installs; it arrives only from the later ``pip install -e packages/trelix-mcp``
-    step, via ``fastmcp>=3.4.0,<4 -> fastmcp-slim[client,server] -> watchfiles``. Any
-    3.x release that moves it out of that extra removes it from all four legs.
+    That is not hypothetical for CI. The unit job gets ``watchfiles`` from the ``dev``
+    extra, which declares it directly, and again from the later
+    ``pip install -e packages/trelix-mcp`` step, via
+    ``fastmcp>=4.0.10,<5 -> fastmcp-slim[client,server] -> watchfiles``. An environment
+    that installs neither has no ``watchfiles``, and this carrier skips wholesale there.
     """
     total = _collect((path,))
     if total:

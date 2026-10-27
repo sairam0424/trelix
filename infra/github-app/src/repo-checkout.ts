@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { isCommitId } from "./commit-id.js";
 import { buildGitChildEnv } from "./child-env.js";
+import { CHECKOUT_TIMEOUT_MS } from "./review-timeouts.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,11 +33,6 @@ const GIT_COMMAND_CONFIG: readonly string[] = [
     "-c",
     "credential.helper=",
 ];
-
-// ~2 minutes — generous for a shallow, single-ref fetch of one PR, short
-// enough that a genuinely hung clone (dead remote, network partition)
-// doesn't tie up a webhook-delivery worker indefinitely.
-const CHECKOUT_TIMEOUT_MS = 2 * 60 * 1000;
 
 /**
  * Declared here (not imported from review-runner.ts) so review-runner.ts

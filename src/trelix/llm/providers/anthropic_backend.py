@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from trelix.core.retry import with_retry
@@ -17,6 +17,7 @@ from trelix.llm.client import (
     TrelixChatClient,
 )
 from trelix.llm.finish_reasons import ANTHROPIC_STOP_REASONS, normalise
+from trelix.llm.thinking import ThinkingModeMemory, is_enabled_thinking_rejection
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -44,6 +45,10 @@ class AnthropicBackend(TrelixChatClient):
     def __init__(self, config: LLMConfig) -> None:
         self._config = config
         self._model = config.model
+        # Which thinking shape this model takes: classified from the model id, then corrected
+        # at runtime for an id the classifier does not know yet (see
+        # _call_with_thinking_fallback and trelix.llm.thinking).
+        self._thinking_modes = ThinkingModeMemory()
         self._client = self._build_client(config)
 
     def _build_client(self, config: LLMConfig) -> Any:
@@ -126,16 +131,55 @@ class AnthropicBackend(TrelixChatClient):
         """
         Build extended thinking kwargs for Anthropic API.
         Returns empty dict when thinking is disabled or not supported.
+
+        Models that reject a token budget (Claude 5 and newer, Opus 4.7 and newer) get
+        ``{"type": "adaptive"}``: the model decides whether to think, so a response may
+        carry no thinking block, and ``thinking_budget_tokens`` is not sent.
         """
         if not thinking:
             return {}
-        # Extended thinking requires temperature=1.0 and is incompatible with forced tool_choice
+        if self._thinking_modes.mode_for(self._model) == "adaptive":
+            return {"thinking": {"type": "adaptive"}}
+        # Extended thinking is incompatible with a forced tool_choice
         return {
             "thinking": {
                 "type": "enabled",
                 "budget_tokens": self._config.thinking_budget_tokens,
             }
         }
+
+    def _rejects_enabled_thinking(self, exc: Exception, thinking_param: object) -> bool:
+        """True when *exc* is the API's 400 for sending ``thinking.type.enabled`` to a model
+        that only takes adaptive thinking. The SDK raises ``anthropic.BadRequestError`` for a
+        400; this reads the exception's ``status_code`` instead of importing that class, so
+        the check needs no SDK import and holds for whatever SDK module is loaded."""
+        if not isinstance(thinking_param, dict) or thinking_param.get("type") != "enabled":
+            return False
+        return getattr(exc, "status_code", None) == 400 and is_enabled_thinking_rejection(str(exc))
+
+    def _call_with_thinking_fallback(self, call: Callable[..., Any], **kwargs: Any) -> Any:
+        """Run ``call(**kwargs)``. If the API rejects the budget thinking shape for this
+        model (an id the classifier did not recognise), switch this model to adaptive
+        thinking, retry exactly once, and remember the switch.
+
+        *call* is `_create` or `_open_stream`, so transient failures are still retried by
+        their ``@with_retry`` (the sole retry layer). This adds one bounded re-send, not a
+        loop: the retry is made outside the ``except`` block, carries ``adaptive`` (so the
+        rejection cannot match it again) and its own errors propagate untouched. Every
+        other error, and a 400 for any other reason, is re-raised.
+        """
+        try:
+            return call(**kwargs)
+        except Exception as exc:  # noqa: BLE001 -- re-raised below unless it is the one rejection
+            if not self._rejects_enabled_thinking(exc, kwargs.get("thinking")):
+                raise
+        if self._thinking_modes.remember_adaptive(self._model):
+            logger.warning(
+                "Anthropic model %r rejected budget thinking; using adaptive thinking "
+                "for it from now on.",
+                self._model,
+            )
+        return call(**{**kwargs, "thinking": {"type": "adaptive"}})
 
     def _split_content(self, content_blocks: list[Any]) -> tuple[str, list[ThinkingBlock]]:
         """
@@ -203,7 +247,8 @@ class AnthropicBackend(TrelixChatClient):
         if sys_prompt:
             kwargs["system"] = sys_prompt
         kwargs.update(self._thinking_kwargs(thinking))
-        response = self._create(
+        response = self._call_with_thinking_fallback(
+            self._create,
             model=self._model,
             messages=user_msgs,
             max_tokens=max_tokens or self._config.max_tokens,
@@ -251,7 +296,8 @@ class AnthropicBackend(TrelixChatClient):
         if sys_prompt:
             kwargs["system"] = sys_prompt
         kwargs.update(self._thinking_kwargs(thinking))
-        manager, stream = self._open_stream(
+        manager, stream = self._call_with_thinking_fallback(
+            self._open_stream,
             model=self._model,
             messages=user_msgs,
             max_tokens=max_tokens or self._config.max_tokens,

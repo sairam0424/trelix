@@ -1,6 +1,7 @@
 /**
- * Shared by queue.test.ts and queue-resilience.test.ts: a queue over a claim store with a
- * clock the test moves, and jobs that start, record themselves and finish when told to.
+ * Shared by queue.test.ts, queue-resilience.test.ts and queue-watchdog.test.ts: a queue over a
+ * claim store with a clock the test moves, and jobs that start, record themselves and finish
+ * when told to.
  */
 import { ClaimStore } from "../../src/claims.js";
 import {
@@ -64,8 +65,12 @@ export function makeHarness(
     const started: string[] = [];
     const queue = new JobQueue({
         capacity: 2,
+        // Large, so that only the tests of the share set one.
+        perGroupCapacity: 1_000,
         concurrency: 2,
         perGroupConcurrency: 1,
+        // Long, so that only the tests of the watchdog cut a job.
+        jobTimeoutMs: DAY_MS,
         ...limits,
         claims,
         onError:

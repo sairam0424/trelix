@@ -111,6 +111,166 @@ there is none for `3`, because nothing had been reviewed. The CHANGELOG entry fo
 bold. The default of `4` is a judgement call, not a settled one: shipping it opt-in first and
 flipping the default in a flagged MINOR release would follow this policy more strictly.
 
+A `--base` or `--head` that git cannot resolve is the same kind of change: it used to print
+"No changes found in diff." and exit `0`, and now exits `1` (the default `HEAD~1` in a repository
+with a single commit included). So does any other `git diff` failure between refs that each resolve.
+There is no escape hatch, for the same reason as for `3`: no diff had been read.
+
+### Behaviour changes shipped as fixes: the MCP `resources.subscribe` capability
+
+`trelix-mcp` used to force `resources.subscribe: true` into the capabilities it returns to a
+client at connect time (both the `initialize` result and `server/discover`), although it does
+not serve the `resources/subscribe` request: a client that sent it got JSON-RPC "Method not
+found". The forced value is removed, so the server now reports `resources.subscribe: false`,
+which is what it does. A client that gated on the capability now sees `false`, which is the
+truth; a client that ignored the capability sees no difference. The `subscribe_resource` and
+`unsubscribe_resource` tools work as before (only the `subscribe_resource` description text that
+`tools/list` sends was reworded, because it told models to call the tool after seeing
+`resources.subscribe: true`), and there is no escape hatch because none is needed: a client that
+wants them calls the tools by name. What did not work before, and still does not, is delivery:
+nothing starts a file watcher inside the `trelix-mcp` process, and `trelix watch` runs in a
+separate process whose subscription registry is empty, so no MCP client receives
+`notifications/resources/updated`. This was shipped as a fix rather than a flagged breaking
+change because the old value was a false statement about the server, not a feature a working
+client could depend on; the tool names, parameters and return values are untouched.
+
+### Behaviour changes shipped as fixes: read surfaces on a repository with no index
+
+Pointed at a repository that was never indexed, these used to answer with an empty result and
+leave an empty `.trelix/index.db` behind, which made the repository look indexed (a later
+`trelix search` said "no results" instead of "not indexed"). 3.4.2 fixed the CLI read commands;
+the rest now refuse too, with the CLI's words (`No index found at <repo>/.trelix/index.db. Run
+trelix index <repo> first.`) and without creating `.trelix/`:
+
+| Surface | Before | Now |
+|---------|--------|-----|
+| MCP tools `search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`, `graph_search_mcp`, `ask_agent`, `agent_list_sessions`, `agent_clear_session` | an empty result (`get_symbol` and `blast_radius`: `null` and `[]`) | a tool error (`isError: true`, the session carries on) |
+| MCP resource handlers in `trelix_mcp.resources` | zero counts, an empty manifest, "Symbol not found" | `{"error": "No index found at ..."}` |
+| MCP `federation_search_all` | an empty page | the unindexed repo is skipped and not counted in `repos_searched`; `error` is set only when none of the queried repos is indexed |
+| REST `/search`, `/ask`, `/stats`, `/graph`, `/graph/communities`, `/graph/visualize`, `/graph/search` | `200` with zero results, zero counts or an empty graph | `400` with `{"detail": "No index found at ..."}` |
+| `TrelixRetriever` (LangChain), `TrelixIndexRetriever` (LlamaIndex) | `[]` | raise `trelix.core.index_check.IndexNotFoundError`, a `FileNotFoundError` |
+| `FederatedRetriever.retrieve` and `trelix search-all` | the unindexed repo contributed nothing | the same, but it is skipped before it is opened (so no index, and for a registered path that does not exist no directory, is created); `search-all` names it on stderr and exits `1` when every repo it would query is unindexed |
+
+A caller that treated the empty answer as "nothing found" now gets an error where it had none,
+which is the point: the old answer claimed a search that never happened. There is no toggle; the
+remedy is `trelix index <repo>` (or the `index_codebase` tool, or `POST /index`), which still
+creates the index. `trelix review` is deliberately not in the table: it keeps working on a
+repository with no index, from the diff alone, and only stops creating the empty index.
+`trelix eval`, `eval-synthesis`, `telemetry`, `agent sessions` and `taint` do not check yet
+(unchanged).
+
+`trelix-mcp`, `trelix-langchain` and `trelix-llama-index` now import `trelix.core.index_check`,
+which the core ships from 3.5.0, the release that contains this change. An older core under a newer
+package fails (`trelix-mcp` at start-up; the two adapters at their first query, because they import
+`require_index` inside the retrieval method), so 3.5.0 raised their `trelix>=` floors to
+`trelix>=3.5.0`.
+
+### Behaviour change shipped as a fix: `Synthesizer.stream()` on an empty retrieval
+
+When retrieval found no results, `Synthesizer.synthesize()` (FLARE, `eval-synthesis`) already
+answered with `[trelix] No relevant code found — cannot synthesize an answer.` and made no LLM
+call, but `Synthesizer.stream()` (plain `trelix ask` with a non-local embedder, REST `GET /ask`)
+sent the model `No relevant code found.` as the whole code context and streamed whatever it said.
+That answer could not be grounded in the repository, so `stream()` now does what `synthesize()`
+does:
+
+| Surface | Before | Now |
+|---------|--------|-----|
+| `trelix ask <repo> <question> --provider openai` (any non-local embedder; FLARE and agentic mode off) | an LLM answer written without any retrieved code, exit `0` | the notice line on stdout, exit `0`, no LLM call |
+| REST `GET /ask` | `data: <token>` frames of that answer, then `data: [DONE]` | `data: [trelix] No relevant code found — cannot synthesize an answer.` then `data: [DONE]`, no LLM call |
+| `trelix ask` with `TRELIX_RETRIEVAL_FLARE=true` | the notice, no LLM call | unchanged |
+| `trelix ask --provider local` (context only) | the assembler's `No relevant code found.` | unchanged |
+| `trelix ask --provider openai` with no LLM key configured, whatever retrieval found | `Synthesis failed: LLM not configured` on stderr, exit `1` | unchanged: `stream()` checks the key before the retrieval result, as `synthesize()` always did |
+
+There is no toggle: no answer existed to lose, only one the retrieved code did not support. A
+caller that parsed the streamed text now sees the notice literal (the same one `synthesize()` has
+always returned) in its place; `Synthesizer.last_error` stays `None`, as it did for `synthesize()`.
+
+Additive: `Synthesizer.last_abstain_reason` (`"no_results"`, `"insufficient_evidence"` or `None`)
+says why the last call abstained, and `trelix.retrieval.citations` gains `NO_RESULTS_MESSAGE`,
+`ABSTAIN_PREFIX`, `AbstainReason` and `is_abstention()`. With `TRELIX_RETRIEVAL_CITATIONS=true`
+the synthesis prompt also asks the model to reply with exactly one line starting
+`INSUFFICIENT_EVIDENCE:` when the context does not contain what the question needs; that line
+streams as an answer (exit `0`) and FLARE treats it as an uncertainty phrase. With the flag off (the
+default) the prompts are unchanged.
+
+Additive: `trelix ask --json` prints one JSON object (`query`, `answer`, `abstained`,
+`abstain_reason`, `citations`) and nothing else on stdout; it is a usage error with
+`--agentic`/`--session` (exit `2`) and refused in context-only mode and with
+`TRELIX_RETRIEVAL_AGENTIC=true` (exit `1`). In human mode a `Sources:` footer follows the answer only
+when `TRELIX_RETRIEVAL_CITATIONS=true` tagged the context and the model answered; with the flag off
+(the default) stdout is unchanged. `Synthesizer(stream_to_stdout=False)` keeps every stdout write
+in, `Synthesizer.last_context` is the context the last call answered from, and
+`trelix.retrieval.citations` gains `footer_lines()` and `citation_as_json()`.
+
+### Behaviour change: MCP list results are bounded
+
+`trelix-mcp` list tools used to return as much as the caller asked for. Measured through an
+in-process client with 100,000-character bodies, `search_code` with `k=100` was about 97,000
+characters of text and 197,000 on the wire (FastMCP sends a dict result as a text block, with every
+quote escaped, and again as `structuredContent`), past Claude Code's 25,000-token cap for one tool
+result; `graph_search_mcp` had no upper bound on `k`, and `blast_radius` returned every dependent
+file (about 127 characters each with short paths, more with long ones). Tool names and parameters
+are unchanged and every new argument has a default that keeps the old meaning, but these results now
+differ for a caller that asked for a lot:
+
+| Before | Now | Escape hatch |
+|--------|-----|--------------|
+| `k` (and `agent_list_sessions`'s `limit`) of any size was honoured | clamped to `1..50`; the response says what was used (`page_size`) | `TRELIX_MCP_MAX_K=<n>` |
+| A list result of any size | cut to fit `TRELIX_MCP_MAX_RESULT_CHARS` (15,000) by dropping the tail: the budget counts both copies a client is sent, so the response is at most 30,000 characters and its text under 15,000. `truncated` and `omitted` say so and `next_cursor` continues from the first dropped result. A bare array (`blast_radius`, `graph_search_mcp`) keeps the JSON array in the first text block and adds a note block and `_meta.trelix`. One result is always kept, so a single result longer than the budget is returned whole | `TRELIX_MCP_MAX_RESULT_CHARS=0` turns the cut off |
+| `blast_radius` returned every dependent | at most 100 by default; `limit` raises that up to 500, which is the most it can return (it has no offset), and the character cut still applies (about 108 dependents fit with paths like `src/callers/caller_module_0000.py`, about 84 with 72-character ones) | `limit=500` with `TRELIX_MCP_MAX_RESULT_CHARS=0` |
+| `get_symbol` returned the whole body | a body over 20,000 characters is cut and `body_truncated` is `true` | `max_body_chars=0` |
+| `agent_list_sessions` returned each session's most recent prompt (`query`) whole | a `query` over 300 characters is cut to its first 300 and that session gets `query_truncated: true`, so one long prompt cannot push a response past 30,000 characters | none: the full prompt is only in the caller's latest `ask_agent` call for that session |
+| A negative `cursor` sliced from the end of the result list | an error result (`isError: true`) | none: use `0` or the previous `next_cursor` |
+
+Everything else is additive: `search_code`, `federation_search_all` and `agent_list_sessions` responses
+gain `page_size`, `truncated` and `omitted`, `get_symbol` gains `body_truncated`, and the new
+arguments are `detail` (`concise` or `detailed`, default `detailed`, on `search_code`,
+`graph_search_mcp` and `federation_search_all`), `limit` (`blast_radius`) and `max_body_chars`
+(`get_symbol`). The first text block of every result keeps the keys it had, which is what the VS Code
+extension reads; it also reads `_meta.trelix.total_available`, so its "N dependents" lens and its `@trelix /impact` chat
+command show the real count and say how many they list when a long list was cut (`150 dependents (showing 100)`).
+An extension build that predates this reads only the array and shows the cut length with no sign that the list
+was cut. The `federation_search_all` error and empty-registry responses keep their shorter shape.
+A value of `TRELIX_MCP_MAX_K`, `TRELIX_MCP_RETRIEVER_CACHE_SIZE` or `TRELIX_MCP_MAX_RESULT_CHARS` that is
+not an integer (at least 1 for the first two, at least 0 for the last) stops `trelix-mcp` at start-up with
+exit code 2.
+
+### Additive: MCP tool annotations, instructions, tool order and `--tools`
+
+`trelix-mcp` now sends tool annotation hints, server `instructions` and a five-minute cache hint, lists its tools in a fixed order (the two subscription tools, which came first, now come last) and accepts `--tools core|full` (default `full`, every tool); this is additive, because no tool name, parameter or result changes.
+
+### Additive: `trelix-mcp --root` and `repos_outside_roots`
+
+`trelix-mcp` accepts `--root PATH` (repeatable) and reads `TRELIX_ALLOWED_REPO_ROOTS`. With at
+least one root, every `repo_path`, `federation_add_repo`'s `path` and `trelix://repo/...` URI
+outside the roots is refused (`isError: true` with `repo_path is not inside an allowed repository
+root`; a resource read fails with the same text), `federation_list_repos` and
+`federation_search_all` list and search only the entries inside the roots and every response of
+theirs gains `repos_outside_roots`, and `federation_remove_repo` answers an alias whose repository
+is outside the roots as an unregistered one and writes nothing. With neither, nothing changes: no
+tool, parameter or result differs, and no key is added. One consumer can be confined without asking
+for it: `trelix-mcp` over stdio reads `TRELIX_ALLOWED_REPO_ROOTS` from the process environment; if
+you export it for `trelix serve`, the VS Code extension's server is confined to the same roots.
+
+Not conditional on roots, and not additive: the `config_path` of the four federation tools must
+now name a `.json` file in `~/.config/trelix/` or `<cwd>/.trelix/` that is missing, empty or a JSON
+object with a `repos` list, else the call answers `config_path is not a repository registry`. A
+path outside those two directories answers the fixed `config_path is not inside an allowed config
+directory`, which no longer names the directories. Before, a file there that the registry could
+not parse was read as an empty registry and overwritten by the next `federation_add_repo`.
+
+### Additive: `trelix-mcp --transport http`
+
+`trelix-mcp` accepts `--transport stdio|http` and, for `http`, `--host`, `--port`, `--path`,
+`--allowed-host`, `--stateful` and `--allow-unauthenticated`, and reads `TRELIX_MCP_AUTH_TOKEN`
+(fallback `TRELIX_API_AUTH_TOKEN`) and `TRELIX_MCP_ALLOWED_HOSTS` (fallback
+`TRELIX_API_ALLOWED_HOSTS`). The stdio default is byte-identical: `mcp.run(transport="stdio")`
+once, no middleware, unmasked error texts, and the six HTTP-only flags are a usage error on stdio
+rather than ignored. No tool name, parameter or result changes on either transport; the masked
+text `Error calling tool '<name>'` for an unexpected exception exists only over HTTP, where a
+`ToolError` text is unchanged.
+
 ### v3.3.0 Breaking Changes
 
 The following deprecated item was removed in v3.3.0. Its `AliasChoices`/`DeprecationWarning` backward-compat shim had been active since v2.4.0.
@@ -152,6 +312,13 @@ upstream frameworks (LangChain, LlamaIndex) release breaking changes, we:
 1. Support the previous major version for 1 minor trelix release
 2. Add the new version support in the same or next minor release
 3. Drop old version support only on a trelix minor or major version bump
+
+**The Claude Code plugin is not a version stamp.** `plugins/trelix/.mcp.json` pins the newest
+*published* `trelix-mcp` with `==`, so a release PR never touches it and `main` never points at
+a version PyPI does not have yet; a follow-up PR moves the pin after PyPI shows the release, so
+the plugin trails the core by one release. The plugin's own `version`
+(`plugins/trelix/.claude-plugin/plugin.json`) is that pin, or `<pin>.N` for a plugin-only
+change, and the twelve-stamp release gate described below does not include it.
 
 ### Why lockstep, and not "independent cadence"
 

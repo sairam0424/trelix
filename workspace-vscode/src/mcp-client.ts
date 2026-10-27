@@ -51,6 +51,36 @@ export interface BlastRadiusEntry {
     language: string;
 }
 
+/**
+ * The blast_radius dependents the server returned, plus the real dependent
+ * count. `total` exceeds `entries.length` when the server cut a long list.
+ */
+export interface BlastRadiusResult {
+    entries: BlastRadiusEntry[];
+    total: number;
+}
+
+/**
+ * Real dependent count for a blast_radius result. When the server cuts the
+ * list it puts the true count in `_meta.trelix.total_available`. An absent
+ * field (nothing was cut, or an older server) or a malformed one (not an
+ * integer, or smaller than the entries we hold) falls back to the entry count.
+ */
+export function blastRadiusTotal(
+    meta: { [key: string]: unknown } | undefined,
+    entryCount: number,
+): number {
+    const trelix = meta?.trelix as
+        | { total_available?: unknown }
+        | null
+        | undefined;
+    const total = trelix?.total_available;
+    if (typeof total !== "number" || !Number.isInteger(total)) {
+        return entryCount;
+    }
+    return Math.max(total, entryCount);
+}
+
 export class TrelixMcpClient {
     private client: Client | null = null;
     private transport: StdioClientTransport | null = null;
@@ -218,11 +248,15 @@ export class TrelixMcpClient {
      * trelix-blast-radius PROMPT — so we call the tool directly and JSON.parse
      * its array of {file, symbol, kind, line_start, language} entries. Same
      * callTool pattern as search()/getSymbol().
+     *
+     * When the server cuts a long list, the array in the first text block holds
+     * only the kept entries; the real count rides in `_meta.trelix.total_available`
+     * (see blastRadiusTotal), so callers get it as `total` alongside `entries`.
      */
     async blastRadius(
         symbolName: string,
         repoPath: string,
-    ): Promise<BlastRadiusEntry[]> {
+    ): Promise<BlastRadiusResult> {
         if (!this.client) throw new Error("Not connected");
         const result = await this.client.callTool({
             name: "blast_radius",
@@ -238,13 +272,17 @@ export class TrelixMcpClient {
             line_start?: number;
             language?: string;
         }> | null;
-        return (parsed ?? []).map((r) => ({
+        const entries: BlastRadiusEntry[] = (parsed ?? []).map((r) => ({
             file: r.file ?? "",
             symbol: r.symbol ?? "",
             kind: r.kind ?? "",
             lineStart: r.line_start ?? 0,
             language: r.language ?? "",
         }));
+        return {
+            entries,
+            total: blastRadiusTotal(result._meta, entries.length),
+        };
     }
 
     async disconnect(): Promise<void> {

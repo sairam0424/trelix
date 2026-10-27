@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "trelix": {
+      "command": "uvx",
+      "args": ["--from", "trelix-mcp==3.4.3", "trelix-mcp"]
+    }
+  }
+}

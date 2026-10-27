@@ -1,6 +1,6 @@
-# Trelix v3.4.3 — Installation Guide
+# Trelix v3.5.0 — Installation Guide
 
-This guide covers every installation scenario for Trelix v3.4.3, from a quick
+This guide covers every installation scenario for Trelix v3.5.0, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
@@ -26,7 +26,7 @@ one-liner to Docker, standalone binaries, and virtual-environment setups.
 |-------------|-------|
 | **Python 3.12, 3.13, or 3.14** | No known upper bound |
 | **pip** or **uv** | pip ships with Python; uv is optional but significantly faster |
-| **~500 MB free disk** | The local embedder model is downloaded on first use and cached by `sentence-transformers`/HuggingFace, i.e. under `$HF_HOME` (default `~/.cache/huggingface/hub/`). trelix passes no custom cache directory and has no `TRELIX_CACHE_DIR` setting. |
+| **~500 MB free disk** | The local embedder model is downloaded on first use and cached by `sentence-transformers`/HuggingFace, i.e. under `$HF_HOME` (default `~/.cache/huggingface/hub/`). trelix passes no custom cache directory and has no `TRELIX_CACHE_DIR` setting. The opt-in index-time embedding cache is a separate thing with its own `TRELIX_EMBEDDING_CACHE_DIR` (default `~/.cache/trelix/embeddings`); see [CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time). |
 | `OPENAI_API_KEY` | Optional — enables OpenAI embeddings (higher quality, requires internet) |
 | `AZURE_API_KEY` + `AZURE_ENDPOINT` | Optional — enables Azure OpenAI embeddings |
 | `VOYAGE_API_KEY` | Optional — enables Voyage AI embeddings |
@@ -103,7 +103,7 @@ Exposes Trelix as an MCP tool your AI assistant can call directly.
 
 ```bash
 pip install trelix-mcp
-which trelix-mcp   # trelix-mcp takes no arguments — running it starts the stdio server
+which trelix-mcp   # no arguments starts the stdio server; --transport http serves HTTP; see --help
 ```
 
 See [MCP_GUIDE.md](MCP_GUIDE.md) for the full Claude Code / Cursor setup.
@@ -157,10 +157,11 @@ pip install "trelix[knowledge-graph]"
 trelix graph ./  --output graph.html
 ```
 
-### 3.10 Large-scale vector store (>100k chunks)
+### 3.10 Larger vector stores (past the Flat-scan advisory)
 
-For very large monorepos or when SQLite becomes a bottleneck, use the LanceDB
-backend.
+The default sqlite store is an exact flat scan. When `trelix index` or `trelix stats`
+prints a `Flat-scan advisory`, switch to the LanceDB backend, or to Qdrant
+(`pip install "trelix[qdrant]"`, then `TRELIX_STORE_BACKEND=qdrant`).
 
 ```bash
 pip install "trelix[lance]"
@@ -381,6 +382,23 @@ different repo:
 REPO_PATH=/path/to/other/repo OPENAI_API_KEY=sk-... docker compose up
 ```
 
+The same file also defines an optional `trelix-mcp` service behind the `mcp` profile: the repo
+over MCP's Streamable HTTP transport, for a client that cannot spawn the `trelix-mcp` process.
+Plain `docker compose up` does not start it. The profile also starts the `trelix` REST service
+(`docker compose up trelix-mcp` starts only the MCP one, because naming a profiled service
+enables its profile):
+
+```bash
+TRELIX_MCP_AUTH_TOKEN=<secret> OPENAI_API_KEY=sk-... docker compose --profile mcp up
+```
+
+It publishes `127.0.0.1:8766` only and serves the same `/repo` (`--root /repo`). Its Host check
+accepts `localhost,127.0.0.1,[::1]`, so add the name a client uses to `TRELIX_MCP_ALLOWED_HOSTS`.
+Without a token the container exits 2 and names the variable. The image must ship
+`trelix-mcp --transport` (an older one exits at once on an argument error; check with
+`docker run --rm --entrypoint trelix-mcp <image> --help`). See
+[MCP_GUIDE section 19](MCP_GUIDE.md#19-streamable-http-transport).
+
 ### Image variants
 
 Two tags are published per release:
@@ -487,7 +505,7 @@ are read from the process environment only and ignore `.env` entirely.
 |----------|---------|-------------|
 | `TRELIX_STORE_DB_PATH` | `.trelix/index.db` | Index location, relative to the repo root |
 | `TRELIX_STORE_BACKEND` | `sqlite` | Vector store: `sqlite`, `qdrant`, `lance` |
-| `TRELIX_STORE_HNSW` | `true` | Use an HNSW ANN index for the vector leg |
+| `TRELIX_STORE_HNSW` | `true` | **Inert.** Accepted and read nowhere: the sqlite store is always an exact flat scan; see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint; used when `TRELIX_STORE_BACKEND=qdrant` |
 | `QDRANT_API_KEY` | _(none)_ | Qdrant API key for cloud deployments |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
@@ -537,7 +555,7 @@ and then uses the default. Use the replacement instead:
 | `COHERE_RERANK_MODEL` | `COHERE_MODEL_RERANK` |
 | `TRELIX_CHUNK_OVERLAP` | nothing — chunking follows AST boundaries; there is no token-overlap setting |
 | `TRELIX_HYBRID_ALPHA` | nothing — legs are fused by Reciprocal Rank Fusion, not a dense/sparse blend weight. The nearest knob is `TRELIX_RETRIEVAL_RRF_K`. |
-| `TRELIX_CACHE_DIR` | nothing — model caches follow the underlying libraries (e.g. `HF_HOME`); the index lives at `<repo>/.trelix/index.db` |
+| `TRELIX_CACHE_DIR` | nothing for model caches — they follow the underlying libraries (e.g. `HF_HOME`); the index lives at `<repo>/.trelix/index.db`. The opt-in embedding cache has its own `TRELIX_EMBEDDING_CACHE_DIR` (absolute path; default `~/.cache/trelix/embeddings`) |
 | `TRELIX_LOG_LEVEL` | nothing — use `trelix index --verbose` / `-v` |
 | `TRELIX_WATCH_DEBOUNCE_MS` | nothing — **there is no debounce flag or environment variable.** `trelix watch` uses `FileWatcher(debounce_ms=500)` and `trelix watch-all` uses `MultiRepoWatcher(debounce_ms=1600)`, both hardcoded at the call site. Change it only from Python by constructing the watcher yourself. |
 

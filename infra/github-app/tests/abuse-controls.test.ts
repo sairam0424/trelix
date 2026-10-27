@@ -15,7 +15,7 @@ const OPEN_WARNING =
     "[config] WARNING: TRELIX_APP_INSTALL_POLICY is open: any account that installs this App can spend this deployment's LLM quota. Set it to allowlist, with TRELIX_APP_ALLOWED_ACCOUNTS and/or TRELIX_APP_ALLOWED_INSTALLATIONS, to restrict who is served";
 
 describe("loadAbuseControls defaults", () => {
-    it("with nothing set: reviews on, open policy, queue 20 / 2 / 1", () => {
+    it("with nothing set: reviews on, open policy, queue 20 waiting (10 per installation), 2 running (1 per installation), 17 minutes a job", () => {
         const { controls } = load({});
 
         expect(controls).toEqual({
@@ -25,7 +25,13 @@ describe("loadAbuseControls defaults", () => {
                 accounts: new Set(),
                 installations: new Set(),
             },
-            queue: { capacity: 20, concurrency: 2, perGroupConcurrency: 1 },
+            queue: {
+                capacity: 20,
+                perGroupCapacity: 10,
+                concurrency: 2,
+                perGroupConcurrency: 1,
+                jobTimeoutMs: 1_020_000,
+            },
         });
     });
 
@@ -205,33 +211,75 @@ describe("the installation policy", () => {
 });
 
 describe("the queue caps", () => {
-    it("reads all three", () => {
+    it("reads all five", () => {
         const { controls } = load({
             TRELIX_APP_QUEUE_CAPACITY: "50",
+            TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION: "7",
             TRELIX_APP_CONCURRENCY: "4",
             TRELIX_APP_CONCURRENCY_PER_INSTALLATION: "2",
+            TRELIX_APP_JOB_TIMEOUT_MINUTES: "30",
         });
 
         expect(controls.queue).toEqual({
             capacity: 50,
+            perGroupCapacity: 7,
             concurrency: 4,
             perGroupConcurrency: 2,
+            jobTimeoutMs: 1_800_000,
         });
     });
 
     it("accepts the smallest and the largest value", () => {
         const { controls, warnings } = load({
             TRELIX_APP_QUEUE_CAPACITY: "1000",
+            TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION: "1000",
             TRELIX_APP_CONCURRENCY: "16",
             TRELIX_APP_CONCURRENCY_PER_INSTALLATION: "1",
+            TRELIX_APP_JOB_TIMEOUT_MINUTES: "240",
         });
 
         expect(controls.queue).toEqual({
             capacity: 1000,
+            perGroupCapacity: 1000,
             concurrency: 16,
             perGroupConcurrency: 1,
+            jobTimeoutMs: 14_400_000,
         });
         expect(warnings).toEqual([OPEN_WARNING]);
+    });
+
+    it("accepts a share of 1", () => {
+        const { controls, warnings } = load({
+            TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION: "1",
+        });
+
+        expect(controls.queue.perGroupCapacity).toBe(1);
+        expect(warnings).toEqual([OPEN_WARNING]);
+    });
+
+    describe("the share of the wait line one installation may hold, when unset", () => {
+        it.each([
+            [1, 1],
+            [2, 1],
+            [3, 2],
+            [7, 4],
+            [20, 10],
+            [21, 11],
+            [1000, 500],
+        ])("is half of a capacity of %i, rounded up: %i", (capacity, share) => {
+            const { controls } = load({
+                TRELIX_APP_QUEUE_CAPACITY: String(capacity),
+            });
+
+            expect(controls.queue.perGroupCapacity).toBe(share);
+        });
+
+        it("follows a capacity that could not be read back to the default one", () => {
+            const { controls } = load({ TRELIX_APP_QUEUE_CAPACITY: "abc" });
+
+            expect(controls.queue.capacity).toBe(20);
+            expect(controls.queue.perGroupCapacity).toBe(10);
+        });
     });
 
     const CAPS = [
@@ -240,6 +288,13 @@ describe("the queue caps", () => {
             field: "capacity",
             range: "1 to 1000",
             fallback: 20,
+            tooBig: "1001",
+        },
+        {
+            name: "TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION",
+            field: "perGroupCapacity",
+            range: "1 to 1000",
+            fallback: 10,
             tooBig: "1001",
         },
         {
@@ -286,8 +341,10 @@ describe("the queue caps", () => {
 
     it.each([
         "TRELIX_APP_QUEUE_CAPACITY",
+        "TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION",
         "TRELIX_APP_CONCURRENCY",
         "TRELIX_APP_CONCURRENCY_PER_INSTALLATION",
+        "TRELIX_APP_JOB_TIMEOUT_MINUTES",
     ])("%s unset or blank is the default and silent", (name) => {
         for (const value of [undefined, "", "  "]) {
             const { warnings } = load({ [name]: value });
@@ -305,4 +362,40 @@ describe("the queue caps", () => {
 
         expect(warnings.join("\n")).not.toContain("canary");
     });
+});
+
+describe("the per-job deadline", () => {
+    const NAME = "TRELIX_APP_JOB_TIMEOUT_MINUTES";
+    const WARNING =
+        "[config] TRELIX_APP_JOB_TIMEOUT_MINUTES is not a whole number from 13 to 240; using the default 17";
+
+    it("is 17 minutes with nothing set: the 2, 5 and 5 minutes of a review's stages, and 5 more", () => {
+        expect(load({}).controls.queue.jobTimeoutMs).toBe(
+            (2 + 5 + 5 + 5) * 60 * 1000,
+        );
+    });
+
+    it("is read in whole minutes and used in milliseconds", () => {
+        const { controls, warnings } = load({ [NAME]: " 45 " });
+
+        expect(controls.queue.jobTimeoutMs).toBe(2_700_000);
+        expect(warnings).toEqual([OPEN_WARNING]);
+    });
+
+    it("accepts 13 minutes, the least that is more than the stages one after the other", () => {
+        const { controls, warnings } = load({ [NAME]: "13" });
+
+        expect(controls.queue.jobTimeoutMs).toBe(780_000);
+        expect(warnings).toEqual([OPEN_WARNING]);
+    });
+
+    it.each(["12", "1", "0", "241", "99999", "abc", "-3", "2.5", "1e3", "1h"])(
+        "falls back to the default for %j, with a warning that names the variable",
+        (bad) => {
+            const { controls, warnings } = load({ [NAME]: bad });
+
+            expect(controls.queue.jobTimeoutMs).toBe(1_020_000);
+            expect(warnings).toContain(WARNING);
+        },
+    );
 });

@@ -7,11 +7,14 @@ import type { WebhookRouterOptions } from "./webhook.js";
 
 /**
  * What a caller can replace. The webhook router's own options come through
- * as they are, so a test (or the review queue) injects `runReview` and the
- * like without `createApp` knowing about them.
+ * as they are: a test injects `runReview`, and `server.ts` injects the
+ * `controls` and the `queue`, without `createApp` knowing about them.
  */
 export interface AppDeps extends WebhookRouterOptions {
-    /** Where the error handler writes its one line per error; defaults to the console. */
+    /**
+     * Where the error handler writes its one line per error; defaults to the
+     * console. It may be async: a rejected promise is handled like a throw.
+     */
     readonly logError?: (line: string) => void;
 }
 
@@ -22,7 +25,10 @@ function logToConsole(line: string): void {
 
 /**
  * Builds the Express app without listening on a port, so a test can drive it
- * in process. `server.ts` only loads the config and calls `listen`.
+ * in process. `server.ts` does the rest: it loads the config and the abuse
+ * controls, builds the review queue (so the shutdown handler can drain it),
+ * calls `createApp`, sweeps stale workspaces, listens and installs the
+ * shutdown handlers.
  *
  * Order matters: the body parser lives inside the webhook router (it keeps
  * the raw bytes the signature is computed over), and the error handler must

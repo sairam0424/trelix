@@ -35,6 +35,10 @@ TRELIX_API_AUTH_TOKEN is set. Every route except /health now requires an
 This is a single shared token, not per-user auth — still recommend a
 fronting proxy/ingress-auth for defense in depth before exposing this
 publicly, and rotate the token by updating the Secret and restarting.
+The token is read when the container starts, so the old one stays valid until
+the pod restarts. A new apiAuth.token restarts the pod on `helm upgrade`; after
+you change the Secret behind apiAuth.existingSecretName, run:
+  kubectl rollout restart deployment/{{ include "trelix.fullname" . }}
 
 {{- else }}
 
@@ -67,6 +71,33 @@ limited to community support," and self-hosted Qdrant lacks zero-downtime
 upgrades, backup/DR, and shard rebalancing (Cloud/Enterprise-Operator-only
 features). Operating Qdrant's availability and durability is entirely on
 you with this setting.
+{{- end }}
+
+{{- if .Values.mcp.enabled }}
+
+ℹ️  TRELIX-MCP (MCP over Streamable HTTP)
+-----------------------------------------
+The trelix-mcp container serves only the repositories under
+{{ .Values.persistence.mountPath }}, on Service port {{ .Values.mcp.port }} (named `mcp`). Every request
+except GET /health needs the mcp.auth token as `Authorization: Bearer <token>`;
+it is not the apiAuth token.
+
+  kubectl port-forward svc/{{ include "trelix.fullname" . }} {{ .Values.mcp.port }}:{{ .Values.mcp.port }}
+  claude mcp add --transport http trelix http://127.0.0.1:{{ .Values.mcp.port }}/mcp --header "Authorization: Bearer <token>"
+
+The Host check accepts {{ include "trelix.mcpAllowedHosts" . }} and the loopback names.
+Any other name answers 403 until it is listed in mcp.allowedHosts (an Ingress
+host, or the .svc.cluster.local form).
+
+To rotate the token: it is read when the container starts, so the old one stays
+valid until the pod restarts. A new mcp.auth.token restarts the pod on
+`helm upgrade`. The chart cannot see a Secret it does not own, so after you
+change the Secret behind mcp.auth.existingSecretName, run:
+  kubectl rollout restart deployment/{{ include "trelix.fullname" . }}
+
+image.tag must be a release whose trelix-mcp has `--transport http`; if the
+container exits at once, read why:
+  kubectl logs deploy/{{ include "trelix.fullname" . }} -c trelix-mcp
 {{- end }}
 
 Get the application URL by running:

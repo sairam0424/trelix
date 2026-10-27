@@ -144,7 +144,7 @@ describe("dedupe", () => {
         expect(h.queue.counts()).toEqual({ waiting: 1, running: 1 });
     });
 
-    it("keeps the claim 24 hours after a review that finished, then reviews the commit again", async () => {
+    it("keeps the claim 4 days after a review that finished, then reviews the commit again", async () => {
         const h = buildHarness();
         await send(h.app, pullRequestPayload());
         await tick();
@@ -154,7 +154,11 @@ describe("dedupe", () => {
         const soon = await send(h.app, pullRequestPayload());
         expect(soon.body).toMatchObject({ ignored: true });
 
-        h.clock.now += DAY_MS;
+        h.clock.now += 4 * DAY_MS - 1;
+        const almost = await send(h.app, pullRequestPayload());
+        expect(almost.body).toMatchObject({ ignored: true });
+
+        h.clock.now += 1;
         const later = await send(h.app, pullRequestPayload());
         await tick();
         expect(later.body).toEqual({ accepted: true });

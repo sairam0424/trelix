@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.fixtures.indexed import mark_indexed
 from trelix.core.models import (
     Chunk,
     IndexedFile,
@@ -23,6 +24,11 @@ from trelix.retrieval.fusion import reciprocal_rank_fusion
 # ---------------------------------------------------------------------------
 # Helpers for cache tests
 # ---------------------------------------------------------------------------
+
+
+def _add_indexed(registry: RepoRegistry, alias: str, path: Path, weight: float = 1.0) -> None:
+    """Register `path` under `alias` with an (empty) index: unindexed repos are skipped."""
+    registry.add(alias, str(mark_indexed(path)), weight=weight)
 
 
 def _registry_with_paths(*paths: str) -> RepoRegistry:
@@ -184,8 +190,8 @@ class TestFederatedRetriever:
         from trelix.federation.retriever import FederatedRetriever
 
         registry = RepoRegistry.load(str(tmp_path / "repos.json"))
-        registry.add("r1", str(tmp_path / "r1"))
-        registry.add("r2", str(tmp_path / "r2"))
+        _add_indexed(registry, "r1", tmp_path / "r1")
+        _add_indexed(registry, "r2", tmp_path / "r2")
 
         mock_result = MagicMock()
         mock_result.chunk.symbol_id = 1
@@ -207,7 +213,7 @@ class TestFederatedRetriever:
         from trelix.federation.retriever import FederatedRetriever
 
         registry = RepoRegistry.load(str(tmp_path / "repos.json"))
-        registry.add("bad", "/nonexistent/path")
+        _add_indexed(registry, "bad", tmp_path / "bad")
 
         with patch("trelix.federation.retriever.Retriever") as MockRetriever:
             MockRetriever.side_effect = Exception("Index not found")
@@ -230,7 +236,7 @@ class TestFederatedRetriever:
 
         registry = RepoRegistry.load(str(tmp_path / "repos.json"))
         for i in range(5):
-            registry.add(f"r{i}", str(tmp_path / f"r{i}"))
+            _add_indexed(registry, f"r{i}", tmp_path / f"r{i}")
 
         mock_result = MagicMock()
         mock_result.chunk.symbol_id = 1
@@ -253,7 +259,7 @@ class TestFederatedRetriever:
 
         registry = RepoRegistry.load(str(tmp_path / "repos.json"))
         for i in range(5):
-            registry.add(f"r{i}", str(tmp_path / f"r{i}"))
+            _add_indexed(registry, f"r{i}", tmp_path / f"r{i}")
 
         mock_result = MagicMock()
         mock_result.chunk.symbol_id = 1
@@ -290,7 +296,7 @@ class TestFederatedRetriever:
         from trelix.federation.retriever import FederatedRetriever
 
         registry = RepoRegistry.load(str(tmp_path / "repos.json"))
-        registry.add("myrepo", str(tmp_path / "myrepo"))
+        _add_indexed(registry, "myrepo", tmp_path / "myrepo")
 
         mock_result = MagicMock()
         mock_result.chunk.symbol_id = 1
@@ -319,8 +325,8 @@ class TestFederatedRetriever:
         from trelix.federation.retriever import FederatedRetriever
 
         registry = RepoRegistry.load(str(tmp_path / "repos.json"))
-        registry.add("low", str(tmp_path / "low"), weight=1.0)
-        registry.add("high", str(tmp_path / "high"), weight=5.0)
+        _add_indexed(registry, "low", tmp_path / "low", weight=1.0)
+        _add_indexed(registry, "high", tmp_path / "high", weight=5.0)
 
         contexts = {
             "low": _ctx_for(str(tmp_path / "low"), symbol_id=1),
@@ -370,8 +376,8 @@ class TestFederatedRetriever:
         from trelix.federation.retriever import FederatedRetriever
 
         registry = RepoRegistry.load(str(tmp_path / "repos.json"))
-        registry.add("low", str(tmp_path / "low"), weight=1.0)
-        registry.add("high", str(tmp_path / "high"), weight=5.0)
+        _add_indexed(registry, "low", tmp_path / "low", weight=1.0)
+        _add_indexed(registry, "high", tmp_path / "high", weight=5.0)
 
         # Same symbol_id in both repos — the real-world case. Keyed by source
         # rather than symbol_id below, because symbol_id is NOT a cross-repo
@@ -484,8 +490,8 @@ class TestCollidingSymbolIdsAcrossRepos:
         from trelix.federation.retriever import FederatedRetriever
 
         registry = RepoRegistry.load(str(tmp_path / "repos.json"))
-        registry.add("sample-a", str(tmp_path / "sample-a"))
-        registry.add("sample-b", str(tmp_path / "sample-b"))
+        _add_indexed(registry, "sample-a", tmp_path / "sample-a")
+        _add_indexed(registry, "sample-b", tmp_path / "sample-b")
 
         def _retriever_side_effect(config):
             retriever = MagicMock()

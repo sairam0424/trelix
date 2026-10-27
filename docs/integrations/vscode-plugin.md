@@ -8,7 +8,7 @@ calls its tools/prompts directly — there is no bundled binary and no
 PyInstaller step involved. The extension itself ships as one bundled
 `dist/extension.js` (via `esbuild`), but the intelligence layer it talks to is
 the same `trelix-mcp` server used by Claude Desktop/Cursor/any other MCP
-client (see `docs/integrations/mcp.md`).
+client (see [MCP_GUIDE.md](../MCP_GUIDE.md)).
 
 ```
 VS Code extension  --stdio JSON-RPC-->  trelix-mcp (child process)  -->  trelix core
@@ -28,14 +28,16 @@ which trelix-mcp
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 ```
 
-`trelix-mcp` accepts no command-line arguments — there is no `--help` or `--version`
-flag; invoking it starts the stdio MCP server immediately.
+`trelix-mcp` accepts only `--help`, `--version`, `--tools core|full`, `--root PATH` and the HTTP
+flags `--transport stdio|http`, `--host`, `--port`, `--path`, `--allowed-host`, `--stateful` and
+`--allow-unauthenticated`; invoking it with no arguments starts the stdio MCP server immediately.
 
 The extension spawns it by name (`trelix-mcp`, no args) — it must be on
 `PATH` for whichever Python environment the VS Code process resolves.
 
 You'll also need a repo already indexed (`trelix index <path>`) before
-`trelix.search`/`trelix.ask` return anything.
+`trelix.search`/`trelix.ask` return anything; against an unindexed repo the server answers
+`No index found at ...` and creates nothing.
 
 ---
 

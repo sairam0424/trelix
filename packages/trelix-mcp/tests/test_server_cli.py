@@ -86,3 +86,48 @@ def test_unknown_flag_is_rejected_and_does_not_start_the_server(
     mock_run.assert_not_called()
     captured = capsys.readouterr()
     assert "trelix-mcp" in captured.err
+
+
+def test_an_unusable_output_limit_is_a_startup_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bad TRELIX_MCP_MAX_K stops the server with a usage error, not on the first tool call."""
+    monkeypatch.setattr("sys.argv", ["trelix-mcp"])
+    monkeypatch.setenv("TRELIX_MCP_MAX_K", "many")
+    mock_run = MagicMock()
+    monkeypatch.setattr(server_module.mcp, "run", mock_run)
+
+    with pytest.raises(SystemExit) as exc_info:
+        server_module.main()
+
+    assert exc_info.value.code == 2
+    mock_run.assert_not_called()
+    assert (
+        "TRELIX_MCP_MAX_K must be an integer of at least 1, got 'many'" in capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize(
+    "root_values", [[""], ["   "], [".", ""]], ids=["empty", "spaces", "after-a-real-root"]
+)
+def test_a_blank_root_is_a_startup_error(
+    root_values: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--root "$REPO"` with REPO unset must stop the server, not confine it to its cwd.
+
+    `Path("")` is the current directory, so a blank root that reached `resolve_allowed_roots`
+    would silently confine the server to wherever the MCP client launched it from.
+    """
+    argv = ["trelix-mcp"]
+    for value in root_values:
+        argv += ["--root", value]
+    monkeypatch.setattr("sys.argv", argv)
+    mock_run = MagicMock()
+    monkeypatch.setattr(server_module.mcp, "run", mock_run)
+
+    with pytest.raises(SystemExit) as exc_info:
+        server_module.main()
+
+    assert exc_info.value.code == 2
+    mock_run.assert_not_called()
+    assert "--root must not be blank" in capsys.readouterr().err

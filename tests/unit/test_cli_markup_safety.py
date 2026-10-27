@@ -403,8 +403,12 @@ def test_review_renders_llm_comment_with_unmatched_closing_tag(tmp_path: Path) -
     )
     hunks = [MagicMock(file_path="src/r[/red].rs")]
 
+    # The git layer is stubbed whole: the diff, and the check that --base and --head resolve
+    # (tmp_path is not a repository).
     with (
-        patch("trelix.review.diff_parser.DiffParser.from_git", return_value=hunks),
+        patch("trelix.review.diff_parser.DiffParser.git_diff", return_value=""),
+        patch("trelix.review.diff_parser.DiffParser.parse", return_value=hunks),
+        patch("trelix.review.diff_parser.DiffParser.ref_resolves", return_value=True),
         patch("trelix.review.reviewer.DiffReviewer.review", return_value=[comment]),
     ):
         result = runner.invoke(app, ["review", str(tmp_path)])

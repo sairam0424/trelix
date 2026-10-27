@@ -33,9 +33,9 @@ WHAT THIS GUARD CANNOT SEE, stated up front so nobody mistakes it for coverage
 * The absent-package table is derived from what an extra DECLARES, so a package
   that reaches CI only transitively is classified by an explicit hand-written
   table with the chain written down. If one of those chains breaks upstream (see
-  ``PRESENT_ANYWAY``, where three entries depend on a floor as loose as
-  ``fastmcp>=3.4.0,<4``), this file keeps saying "present" until someone re-derives
-  it. That is the known soft spot.
+  ``PRESENT_ANYWAY``, where ``PIL`` rests on ``llama-index-core -> pillow`` and
+  ``pyarrow`` on ``FlagEmbedding -> datasets``), this file keeps saying "present"
+  until someone re-derives it. That is the known soft spot.
 * Rule 2 (env-namespace prefixes) matches a STRING LITERAL in a comprehension over
   ``os.environ``. A prefix built at runtime, or the same claim written as
   ``assert not [k for k in list(os.environ) if ...]`` through an alias this file
@@ -92,8 +92,8 @@ _WORKFLOW = _ROOT / ".github" / "workflows" / "ci.yml"
 # Note the two steps per job, not one: `test` and `lint` additionally install the
 # three adapter packages. `dev` now declares uvicorn and watchfiles directly (see
 # pyproject.toml's [dev] extra), so the unit job has them on that ground alone; it is
-# no longer contingent on packages/trelix-mcp's own dependency graph (mcp>=1.24 ->
-# uvicorn>=0.31.1; fastmcp>=3.4 -> fastmcp-slim[client,server] -> watchfiles>=1.0.0),
+# no longer contingent on packages/trelix-mcp's own dependency graph (mcp>=2.0.0 ->
+# uvicorn>=0.31.1; fastmcp>=4.0.10 -> fastmcp-slim[client,server] -> watchfiles>=1.0.0),
 # though that graph still supplies them too and both floors are compatible. The
 # `integration` job also installs `dev`, so it now has both as well -- a behaviour
 # change from before this fix, when it had neither.

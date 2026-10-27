@@ -17,7 +17,7 @@
  *   text run before the rules that look for a pattern the removal could have
  *   created (see the order in sanitizeText).
  * - Context free also means code is treated like prose: every @ becomes a
- *   fullwidth @ and `List<String>` becomes `List＜String＞` (fullwidth angle
+ *   fullwidth ＠ and `List<String>` becomes `List＜String＞` (fullwidth angle
  *   brackets), even inside backticks. Lookalikes rather than entities, because
  *   Markdown shows an entity literally inside a code span. Readable, but not
  *   byte for byte.

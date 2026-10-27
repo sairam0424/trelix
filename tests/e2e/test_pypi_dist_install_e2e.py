@@ -39,10 +39,30 @@ _PACKAGES = [
 ]
 
 
+# The distributions with a console script. `<script> --version` is run in the fresh venv, because
+# an in-process import cannot stand in for it: `import trelix_mcp` reads a 4-line __init__ and
+# passes while `trelix-mcp` exits 1 on start (a missing or broken dependency, or its server module
+# failing to import). This does NOT detect a stale `trelix>=` floor: the venv gets the core wheel
+# built in the same run, so only `TestSatelliteCoreFloorsFollowTheCore` notices that.
+_CONSOLE_SCRIPTS = ("trelix", "trelix-mcp")
+
+# The module imported in the fresh venv where it is not the top-level package.
+_SMOKE_MODULES = {"trelix-mcp": "trelix_mcp.server"}
+
+
 def _installed_version(import_name: str) -> str:
     import importlib
 
     return str(importlib.import_module(import_name).__version__)
+
+
+def _wheel(wheelhouse: Path, dist_name: str) -> Path:
+    normalized = dist_name.replace("-", "_")
+    matches = list(wheelhouse.glob(f"{normalized}-*.whl"))
+    assert len(matches) == 1, (
+        f"expected exactly one {normalized} wheel in {wheelhouse}, got {matches}"
+    )
+    return matches[0]
 
 
 @pytest.fixture(scope="module")
@@ -69,12 +89,8 @@ def wheelhouse(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return out
 
 
-@pytest.mark.parametrize(
-    ("dist_name", "_source_dir", "import_name"), _PACKAGES, ids=[p[0] for p in _PACKAGES]
-)
-def test_fresh_venv_install_reports_the_real_version(
-    dist_name: str, _source_dir: Path, import_name: str, wheelhouse: Path, tmp_path: Path
-) -> None:
+def _install_into_fresh_venv(dist_name: str, wheelhouse: Path, tmp_path: Path) -> Path:
+    """A fresh venv with *dist_name*'s built wheel installed; returns the venv directory."""
     venv_dir = tmp_path / f"venv-{dist_name}"
     # symlinks=True, not the venv.create() default of False: a copied interpreter
     # binary from a framework-style Python build (e.g. uv's python-build-standalone)
@@ -93,11 +109,12 @@ def test_fresh_venv_install_reports_the_real_version(
     # wheel instead of the one this run just built, making the whole test vacuous.
     # --find-links (without --no-index) still lets pip resolve transitive deps
     # (mcp, fastmcp, langchain-core, trelix itself) from real PyPI as a fallback.
-    normalized = dist_name.replace("-", "_")
-    matches = list(wheelhouse.glob(f"{normalized}-*.whl"))
-    assert len(matches) == 1, (
-        f"expected exactly one {normalized} wheel in {wheelhouse}, got {matches}"
-    )
+    # A satellite is installed together with this run's core wheel, also by exact path: its
+    # `trelix>=` floor is met by the published core of the same version number too, and the
+    # satellite built from this tree may import core names that published core does not have.
+    wheels = [_wheel(wheelhouse, dist_name)]
+    if dist_name != "trelix":
+        wheels.append(_wheel(wheelhouse, "trelix"))
 
     install = subprocess.run(
         [
@@ -107,16 +124,28 @@ def test_fresh_venv_install_reports_the_real_version(
             "install",
             "--find-links",
             str(wheelhouse),
-            str(matches[0]),
+            *(str(wheel) for wheel in wheels),
         ],
         capture_output=True,
         text=True,
         timeout=180,
     )
     assert install.returncode == 0, install.stderr
+    return venv_dir
 
+
+@pytest.mark.parametrize(
+    ("dist_name", "_source_dir", "import_name"), _PACKAGES, ids=[p[0] for p in _PACKAGES]
+)
+def test_fresh_venv_install_reports_the_real_version(
+    dist_name: str, _source_dir: Path, import_name: str, wheelhouse: Path, tmp_path: Path
+) -> None:
+    venv_dir = _install_into_fresh_venv(dist_name, wheelhouse, tmp_path)
+    venv_python = venv_dir / "bin" / "python"
+
+    module = _SMOKE_MODULES.get(dist_name, import_name)
     version_check = subprocess.run(
-        [str(venv_python), "-c", f"import {import_name}; print({import_name}.__version__)"],
+        [str(venv_python), "-c", f"import {module}; print({import_name}.__version__)"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -129,3 +158,16 @@ def test_fresh_venv_install_reports_the_real_version(
         f"working tree's own {import_name}.__version__ is {expected_version!r} — "
         f"the wheel build and the source tree have drifted apart"
     )
+
+    if dist_name in _CONSOLE_SCRIPTS:
+        console = subprocess.run(
+            [str(venv_dir / "bin" / dist_name), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert console.returncode == 0, console.stderr
+        assert f"{dist_name} {expected_version}" in console.stdout, (
+            f"`{dist_name} --version` printed {console.stdout.strip()!r} from the fresh venv, "
+            f"expected it to contain {dist_name} {expected_version}"
+        )

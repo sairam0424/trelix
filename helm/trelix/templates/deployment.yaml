@@ -1,3 +1,4 @@
+{{- include "trelix.mcpChecks" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,6 +12,19 @@ spec:
       {{- include "trelix.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      {{- /*
+      The credentials this chart's own Secret holds reach the containers as environment
+      variables, which are read once, when a container starts. A changed Secret alone rolls
+      nothing, so the old value stays accepted until the pod restarts; hashing the rendered
+      Secret into the pod template makes `helm upgrade` roll the pod when any of them changes.
+      With no value to hold the Secret renders only a newline; `trim` turns that into the empty
+      string, which `with` skips, so then no annotation is written.
+      A Secret the chart does not own (an existingSecretName) cannot be hashed here.
+      */}}
+      {{- with (include (print $.Template.BasePath "/secret.yaml") . | trim) }}
+      annotations:
+        checksum/secret: {{ . | sha256sum }}
+      {{- end }}
       labels:
         {{- include "trelix.selectorLabels" . | nindent 8 }}
     spec:
@@ -53,84 +67,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           env:
-            - name: TRELIX_STORE_BACKEND
-              value: {{ .Values.store.backend | quote }}
-            - name: TRELIX_STORE_HNSW
-              value: {{ .Values.store.hnsw | quote }}
-            - name: TRELIX_STORE_HNSW_M
-              value: {{ .Values.store.hnswM | quote }}
-            - name: TRELIX_STORE_HNSW_EF_SEARCH
-              value: {{ .Values.store.hnswEfSearch | quote }}
-            - name: TRELIX_STORE_BM25_READ_POOL_SIZE
-              value: {{ .Values.store.bm25ReadPoolSize | quote }}
-            {{- if eq .Values.store.backend "qdrant" }}
-            - name: QDRANT_URL
-              value: {{ .Values.store.qdrant.url | quote }}
-            - name: QDRANT_COLLECTION
-              value: {{ .Values.store.qdrant.collection | quote }}
-            - name: QDRANT_PREFER_GRPC
-              value: {{ .Values.store.qdrant.preferGrpc | quote }}
-            - name: QDRANT_TIMEOUT
-              value: {{ .Values.store.qdrant.timeout | quote }}
-            {{- if .Values.store.qdrant.existingSecretName }}
-            - name: QDRANT_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.store.qdrant.existingSecretName }}
-                  key: {{ .Values.store.qdrant.existingSecretKey }}
-            {{- else if .Values.store.qdrant.apiKey }}
-            - name: QDRANT_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "trelix.fullname" . }}
-                  key: QDRANT_API_KEY
-            {{- end }}
-            {{- end }}
-            {{- if eq .Values.store.backend "lance" }}
-            - name: LANCE_URI
-              value: {{ .Values.store.lance.uri | quote }}
-            - name: LANCE_TABLE
-              value: {{ .Values.store.lance.table | quote }}
-            {{- end }}
-            {{- if .Values.embedder.openai.existingSecretName }}
-            - name: OPENAI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.embedder.openai.existingSecretName }}
-                  key: {{ .Values.embedder.openai.existingSecretKey }}
-            {{- else if .Values.embedder.openai.apiKey }}
-            - name: OPENAI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "trelix.fullname" . }}
-                  key: OPENAI_API_KEY
-            {{- end }}
-            {{- if .Values.embedder.voyage.existingSecretName }}
-            - name: VOYAGE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.embedder.voyage.existingSecretName }}
-                  key: {{ .Values.embedder.voyage.existingSecretKey }}
-            {{- else if .Values.embedder.voyage.apiKey }}
-            - name: VOYAGE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "trelix.fullname" . }}
-                  key: VOYAGE_API_KEY
-            {{- end }}
-            {{- if .Values.embedder.cohere.existingSecretName }}
-            - name: COHERE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.embedder.cohere.existingSecretName }}
-                  key: {{ .Values.embedder.cohere.existingSecretKey }}
-            {{- else if .Values.embedder.cohere.apiKey }}
-            - name: COHERE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "trelix.fullname" . }}
-                  key: COHERE_API_KEY
-            {{- end }}
+            {{- include "trelix.storeEnv" . }}
             {{- if .Values.apiAuth.existingSecretName }}
             - name: TRELIX_API_AUTH_TOKEN
               valueFrom:
@@ -144,17 +81,7 @@ spec:
                   name: {{ include "trelix.fullname" . }}
                   key: TRELIX_API_AUTH_TOKEN
             {{- end }}
-            {{- range .Values.extraEnv }}
-            - name: {{ .name }}
-              value: {{ .value | quote }}
-            {{- end }}
-            {{- range .Values.extraSecretEnv }}
-            - name: {{ .name }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .secretName }}
-                  key: {{ .secretKey }}
-            {{- end }}
+            {{- include "trelix.extraEnv" . }}
           {{- if .Values.persistence.enabled }}
           volumeMounts:
             - name: data
@@ -164,6 +91,62 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+        {{- if .Values.mcp.enabled }}
+        - name: trelix-mcp
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # The image's entrypoint is `trelix`; MCP over HTTP is the other console script. It
+          # serves the repositories under the PVC mount and binds 0.0.0.0 so the Service reaches it.
+          command: ["trelix-mcp"]
+          args: ["--transport", "http", "--host", "0.0.0.0", "--port", "{{ .Values.mcp.port }}", "--root", "{{ .Values.persistence.mountPath }}"]
+          ports:
+            - name: mcp
+              containerPort: {{ .Values.mcp.port }}
+              protocol: TCP
+          # GET /health is exempt from the Host check and from the token, so the kubelet's
+          # probe (Host: <pod-ip>:<port>, no credential) passes.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: mcp
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: mcp
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          env:
+            {{- include "trelix.storeEnv" . }}
+            {{- if .Values.mcp.auth.existingSecretName }}
+            - name: TRELIX_MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mcp.auth.existingSecretName }}
+                  key: {{ .Values.mcp.auth.existingSecretKey }}
+            {{- else }}
+            - name: TRELIX_MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "trelix.fullname" . }}
+                  key: TRELIX_MCP_AUTH_TOKEN
+            {{- end }}
+            - name: TRELIX_MCP_ALLOWED_HOSTS
+              value: {{ include "trelix.mcpAllowedHosts" . | quote }}
+            {{- include "trelix.extraEnv" . }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- with .Values.mcp.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
       {{- if .Values.persistence.enabled }}
       volumes:
         - name: data

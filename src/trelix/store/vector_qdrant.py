@@ -6,7 +6,8 @@ Requires the optional `qdrant` extra:
 or:
     pip install qdrant-client>=1.9.0
 
-Drop-in replacement for SQLiteVectorStore for large-scale deployments (>500k chunks).
+Drop-in replacement for SQLiteVectorStore for large-scale deployments (past the sqlite
+flat-scan advisory threshold, see trelix.store.scale_advisory).
 Uses filterable HNSW with m=16 / ef_construct=200 — precision stays high without
 collapsing under high cardinality, matching the research recommendation.
 """
@@ -55,7 +56,7 @@ class QdrantVectorStore(BaseVectorStore):
 
     Collection is created automatically on first use if it does not exist.
     HNSW parameters: m=16, ef_construct=200 — good balance of recall and speed
-    for >500k vectors.
+    for large collections.
 
     Args:
         config:    IndexConfig (provides store.qdrant_url, store.qdrant_api_key,

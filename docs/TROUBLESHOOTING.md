@@ -1,6 +1,6 @@
-# Trelix v3.4.3 Troubleshooting Guide
+# Trelix v3.5.0 Troubleshooting Guide
 
-This guide covers every common failure mode for trelix v3.4.3. Each entry follows the pattern: **Symptom → Cause → Fix**.
+This guide covers every common failure mode for trelix v3.5.0. Each entry follows the pattern: **Symptom → Cause → Fix**.
 
 ---
 
@@ -89,6 +89,41 @@ trelix index ./repo
 
 ---
 
+### `trelix index --prune` says "Prune refused"
+
+**Symptom:** `trelix index ./repo --prune` (with or without `--yes`) lists files under "Indexed but no longer in the repository", prints one or more `Prune refused: ...` lines, deletes nothing and exits 1. Most often this is the first `--prune` after upgrading trelix.
+
+**Cause:** "Indexed but not yielded by this walk" is also what a truncated or differently configured walk looks like, so trelix deletes only when it can show the walk is the one that built the index. The message says which check failed:
+
+| The refusal says | What it means | What to do |
+|---|---|---|
+| `N path(s) could not be read during the walk` | A directory was unreadable (permissions, broken symlink), so every file under it looks deleted. | Fix the permission or the symlink, then re-run. |
+| `this index records no walk config` | The index was written by a trelix that recorded none, so there is nothing to compare this walk against. | Run `TRELIX_INCREMENTAL=false trelix index ./repo` once, under the environment and `--provider` that built the index, then prune again. That records the walk as it is now, not the one that wrote the rows, so check the files the prune lists against the disk before `--yes`. |
+| `recorded walk config is in a form this version cannot compare` | The record was written under an older `.gitignore` digest scheme (3.1.2). A re-index would add a second walk config beside it and be refused again. | Rebuild: delete `./repo/.trelix/index.db`, run `trelix index ./repo` (this re-embeds everything), then prune. |
+| `built by trelix X and this is Y` | A release can change which files are walked without changing any recorded setting (3.1.2 did). | Do what the refusal says: `TRELIX_INCREMENTAL=false trelix index ./repo` once, under the environment and `--provider` that built the index, then prune again. That re-stamps the version without proving the rows were written under this walk, so check the files the prune lists against the disk before `--yes`. It names a rebuild instead when a re-index would leave the index refused; do that. |
+| `does not record which walk configurations wrote its rows` | The index predates the record of which walk configs wrote its rows. | If `this index records no walk config` is also printed, the same `TRELIX_INCREMENTAL=false` step starts that record. Otherwise a re-index cannot vouch for the rows an earlier run wrote: rebuild by deleting `./repo/.trelix/index.db`, running `trelix index ./repo` (this re-embeds everything), then pruning. |
+| `the walk settings changed since this index was built (...)` | The ignore lists, a `TRELIX_WALKER_*` setting or the `.gitignore` chain differ from index time, so files the walk no longer reaches look deleted while present. A `.trelix.bak-*` copy of `.trelix` adds a `.gitignore` to the chain. | Re-run with the environment that built the index, or delete the backup copy. Re-indexing does not clear this. |
+| `rows were written under N different walk configurations` | The index was once re-indexed under a different walk, and a re-index deletes no rows. | Rebuild: delete `./repo/.trelix/index.db`, run `trelix index ./repo` (this re-embeds everything), then prune. |
+| `N of M indexed files (P%) would be removed, over the 10% cap` | That is the shape of a walk that lost a subtree. | Read the list. If the files are really gone, re-run with `--prune-max-percent`. |
+
+**Fix (the first prune after an upgrade):**
+
+```bash
+# Re-parses every file and embeds nothing that is unchanged (with file summaries enabled, only
+# a file with a changed symbol is summarised again). Run it with the same environment and
+# --provider that built the index (TRELIX_WALKER_* is read from the process environment only).
+TRELIX_INCREMENTAL=false trelix index ./repo
+
+# Then prune, as a second command. Preview first; add --yes to delete.
+trelix index ./repo --prune
+```
+
+On Windows set the variable first (`set TRELIX_INCREMENTAL=false` in cmd, `$env:TRELIX_INCREMENTAL = "false"` in PowerShell), run `trelix index ./repo`, then clear it (`set TRELIX_INCREMENTAL=` or `Remove-Item Env:TRELIX_INCREMENTAL`) so later runs are incremental again.
+
+With the default batch pipeline a plain `trelix index ./repo` does not clear these refusals. Over an unchanged tree it prints `Nothing to index — all files up to date.` and returns before it writes the version and walk config, so the refusal comes back until some file changes. Do not combine the two steps in one command (`TRELIX_INCREMENTAL=false trelix index ./repo --prune --yes`): the prune checks read the index as it stood before that run, so it is refused again.
+
+---
+
 ### Index DB Corrupted
 
 **Symptom:** Commands fail with `sqlite3.DatabaseError: database disk image is malformed`, `database is locked`, or other SQLite integrity errors that persist after retrying.
@@ -134,7 +169,9 @@ Maintainers: CI reports the SQLite version as a `::warning::` (affected range) o
 
 **Cause:** The repository has never been indexed. trelix requires an explicit indexing step before search is available.
 
-If instead `search` prints `No results found.` on a repository you never indexed, an older version (or the MCP server, the REST API, a LangChain or LlamaIndex retriever, or `trelix eval`, `eval-synthesis`, `review`, `telemetry`, `search-all`, `agent sessions`, or `taint` once it finds a flow) has left an empty `.trelix/index.db` behind. `trelix index .` fills it; to start clean, delete the repository's `.trelix` directory first.
+The MCP tools (`isError` result with the same text), the REST read routes (HTTP 400) and the LangChain and LlamaIndex retrievers (`IndexNotFoundError`) refuse the same way, and `trelix review` and `trelix search-all` no longer create an index either (`review` goes ahead without retrieved context; `search-all` skips the unindexed repo and names it).
+
+If instead `search` prints `No results found.` on a repository you never indexed, an older version (or a surface that still opens the index without checking: `trelix eval`, `eval-synthesis`, `telemetry`, `agent sessions`, or `taint` once it finds a flow) has left an empty `.trelix/index.db` behind. `trelix index .` fills it; to start clean, delete the repository's `.trelix` directory first.
 
 **Fix:**
 ```bash
@@ -433,8 +470,9 @@ pip install trelix-mcp
 source .venv/bin/activate
 pip install trelix-mcp
 
-# Verify the binary is on PATH. trelix-mcp accepts no flags — invoking it starts the
-# stdio server, so read the version from the package instead of a --version flag.
+# Verify the binary is on PATH. trelix-mcp accepts only --help, --version, --tools core|full,
+# --root PATH and the HTTP flags --transport stdio|http, --host, --port, --path, --allowed-host,
+# --stateful and --allow-unauthenticated — invoking it with no arguments starts the stdio server.
 which trelix-mcp
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 ```
@@ -613,6 +651,8 @@ To generate a token with the correct scope:
 2. Break the PR into smaller PRs with fewer than 3000 changed files each.
 3. Cap the work with `trelix review ./repo --pr owner/repo#<number> --max-files 10` (default is `10`). `trelix review` has no path-scoping flag — to review a subset of paths, save a filtered diff to a file and pass it with `--diff`.
 
+Reviewing against a local OpenAI-compatible server (`TRELIX_LLM_BASE_URL`)? `exception:NotFoundError` on every hunk, `prompt_truncated` on every hunk, `exception:JSONDecodeError`, a review that takes minutes before failing, and `Configuration error: llm -> base_url` each have a row in [OFFLINE.md](OFFLINE.md#troubleshooting).
+
 ---
 
 ## 6. Federation Issues
@@ -733,7 +773,7 @@ Check your API tier and increase limits if needed (OpenAI: Platform → Settings
 
 **Symptom:** `trelix search "..."` takes more than 500 ms per query.
 
-**Cause — Large index:** The default SQLite-based vector store performs a linear scan for approximate nearest neighbor search. For very large repos (>100k chunks), this becomes a bottleneck.
+**Cause — Large index:** The default SQLite-based vector store is an exact flat scan: every query compares against every stored vector, so latency grows with rows x width. `trelix index` and `trelix stats` print a `Flat-scan advisory` once the index passes the measured threshold for its width — see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage).
 
 **Cause — Embedding latency:** If using a remote provider, each query requires an API round-trip to generate the query embedding.
 
@@ -742,7 +782,7 @@ Check your API tier and increase limits if needed (OpenAI: Platform → Settings
 Check index size:
 ```bash
 trelix stats ./repo
-# If chunks > 100,000, consider switching to Qdrant
+# A "Flat-scan advisory" line means the index is past the measured threshold for its width
 ```
 
 Switch to Qdrant for large indices (HNSW indexing, sub-millisecond queries). The backend is
@@ -858,6 +898,14 @@ pip install trelix
 ```bash
 python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
 ```
+
+tiktoken's `cl100k_base` encoding is downloaded on first use as well (the chunker, the context assembler and the review's prompt-truncation check count with it); prefetch it once and keep its cache out of the temp directory:
+
+```bash
+TIKTOKEN_CACHE_DIR=$HOME/.cache/trelix-tiktoken python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+```
+
+Export `TIKTOKEN_CACHE_DIR` in every later shell; the full air-gapped checklist is in [OFFLINE.md](OFFLINE.md#prefetch).
 
 If the conflict persists, use a clean virtual environment (see below).
 

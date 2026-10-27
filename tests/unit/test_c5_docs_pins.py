@@ -1,0 +1,416 @@
+"""The user-facing files that name `TRELIX_RETRIEVAL_CITATIONS` say what the code does, the
+ones that describe `trelix ask` and `GET /ask` describe both abstentions, and docs/WHY_TRELIX.md
+counts the FLARE phrases the list has.
+
+Pattern: tests/unit/test_llm_thinking_mode.py's doc pins. Each assertion is a literal from the
+file it reads; the code default itself is pinned in tests/unit/test_citation_tags.py and the
+abstention behaviour in tests/unit/test_ask_abstention.py.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import typer.main
+
+from tests._env_isolation import BEAST_MODE_DEFAULTS
+from trelix.cli.main import app
+from trelix.eval.synthesis import validate_synthesis_entry
+from trelix.retrieval.flare import _DEFAULT_UNCERTAINTY_PHRASES
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_configuration_lists_the_flag_at_its_default_in_the_retrieval_table() -> None:
+    text = (_REPO_ROOT / "docs/CONFIGURATION.md").read_text(encoding="utf-8")
+
+    assert "| `TRELIX_RETRIEVAL_CITATIONS` | `false` |" in text
+    assert (
+        "`false` leaves the assembled context, the synthesis prompts and every command's "
+        "output unchanged" in text
+    )
+    # The embedded .env example carries the same line as .env.example.
+    assert "\nTRELIX_RETRIEVAL_CITATIONS=false\n" in text
+
+
+def test_env_example_lists_the_flag_commented_out_at_its_default() -> None:
+    text = (_REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert "\n# TRELIX_RETRIEVAL_CITATIONS=false\n" in text
+
+
+def test_the_unit_suite_pins_the_flag_off() -> None:
+    """A developer's .env turning citations on must not change what the tests observe."""
+    assert BEAST_MODE_DEFAULTS["TRELIX_RETRIEVAL_CITATIONS"] == "false"
+
+
+def _squash(text: str) -> str:
+    """Undo markdown line wrapping so a sentence can be matched as one."""
+    return " ".join(text.split())
+
+
+def test_cli_reference_documents_both_abstentions_under_ask() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    ask_section = _squash(text[text.index("### `trelix ask`") : text.index("### `trelix query`")])
+
+    assert (
+        "the answer is the one-line notice `[trelix] No relevant code found — cannot synthesize "
+        "an answer.` on stdout, the command exits `0` and the LLM is not called" in ask_section
+    )
+    assert (
+        "prints the notice once per retrieval round (twice at the default "
+        "`TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=1`)" in ask_section
+    )
+    assert "exactly one line starting `INSUFFICIENT_EVIDENCE:`" in ask_section
+    assert "stderr stays empty and the command exits `0`" in ask_section
+
+
+def test_cli_reference_documents_ask_json_and_the_sources_footer() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    ask_section = _squash(text[text.index("### `trelix ask`") : text.index("### `trelix query`")])
+
+    assert (
+        "trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session ID] "
+        "[--json]" in ask_section
+    )
+    assert (
+        "with exactly the keys `marker`, `status`, `path`, `lines`, `symbol`, `detail`"
+        in ask_section
+    )
+    assert "`--json cannot be combined with --agentic or --session.`, exit `2`" in ask_section
+    assert (
+        "`Error: --json needs LLM synthesis; with the local embedder and FLARE off, trelix ask "
+        "prints the retrieved context only. Use trelix search --json for machine-readable "
+        "retrieval, or a non-local --provider.` to stderr and exits `1`" in ask_section
+    )
+    assert "`Error: --json is not available in agentic mode" in ask_section
+    assert (
+        "[C2] src/auth/middleware.py:70-80 AuthMiddleware.bearer` for a marker whose chunk still "
+        "fits the file on disk (`valid`)" in ask_section
+    )
+    assert "`Sources: none cited.` for an answer without markers" in ask_section
+    assert "The answer text itself is never rewritten: it has already streamed." in ask_section
+    # The `unknown` detail is `no retrieved chunk has this tag`; only the two stale statuses end
+    # `re-index` (src/trelix/retrieval/citations.py, pinned by test_cli_ask_footer.py).
+    assert (
+        '`detail` is `""` when valid, one line ending `re-index` for `file_missing` and '
+        "`line_out_of_range` (the index is behind the tree) and `no retrieved chunk has this "
+        "tag` for `unknown`" in ask_section
+    )
+    assert (
+        "(`file_missing` and `line_out_of_range`, whose detail ends `re-index`; `unknown`, whose "
+        "detail is `no retrieved chunk has this tag`)" in ask_section
+    )
+    # `_ask_emit` verifies nothing after an abstention (test_cli_ask_json.py pins the `[]`).
+    assert (
+        "The list is `[]` when the answer has no marker, when it abstained, and whenever "
+        "`TRELIX_RETRIEVAL_CITATIONS` is off" in ask_section
+    )
+
+
+def test_cli_reference_exit_code_table_names_ask_json_with_agentic_as_a_usage_error() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+
+    assert (
+        "a missing argument, `trelix ask --json` with `--agentic` or `--session`) also exits `2`"
+        in text
+    )
+
+
+def test_user_guide_ask_output_names_the_footer_and_json() -> None:
+    text = _squash((_REPO_ROOT / "docs/USER_GUIDE.md").read_text(encoding="utf-8"))
+
+    assert (
+        "**Output:** a streamed natural-language answer. With `TRELIX_RETRIEVAL_CITATIONS=true` "
+        "the answer cites `[C#]` tags and ends with a `Sources:` footer that verifies each tag "
+        "against the retrieved chunk and the file on disk. `--json` prints one JSON object "
+        "(`query`, `answer`, `abstained`, `abstain_reason`, `citations`) instead of streaming."
+        in text
+    )
+
+
+def test_security_ask_row_says_the_footer_and_json_print_index_data_only() -> None:
+    text = (_REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+
+    assert (
+        "the `Sources:` footer and `trelix ask --json` print the index's path, lines and symbol "
+        "for each marker, never text the model wrote |" in text
+    )
+
+
+def test_backwards_compatibility_lists_ask_json_and_the_footer_as_additive() -> None:
+    text = _squash((_REPO_ROOT / "docs/BACKWARDS_COMPATIBILITY.md").read_text(encoding="utf-8"))
+
+    assert (
+        "Additive: `trelix ask --json` prints one JSON object (`query`, `answer`, `abstained`, "
+        "`abstain_reason`, `citations`) and nothing else on stdout" in text
+    )
+    assert "`Synthesizer(stream_to_stdout=False)` keeps every stdout write in" in text
+
+
+def test_backwards_compatibility_has_the_empty_retrieval_section() -> None:
+    text = (_REPO_ROOT / "docs/BACKWARDS_COMPATIBILITY.md").read_text(encoding="utf-8")
+
+    assert (
+        "### Behaviour change shipped as a fix: `Synthesizer.stream()` on an empty retrieval"
+        in text
+    )
+    assert "| REST `GET /ask` |" in text
+    assert (
+        "| unchanged: `stream()` checks the key before the retrieval result, as `synthesize()` "
+        "always did |" in text
+    )
+
+
+def test_architecture_ask_row_names_the_notice_and_the_missing_llm_call() -> None:
+    text = (_REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+
+    assert (
+        "| GET | `/ask` | `StreamingResponse` | SSE token stream; an empty retrieval streams the "
+        "`[trelix] No relevant code found — cannot synthesize an answer.` notice then `[DONE]` "
+        "with no LLM call;" in text
+    )
+
+
+def test_eval_readme_says_graphrag_answers_cannot_abstain() -> None:
+    text = _squash((_REPO_ROOT / "eval/README.md").read_text(encoding="utf-8"))
+
+    assert (
+        "get the `[C#]` cite lines but not the abstention sentence, so they cannot abstain by "
+        "protocol" in text
+    )
+
+
+def test_cli_reference_eval_synthesis_names_the_v2_fields_the_sample_and_the_exit_code() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    start, end = text.index("### `trelix eval-synthesis`"), text.index("### `trelix eval-validate`")
+    section = _squash(text[start:end])
+
+    for needle in ("--per-query-out", "`answerable`", "`gold_answer`", "`expected_citations`"):
+        assert needle in section
+    assert "trelix eval-synthesis . --golden eval/golden_synthesis_sample.jsonl" in section
+    assert "missing golden file prints `Golden file not found: <path>` and exits `1`" in section
+    assert "tests/golden_synthesis_queries.jsonl" not in section
+    assert "prints a table of all-zero scores" not in section
+
+
+def test_eval_readme_tabulates_the_three_synthesis_fields() -> None:
+    text = (_REPO_ROOT / "eval/README.md").read_text(encoding="utf-8")
+    section = text[
+        text.index("## `golden_synthesis_sample.jsonl`") : text.index("## Related tooling")
+    ]
+
+    for name in ("answerable", "gold_answer", "expected_citations"):
+        assert f"| `{name}` |" in section
+    assert "nothing in the eval reads them yet" not in _squash(section)
+
+
+def test_eval_readme_documents_the_abstention_and_citation_metrics() -> None:
+    text = (_REPO_ROOT / "eval/README.md").read_text(encoding="utf-8")
+    section = _squash(
+        text[text.index("## `golden_synthesis_sample.jsonl`") : text.index("## Related tooling")]
+    )
+
+    for key in (
+        "abstention_precision",
+        "abstention_recall",
+        "citation_validity",
+        "citation_recall",
+    ):
+        assert f"| `{key}` |" in section, key
+    assert "At least 15% of a set's questions should be unanswerable" in section
+    assert (
+        "`trelix eval-synthesis` verifies them per answer and reports the counts as "
+        "`citation_statuses`" in section
+    )
+    assert "set it to `true` for the run you measure" in section
+    assert (
+        "The prompt asks for `INSUFFICIENT_EVIDENCE:` only when `TRELIX_RETRIEVAL_CITATIONS` is "
+        "`true` (see the end of this section), so with the flag unset only `no_results` registers "
+        "in practice"
+    ) in section
+    assert (
+        "an `abstention_recall` of `0.0` then means the model was never asked to refuse" in section
+    )
+    assert "scores completeness `0.0` only when it lists `expected_answer_fragments`" in section
+    assert "with no fragments it scores completeness `1.0`" in section
+    assert "compared exactly as the index spells them (`./a.py` never matches `a.py`)" in section
+
+
+def test_cli_reference_architecture_and_contributing_name_the_trust_metrics() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    start, end = text.index("### `trelix eval-synthesis`"), text.index("### `trelix eval-validate`")
+    section = _squash(text[start:end])
+
+    assert "measure nothing unless `TRELIX_RETRIEVAL_CITATIONS=true`" in section
+    assert (
+        "The prompt asks the model for `INSUFFICIENT_EVIDENCE:` only when "
+        "`TRELIX_RETRIEVAL_CITATIONS=true`, so with the flag unset only an empty retrieval "
+        "registers in practice and the two abstention rows measure little"
+    ) in section
+    assert (
+        "`Abstention recall` of `0.0000` then means the model was never asked to refuse" in section
+    )
+    for label in (
+        "Abstention precision",
+        "Abstention recall",
+        "Citation validity",
+        "Citation recall",
+    ):
+        assert label in section, label
+    assert "the next change adds the citation facts" not in section
+    assert "`aggregate` holds sixteen values: the fourteen the table prints" in section
+    assert "`citations_total` and `citations_valid`, which only the file carries" in section
+    assert "`Citation validity` reads `of 0 cited answers`" in section
+    assert "`Citation recall` still reads `of N expecting citations`" in section
+    assert "eval.synthesis_records" in (_REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+
+def test_cli_reference_documents_recorded_answers_under_eval_synthesis() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    start, end = text.index("### `trelix eval-synthesis`"), text.index("### `trelix eval-validate`")
+    section = _squash(text[start:end])
+
+    assert (
+        "trelix eval-synthesis [<repo_path>] --golden <file> [--per-query-out <file>] "
+        "[--replay <file> | --record <file>]" in section
+    )
+    assert "#### Recorded answers (`--record`, `--replay`)" in section
+    assert "`--replay` and `--record` cannot be combined (exit `2`, a usage error)" in section
+    assert "has no recorded answer" in section
+    assert "stdout is the results table only" in section
+    assert "`--replay`, which makes no synthesis call and builds no Synthesizer" in section
+    assert "`--replay` freezes the answers, not the retrieval" in section
+    assert "its LLM query planner, which calls the LLM up to once per query when one is" in section
+    assert "`TRELIX_RETRIEVAL_PLAN_CACHE_FILE` for a repeatable pair" in section
+    assert "never costs the other file" in section
+    assert "builds no LLM client" not in section
+    assert "needs no provider, key or network" not in section
+
+
+def test_eval_readme_has_the_recorded_answers_section() -> None:
+    text = (_REPO_ROOT / "eval/README.md").read_text(encoding="utf-8")
+    section = _squash(
+        text[text.index("## `golden_synthesis_sample.jsonl`") : text.index("## Related tooling")]
+    )
+
+    assert "### Recorded answers: --record and --replay" in section
+    assert "which replays frozen query plans; this replays the answers" in section
+    assert "It makes no synthesis call and builds no Synthesizer" in section
+    assert "and it is not an offline mode: retrieval is unchanged" in section
+    assert "zero LLM calls" not in section and "no LLM configuration" not in section
+
+
+def test_the_pre_run_output_check_is_documented_where_the_flags_are() -> None:
+    cli = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    start, end = cli.index("### `trelix eval-synthesis`"), cli.index("### `trelix eval-validate`")
+    section = _squash(cli[start:end])
+    readme = _squash((_REPO_ROOT / "eval/README.md").read_text(encoding="utf-8"))
+    guide = _squash((_REPO_ROOT / "docs/USER_GUIDE.md").read_text(encoding="utf-8"))
+
+    assert (
+        "`--record` and `--per-query-out` are checked once, before the run starts and before "
+        "the index is opened" in section
+    )
+    assert "`--record: directory /x/y does not exist`" in section
+    assert "`--record and --per-query-out must name different files`" in section
+    assert (
+        "a symlink named as the file is replaced by the write, so it and its target are two files"
+        in section
+    )
+    assert (
+        "so a hard link or a different letter case on a case-insensitive volume is not recognised"
+        in section
+    )
+    assert "the check creates nothing and also applies to `--replay` runs" in section
+    assert "Its directory must exist; this is checked before the run starts. |" in section
+    assert (
+        "Its directory must exist (checked before the run starts) and it cannot be the "
+        "`--per-query-out` file." in section
+    )
+    assert (
+        "(both are checked before the run starts, see the first `--record` note above)" in section
+    )
+    assert (
+        "The directory of `FILE` must already exist: it is checked before the run starts" in readme
+    )
+    assert (
+        "`--record FILE` and `--per-query-out FILE` are checked once, before the run starts "
+        "and before the index is opened" in readme
+    )
+    assert "`--record and --per-query-out must name different files`" in readme
+    assert (
+        "a symlink named as the file is replaced by the write, so it and its target are two files"
+        in readme
+    )
+    assert "both are checked before the run starts, not after it has been paid for." in guide
+
+
+def test_the_help_of_the_two_output_flags_says_when_the_directory_is_checked() -> None:
+    options = {
+        option.name: option.help
+        for option in typer.main.get_command(app).commands["eval-synthesis"].params
+    }
+
+    per_query_out, record = options["per_query_out"], options["record"]
+
+    assert "Its directory must exist; this is checked before the run starts." in per_query_out
+    assert (
+        "Its directory must exist (checked before the run starts) and it cannot be the "
+        "--per-query-out file." in record
+    )
+
+
+def test_contributing_names_the_replay_functions() -> None:
+    text = (_REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    assert "(`load_replay`, `write_replay_file`)" in text
+    assert "the pre-run output check (`output_file_problems`)" in text
+
+
+def test_architecture_eval_synthesis_row_lists_the_flags() -> None:
+    text = (_REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+
+    assert (
+        "| `eval-synthesis [repo]` | --golden/-g, --per-query-out, --replay, --record | GroUSE "
+        "synthesis scoring, abstention and citation metrics |"
+    ) in text
+
+
+def test_the_sample_golden_has_four_valid_lines_the_last_unanswerable() -> None:
+    raw = (_REPO_ROOT / "eval/golden_synthesis_sample.jsonl").read_text(encoding="utf-8")
+    lines = [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+    assert len(lines) == 4
+    assert [validate_synthesis_entry(line) for line in lines] == [[], [], [], []]
+    assert lines[3]["answerable"] is False
+    assert [line["expected_citations"] for line in lines[:3]] == [
+        line["relevant_files"] for line in lines[:3]
+    ]
+
+
+def test_user_guide_and_contributing_name_the_synthesis_v2_pieces() -> None:
+    guide = (_REPO_ROOT / "docs/USER_GUIDE.md").read_text(encoding="utf-8")
+    fields = guide[guide.index("**Fields:**") : guide.index("### Running the evaluation")]
+
+    for name in ("answerable", "gold_answer", "expected_citations"):
+        assert f"- `{name}` (optional" in fields
+    output = guide[guide.index("### Running the evaluation") : guide.index("### Python API")]
+    for row in ("Unanswerable queries", "Unscoreable queries"):
+        assert row in output, f"the sample table lacks the {row!r} row the command prints"
+    assert "| `synthesis_records.py` |" in (_REPO_ROOT / "CONTRIBUTING.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_why_trelix_counts_the_flare_phrases_the_list_has() -> None:
+    """Four named and "eight more": `insufficient_evidence:` made the list twelve, and the
+    sentence that counts it must move with the list."""
+    text = (_REPO_ROOT / "docs/WHY_TRELIX.md").read_text(encoding="utf-8")
+
+    assert (
+        '(`"i don\'t know"`, `"cannot find"`, `"no relevant code"`, '
+        '`"insufficient context"`, and eight more in `_DEFAULT_UNCERTAINTY_PHRASES`)' in text
+    )
+    assert len(_DEFAULT_UNCERTAINTY_PHRASES) == 12

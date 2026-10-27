@@ -77,6 +77,16 @@ export OPENAI_API_KEY=sk-...
 
 ## Use in Claude Code / Cursor / Windsurf (MCP)
 
+**Claude Code plugin** (the server plus a skill that says when to search with trelix; see
+[docs/integrations/claude-code-plugin.md](docs/integrations/claude-code-plugin.md)):
+
+```bash
+claude plugin marketplace add sairam0424/trelix
+claude plugin install trelix@trelix
+```
+
+**Server only**, in Claude Code or any other MCP client:
+
 ```bash
 pip install trelix-mcp
 claude mcp add trelix -- trelix-mcp   # Claude Code
@@ -160,8 +170,9 @@ Step 3 above, for real — `trelix query` against trelix's own `retrieval/` + `g
 | Index stats | `trelix stats ./repo` |
 | Call graph for a symbol | `trelix call-graph ./repo AuthService.login` |
 | Build a knowledge graph | `trelix graph ./repo` |
+| Trim or delete the on-disk embedding cache | `trelix cache gc` / `trelix cache clear` |
 
-**Every query is answered without LLM synthesis by default.** Retrieval is fully offline — no data leaves your machine — as long as no chat credential is set. With one in the environment, retrieval draws a query plan from the LLM (one call per distinct query), which sends the query text; unset the credential, or set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero calls. Enable LLM synthesis for natural-language answers.
+**Every query is answered without LLM synthesis by default.** Retrieval is fully offline — no data leaves your machine — as long as no chat credential and no `TRELIX_LLM_BASE_URL` is set. With either in the environment, retrieval draws a query plan from the LLM (one call per distinct query), which sends the query text; unset both, or set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero calls. Enable LLM synthesis for natural-language answers.
 
 ---
 
@@ -192,8 +203,8 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **Universal LLM client** — OpenAI, Azure, Anthropic, Bedrock, Vertex AI, LiteLLM (100+ providers)
 - **Zero-infra default** — single SQLite file (`.trelix/index.db`) with sqlite-vec (flat scan) + FTS5 BM25
 - **Real-time watching** — `trelix watch` auto-indexes on every file save
-- **Works offline** — `--provider local` uses sentence-transformers, no API key needed for embeddings. It selects the *embedder* only: if a chat credential is present, the retrieval planner still makes one LLM call per distinct query. Unset it for a fully offline path
-- **BGE-Code-v1 / Nomic CodeRankEmbed** — code-specialized embedding providers (`bge-code`, `nomic-code`). `bge-code` is **experimental**: its pooling is unverified against BAAI's published `pooling_mode_lasttoken: true`, so no quality claim is made — see [docs/PROVIDERS.md](docs/PROVIDERS.md#bge-code-baaibge-code-v1)
+- **Works offline** — `--provider local` uses sentence-transformers, no API key needed for embeddings. It selects the *embedder* only: if a chat credential or `TRELIX_LLM_BASE_URL` is present, the retrieval planner still makes one LLM call per distinct query. Unset both for a fully offline path
+- **BGE-Code-v1 / Nomic CodeRankEmbed** — code-specialized embedding providers (`bge-code`, `nomic-code`). `bge-code` is **experimental**: its pooling is unverified against BAAI's published `pooling_mode_lasttoken: true`, so no quality claim is made — see [docs/PROVIDERS.md](docs/PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval)
 - **Matryoshka voyage embeddings** — compact 256/512-dim voyage-code-3 via `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS`
 - **PLAID late-interaction reranker** — 7–45× faster ColBERT via RAGatouille (`rerank_provider=plaid`)
 - **Multi-granularity indexing** — LLM file-level summaries alongside symbol chunks (`TRELIX_FILE_SUMMARIES_ENABLED=true`)
@@ -337,6 +348,8 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 |---|---|---|
 | `TRELIX_LLM_PROVIDER` | `openai` | `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` |
 | `TRELIX_LLM_MODEL` | `gpt-4o` | Chat model override |
+| `TRELIX_LLM_BASE_URL` | — | OpenAI-compatible local server (Ollama, llama-server) for the `openai` backend; `OPENAI_API_KEY` optional with it set |
+| `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` | — | Context length of that server; sizes the auto-derived context budget (`TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null`) for whatever model tag that server serves, a tag the window table knows included |
 | `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` | `us.anthropic.claude-sonnet-4-6` | Bedrock primary model |
 | `TRELIX_LLM_BEDROCK_FALLBACK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock fallback on ValidationException |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (`trelix[anthropic]`) |
@@ -450,7 +463,7 @@ Markdown (heading sections), HTML (custom elements), CSS/SCSS
 > is unverified and the CoIR standing quoted for the upstream model is not substantiated by
 > this implementation. Do not use it as a quality baseline.
 
-> **voyage-code-3 Matryoshka:** Set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2× faster HNSW search with minimal quality loss.
+> **voyage-code-3 Matryoshka:** Set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for smaller vectors and a cheaper vector search, with minimal quality loss.
 
 ---
 
@@ -458,9 +471,9 @@ Markdown (heading sections), HTML (custom elements), CSS/SCSS
 
 | Backend | Best for | Install |
 |---------|----------|---------|
-| SQLite (default) | Repos up to ~100k chunks | included |
-| Qdrant | 500k+ chunks, multi-repo | trelix[qdrant] |
-| LanceDB | 100k+ chunks, ARM/Apple Silicon | trelix[lance] |
+| SQLite (default) | Indexes where `trelix index` and `trelix stats` print no `Flat-scan advisory` (exact flat scan; thresholds per embedding width in [docs/CONFIGURATION.md § Storage](docs/CONFIGURATION.md#storage)) | included |
+| Qdrant | Past the advisory threshold, multi-repo (HNSW index) | trelix[qdrant] |
+| LanceDB | Past the advisory threshold, ARM/Apple Silicon | trelix[lance] |
 
 ---
 
@@ -645,6 +658,7 @@ trelix works across the AI developer ecosystem:
 | Integration | Install | Usage |
 |---|---|---|
 | **MCP** (Claude Code, Cursor, Windsurf, Continue.dev) | `pip install trelix-mcp` | `claude mcp add trelix -- trelix-mcp` |
+| **Claude Code plugin** (server + skill) | `claude plugin marketplace add sairam0424/trelix` | `claude plugin install trelix@trelix` |
 | **LangChain** | `pip install trelix-langchain` | `TrelixRetriever(repo_path=".")` |
 | **LlamaIndex** | `pip install trelix-llama-index` | `TrelixIndexRetriever(repo_path=".")` |
 | **GitHub Action** | `uses: sairam0424/trelix-index-action@v1` | Auto-index on push |

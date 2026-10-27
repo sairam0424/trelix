@@ -16,7 +16,7 @@ image:
   # version, which never matches a site stranded on 2.x. release.yml's
   # verify-version job now compares this line against the release tag.
   repository: ghcr.io/sairam0424/trelix
-  tag: "3.4.3"
+  tag: "3.5.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -145,3 +145,22 @@ extraSecretEnv: []
 # - name: AZURE_OPENAI_API_KEY
 #   secretName: my-azure-secret
 #   secretKey: api-key
+
+# trelix-mcp — MCP over Streamable HTTP, as a second container in the same pod, sharing the
+# PVC. Off by default. Needs a token (it binds 0.0.0.0 in the pod and exits 2 without one, so
+# the chart refuses to render without one) and persistence.enabled (it serves the repositories
+# under persistence.mountPath). The token is its own, NOT apiAuth's. The chart adds the
+# release's Service names to the Host allow-list itself; list any other name a client sends
+# in allowedHosts (an Ingress host, the `.svc.cluster.local` form). Same token pattern as
+# apiAuth above: set at most one of token / existingSecretName. image.tag must be a release
+# whose trelix-mcp has `--transport http`. See README.md.
+mcp:
+  enabled: false
+  port: 8766
+  allowedHosts: []
+  auth:
+    token: ""
+    existingSecretName: ""
+    existingSecretKey: "TRELIX_MCP_AUTH_TOKEN"
+  # Resources for the trelix-mcp container only; `resources` above sizes the trelix one.
+  resources: {}

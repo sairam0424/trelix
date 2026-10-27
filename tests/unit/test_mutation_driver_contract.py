@@ -71,8 +71,10 @@ EXPECTED_SCOPE_KEYS = frozenset(
     {
         "compression.extractive",
         "eval.ndcg",
+        "eval.synthesis_records",
         "graph",
         "indexing.chunker",
+        "indexing.embedding_cache",
         "indexing.parser.core",
         "indexing.parser.c",
         "indexing.parser.cpp",
@@ -96,10 +98,14 @@ EXPECTED_SCOPE_KEYS = frozenset(
         "indexing.parser.typescript",
         "indexing.parser.yaml_config",
         "indexing.walker",
+        "llm.offline",
+        "llm.otel",
         "retrieval.bm25",
+        "retrieval.citations",
         "retrieval.fusion",
         "store.db",
         "store.dimension_guard",
+        "store.scale_advisory",
         "store.vector",
     }
 )
@@ -111,8 +117,10 @@ EXPECTED_SCOPE_KEYS = frozenset(
 EXPECTED_SCOPE_WITNESS = {
     "compression.extractive": "src/trelix/compression/extractive.py",
     "eval.ndcg": "src/trelix/eval/ndcg.py",
+    "eval.synthesis_records": "src/trelix/eval/synthesis_records.py",
     "graph": "src/trelix/graph/builder.py",
     "indexing.chunker": "src/trelix/indexing/chunker.py",
+    "indexing.embedding_cache": "src/trelix/indexing/embedding_cache.py",
     "indexing.parser.core": "src/trelix/indexing/parser/base.py",
     "indexing.parser.c": "src/trelix/indexing/parser/extractors/c.py",
     "indexing.parser.cpp": "src/trelix/indexing/parser/extractors/cpp.py",
@@ -136,10 +144,14 @@ EXPECTED_SCOPE_WITNESS = {
     "indexing.parser.typescript": "src/trelix/indexing/parser/extractors/typescript.py",
     "indexing.parser.yaml_config": "src/trelix/indexing/parser/extractors/yaml_config.py",
     "indexing.walker": "src/trelix/indexing/walker.py",
+    "llm.offline": "src/trelix/llm/offline.py",
+    "llm.otel": "src/trelix/llm/otel.py",
     "retrieval.bm25": "src/trelix/retrieval/bm25.py",
+    "retrieval.citations": "src/trelix/retrieval/citations.py",
     "retrieval.fusion": "src/trelix/retrieval/fusion.py",
     "store.db": "src/trelix/store/db.py",
     "store.dimension_guard": "src/trelix/store/dimension_guard.py",
+    "store.scale_advisory": "src/trelix/store/scale_advisory.py",
     "store.vector": "src/trelix/store/vector.py",
 }
 
@@ -153,8 +165,10 @@ EXPECTED_SCOPE_WITNESS = {
 EXPECTED_SCOPE_NON_WITNESS = {
     "compression.extractive": "src/trelix/eval/ndcg.py",
     "eval.ndcg": "src/trelix/retrieval/bm25.py",
+    "eval.synthesis_records": "src/trelix/eval/ndcg.py",
     "graph": "src/trelix/store/db.py",
     "indexing.chunker": "src/trelix/indexing/walker.py",
+    "indexing.embedding_cache": "src/trelix/indexing/walker.py",
     "indexing.parser.core": "src/trelix/indexing/chunker.py",
     "indexing.parser.c": "src/trelix/indexing/chunker.py",
     "indexing.parser.cpp": "src/trelix/indexing/chunker.py",
@@ -178,10 +192,14 @@ EXPECTED_SCOPE_NON_WITNESS = {
     "indexing.parser.typescript": "src/trelix/indexing/chunker.py",
     "indexing.parser.yaml_config": "src/trelix/indexing/chunker.py",
     "indexing.walker": "src/trelix/indexing/chunker.py",
+    "llm.offline": "src/trelix/llm/factory.py",
+    "llm.otel": "src/trelix/llm/factory.py",
     "retrieval.bm25": "src/trelix/retrieval/fusion.py",
+    "retrieval.citations": "src/trelix/retrieval/fusion.py",
     "retrieval.fusion": "src/trelix/retrieval/bm25.py",
     "store.db": "src/trelix/store/vector.py",
     "store.dimension_guard": "src/trelix/store/db.py",
+    "store.scale_advisory": "src/trelix/store/db.py",
     "store.vector": "src/trelix/store/db.py",
 }
 
@@ -433,6 +451,11 @@ class TestCheckedInBaseline:
             f"`--check` has nothing to ratchet against."
         )
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_baseline_deselected_files_equal_the_drivers_tuple(self) -> None:
+        """MUTATION: add a DESELECTED_FILES entry, skip the baseline edit -> the lists differ."""
+        baseline = self._baseline()
+        assert baseline["deselected_files"] == list(driver.DESELECTED_FILES)
 
     def test_baseline_module_keys_match_the_scope_table(self) -> None:
         """MUTATION: delete a module entry from scripts/mutation_baseline.json.

@@ -22,6 +22,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from tests.fixtures.indexed import mark_indexed
 from trelix.audit.events import (
     ACTION_SEARCH,
     OUTCOME_DENIED,
@@ -45,8 +46,11 @@ def allow_repo_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     401 tests here deliberately do NOT request it: they assert that a missing
     or wrong credential is answered 401 before containment is consulted, so a
     caller with no credential learns nothing about which roots are served.
+
+    The root also gets an (empty) index, which the read routes require.
     """
     monkeypatch.setenv("TRELIX_ALLOWED_REPO_ROOTS", str(tmp_path))
+    mark_indexed(tmp_path)
     return tmp_path
 
 

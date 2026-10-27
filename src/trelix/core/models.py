@@ -10,6 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; retrieval imports this module
+    from trelix.retrieval.citations import CitationSource
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -362,3 +366,6 @@ class RetrievedContext:
     # planner's strategy set skip_reranker). An outcome with applied=False means it
     # WAS entered and did nothing — a distinction that is invisible in the config.
     rerank: RerankOutcome | None = None
+    # What each [C<n>] tag in context_text refers to, in tag order. Empty unless the
+    # assembler tagged the blocks (TRELIX_RETRIEVAL_CITATIONS, default off).
+    citation_sources: tuple[CitationSource, ...] = ()

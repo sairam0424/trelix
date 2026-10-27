@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 3.4.3 | **Python:** 3.12+ | **140 source modules**
+> **Version:** 3.5.0 | **Python:** 3.12+ | **140 source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 
@@ -593,12 +593,12 @@ class BaseVectorStore(ABC):
 ```
 
 **`SQLiteVecStore`** (default):
-- `vec0` virtual table, always a flat scan (sqlite-vec has never shipped an ANN index under any release)
+- `vec0` virtual table, always a flat scan (no stable sqlite-vec release has shipped an ANN index)
 - Separate virtual tables for file summaries and sub-chunks
 
 **`QdrantVectorStore`**: cloud-ready, TRELIX_STORE_BACKEND=qdrant, supports named collections, IVF+HNSW, metadata filtering.
 
-**`LanceVectorStore`**: LanceDB, ARM-native HNSW, 3–5× faster insert at 100k+ chunks, memory-mapped storage, Apache Arrow format.
+**`LanceVectorStore`**: LanceDB, exact scan (trelix builds no index), 3–5× faster insert at 100k+ chunks, memory-mapped storage, Apache Arrow format.
 
 ### `DimensionGuard`
 
@@ -662,6 +662,7 @@ class Indexer:
 ```
 
 - Creates `Database`, `BaseEmbedder`, `BaseVectorStore`
+- With `TRELIX_EMBEDDING_CACHE_ENABLED=true` (default off): refuses `use_batch_api` on the `openai` provider and an unusable cache directory **before** `make_embedder` runs, then wraps the embedder in `CachedIndexEmbedder` (`indexing/embedding_cache.py`) over one `EmbeddingCache` file per embedder fingerprint, sized by the built embedder's real `dimension`
 - Runs `DimensionGuard.check()` — raises `DimensionMismatchError` if provider changed
 - Builds `Chunker` or `ContextualChunker` (lazy LLM client, falls back to plain `Chunker` on API failure)
 - Builds optional `FileSummarizer` (only when `file_summaries_enabled=True`)
@@ -673,7 +674,7 @@ Phase weight constants used for progress reporting:
 
 ### `index() → dict[str, Any]`
 
-Returns stats: `files_found`, `files_indexed`, `files_skipped`, `symbols_extracted`, `chunks_total`, `chunks_embedded`, `errors`, `elapsed_seconds`.
+Returns stats: `files_found`, `files_indexed`, `files_skipped`, `symbols_extracted`, `chunks_total`, `chunks_embedded`, `chunks_from_cache` (Phase-3 chunks served by the embedding cache; always present, 0 when it is off), `errors`, `elapsed_seconds`.
 
 **Phase 0 — Discovery:**
 ```python
@@ -720,6 +721,7 @@ asyncio.run(_batch_embed_and_store_async(pending_chunks, stats))
 ```
 - `_make_token_batches()`: greedy grouping by `token_count ≤ embed_max_tokens_per_batch`. Single oversized chunk gets its own batch.
 - `asyncio.Semaphore(4)`: max 4 concurrent `embedder.embed_async()` calls
+- Every embedder call here, in the sync path and in the Phase 2.5/2.6 side embeds goes through `CachedIndexEmbedder` when the embedding cache is on: hits come from the cache file, only de-duplicated misses reach the provider, and the run's `chunks_from_cache` is the hit count across Phase 3
 - `asyncio.gather()` fans out all batches
 - `vector_store.upsert_batch()` is synchronous → `loop.run_in_executor(ThreadPoolExecutor(2))` to avoid blocking event loop
 - `_AsyncTpmRateLimiter`: asyncio-native token-per-minute rate limiter; `asyncio.Lock` prevents races in the limit check
@@ -743,7 +745,7 @@ Used by file watcher for single-file incremental updates.
 - Hash check → skip if unchanged
 - `_parse_one()` + `_insert_one()` + `_batch_embed_and_store()` (sync variant, not async)
 - Skips Phase 4 when `files_in_batch < 5` (default watch event = 1 file)
-- Returns `{"status": "ok", "symbols_updated": N, "chunks_updated": N, "ms": N}`
+- Returns `{"status": "ok", "symbols_updated": N, "chunks_updated": N, "chunks_from_cache": N, "ms": N}` (plus `"skipped": True` on the unchanged-file return)
 
 ### Language Parser Registry
 
@@ -956,7 +958,7 @@ class Retriever:
         vector_store = make_vector_store(config, embedder.dimension)
         _planner = CachingPlanner(QueryPlanner(config.embedder), plan_cache_size)
         DimensionGuard.check(db, embedder.dimension, config.embedder.provider)
-        _debug_dir = <repo>/.trelix/debug/    # per-query JSON traces
+        _debug_dir = <index dir>/debug/       # per-query JSON traces; <repo>/.trelix/debug/ by default
         _sparse_embedder = None               # memoized slot (SPLADE model load ~seconds)
 ```
 
@@ -1062,7 +1064,8 @@ def get_importers(module_path: str) -> list[SearchResult]
 
 ### Debug Tracing
 
-Every `retrieve()` call writes:
+Every `retrieve()` call writes, beside the index (`db_path_resolved.parent`, which is
+`<repo>/.trelix/` for the default `store.db_path`):
 ```
 <repo>/.trelix/debug/<ISO-timestamp>_<query-slug>.json
 ```
@@ -1367,7 +1370,7 @@ The `turn_index` is assigned atomically by `Database.insert_agent_turn()` as `MA
 
 **MCP Tools:**
 - `ask_agent(query, repo_path, session_id=None)` — returns `{"answer": str, "session_id": str, "turn_count": int}`
-- `agent_list_sessions(repo_path, limit=50)` — returns `{"sessions": [...], "count": int}`
+- `agent_list_sessions(repo_path, limit=50)` — returns `{"sessions": [...], "count": int, "page_size": int, "truncated": bool, "omitted": int}`
 - `agent_clear_session(repo_path, session_id)` — returns `{"cleared": bool, "session_id": str}`
 
 **`TurnHistory` + `HistoryCompressor`:**
@@ -1634,6 +1637,8 @@ All four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `
 
 The check uses `Path.is_relative_to()` (not a naive string `startswith()`) to avoid sibling-directory bypasses like `~/.config/trelixevil/`. If the path is outside both roots, a `ConfigPathNotAllowedError` (a `ValueError` subclass) is raised, and the MCP tool returns `{"...: False/[]/0, "error": str}` rather than raising. `config_path=None` passes through unchanged (meaning "use the registry's own default").
 
+The file must also be a registry: a name ending in `.json` whose file is missing, empty, or a JSON object with a `repos` list. `RepoRegistry.load` reads any other file as an empty registry that keeps the path, and the next `federation_add_repo` would write registry JSON over it, so the same `ConfigPathNotAllowedError` is raised for such a file. The `error` is always one of two fixed texts, `config_path is not inside an allowed config directory` or `config_path is not a repository registry`; neither names the path or a directory (both go to the server log). Separately, when `trelix-mcp` is started with `--root` or `TRELIX_ALLOWED_REPO_ROOTS`, `federation_list_repos` and `federation_remove_repo` stay inside the roots too, as `federation_search_all` does.
+
 This confinement is documented in CHANGELOG.md [Unreleased]/[2.8.1] Security section (issue #69).
 
 ---
@@ -1660,6 +1665,10 @@ class DiffParser:
     def parse(self, diff_text: str) -> list[DiffHunk]     # instance method
     def from_git(self, repo_path, base="HEAD~1", head="HEAD") -> list[DiffHunk]
     # Runs: git diff --unified=3; returns [] on any failure
+    def git_diff(self, repo_path, base="HEAD~1", head="HEAD") -> str
+    # Same command, returns the text; raises GitDiffError on any failure (the CLI uses this one)
+    def ref_resolves(self, repo_path, ref) -> bool
+    # rev-parse --verify, then cat-file -e: True when the object exists; False on any failure
 ```
 
 ### `DiffReviewer`
@@ -1727,9 +1736,9 @@ def parse_pr_ref(pr_ref: str) -> tuple[str, str, int]
 
 **Package:** `packages/trelix-mcp/src/trelix_mcp/server.py`
 
-Transport: `stdio` (subprocess model — IDE spawns `trelix-mcp` as child process).
+Transport: `stdio` (default; the IDE spawns `trelix-mcp` as a child process) or Streamable HTTP (`--transport http`, [MCP_GUIDE §19](MCP_GUIDE.md#19-streamable-http-transport)).
 
-**Critical:** All logging directed to `stderr`. `stdout` is the exclusive MCP JSON protocol pipe.
+**Critical:** All of the server's own logging is directed to `stderr`. Over stdio, `stdout` is the exclusive MCP JSON protocol pipe; over `--transport http` it is not the protocol channel, and uvicorn writes its access lines there.
 
 ```python
 logging.basicConfig(stream=sys.stderr)  # FIRST LINE — before any imports
@@ -1768,14 +1777,14 @@ def index_codebase(repo_path: str, provider: str = "local",
 def get_symbol(qualified_name: str, repo_path: str) -> dict | None:
     # Exact qualified_name match; fallback to bare name if not found
 
-def blast_radius(symbol_name: str, repo_path: str) -> list[dict]:
+def blast_radius(symbol_name: str, repo_path: str, limit: int = 100) -> list[dict]:
     # Query: f"blast radius dependencies of {symbol_name}"
     # Deduplicates by file.rel_path
 
 def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dict:
     # Full GraphBuilder.build() pipeline
 
-def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict]:
+def graph_search_mcp(query: str, repo_path: str, k: int = 10, detail: str = "detailed") -> list[dict]:
     # Two-phase: standard retrieval (top-5 seed) + CodeGraph BFS depth=2
 ```
 
@@ -1800,7 +1809,7 @@ Design note: `IndexConfig` and `Retriever` imported at module scope (not inside 
 |--------|------|---------|-------|
 | GET | `/health` | `{status, version}` | |
 | GET | `/search` | `list[result_dict]` | query, repo, k=10 |
-| GET | `/ask` | `StreamingResponse` | SSE token stream |
+| GET | `/ask` | `StreamingResponse` | SSE token stream; an empty retrieval streams the `[trelix] No relevant code found — cannot synthesize an answer.` notice then `[DONE]` with no LLM call; under `TRELIX_RETRIEVAL_CITATIONS` the model is asked to write `[C#]` markers into the tokens |
 | POST | `/index` | `index_stats_dict` | body: `{repo_path}` |
 | GET | `/stats` | `{files, symbols, chunks}` | repo param |
 | GET | `/graph` | `GraphBuildResult` | repo param |
@@ -1813,7 +1822,16 @@ Design note: `IndexConfig` and `Retriever` imported at module scope (not inside 
 # Yields: "data: {token}\n\n"
 # Terminates: "data: [DONE]\n\n"
 # Error: "data: [ERROR: {exc}]\n\n"
+# Empty retrieval: one "data: [trelix] No relevant code found — cannot synthesize an answer.\n\n"
+#                  frame, then [DONE]; the LLM is not called (Synthesizer.stream() guard)
 ```
+
+**Unindexed repositories:** every read route (`/search`, `/ask`, `/stats`, `/graph*`) depends on
+`require_indexed_repo`, which answers HTTP 400 `No index found at <db>. Run trelix index <repo> first.`
+before the route builds a Retriever, GraphBuilder or Database (opening a missing index would create
+one). It runs after `authenticate` and `confine_repo`. `POST /index` and `POST /parse` do not use it.
+The shared check is `trelix.core.index_check.require_index`, which the CLI read commands, MCP tools,
+LangChain/LlamaIndex retrievers, `search-all` and `review` use too.
 
 **Security guards:**
 - `/graph/visualize`: output path must start with `<repo_root>/.trelix/` — directory traversal protection
@@ -1829,7 +1847,9 @@ Single entry point: `trelix = "trelix.cli.main:app"` (Typer application).
 
 ### Command Summary
 
-Repo paths are **positional arguments**, never flags — there is no `--repo` anywhere.
+Repo paths are **positional arguments**, never flags. The one `--repo` is on `eval-validate`,
+whose positional argument is the golden file and whose `--repo` names the git repository its
+paths are checked against.
 Most tuning is done through environment variables rather than flags; see
 [CLI_REFERENCE.md](CLI_REFERENCE.md) for the authoritative per-command flag list.
 
@@ -1851,7 +1871,10 @@ Most tuning is done through environment variables rather than flags; see
 | `graph <repo>` | --visualize/-v, --output/-o, --concepts/-c, --json | Build knowledge graph |
 | `telemetry [repo]` | --limit/-n | Query telemetry |
 | `eval [repo]` | --golden/-g | nDCG@10/Recall/MRR |
-| `eval-synthesis [repo]` | --golden/-g | GroUSE synthesis scoring |
+| `eval-synthesis [repo]` | --golden/-g, --per-query-out, --replay, --record | GroUSE synthesis scoring, abstention and citation metrics |
+| `eval-validate <golden>` | --repo, --rev, --min-per-stratum, --min-validated | Check a golden file without running a query |
+| `eval-compare <base> <cand>` | --prereg | Judge a candidate results file against a baseline under a pre-registration (exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE, 3 REFUSED) |
+| `eval-suite <suite.json>` | --arm, --out, --cache-dir, --prepare-only | Verify a committed suite and its pinned clone, index it once for one arm, replay the frozen plans, write results.json (exit 0 written, 1 refused or a query raised) |
 | `taint [repo]` | --tier/-t, --severity/-s, --json | Semgrep taint analysis |
 | `review [repo]` | --diff/-d, --base, --head, --json, --max-files, --pr, --post-comments | Diff review (v2.4.0) |
 | `search-all <query>` | --config, --k, --json | Federated search |
@@ -2285,4 +2308,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v3.4.3 — last updated 2026-10-04*
+*trelix v3.5.0 — last updated 2026-10-27*

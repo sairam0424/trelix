@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import tiktoken
 
 from trelix.core.models import RetrievedContext, SearchResult
+from trelix.retrieval.citations import CitationSource, cite_tag
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from trelix.compression.base import CompressionResult, Compressor
@@ -53,6 +54,7 @@ class ContextAssembler:
         compressor: Compressor | None = None,
         compression_ratio: float = 1.0,
         compression_min_tokens: int = 120,
+        cite_tags: bool = False,
     ) -> None:
         self.token_budget = token_budget
         # Split the budget proportionally to each source leg's result count
@@ -70,6 +72,12 @@ class ContextAssembler:
         #: (None when compression was inactive). Mirrors the compressor's own
         #: ``last_path`` attribute so the retriever can record both.
         self.last_compression_stats: dict[str, object] | None = None
+        # Prefix every rendered block header with a citation tag "[C<n>] " (rendered
+        # order, one tag per symbol) and report the tags on
+        # RetrievedContext.citation_sources. False (the default) renders exactly the
+        # pre-tag context and leaves citation_sources empty.
+        self.cite_tags = cite_tags
+        self._citation_sources: list[CitationSource] = []
         self._tokenizer = tiktoken.get_encoding("cl100k_base")
 
     @property
@@ -103,6 +111,7 @@ class ContextAssembler:
         here can trigger an embedding or network call.
         """
         self.last_compression_stats = None
+        self._citation_sources = []
         if not results:
             return RetrievedContext(
                 query=query,
@@ -143,6 +152,7 @@ class ContextAssembler:
             total_tokens=tokens_used,
             intent=intent or "",
             retrieval_sources=dict(source_counts),
+            citation_sources=tuple(self._citation_sources),
         )
 
     def _pack_greedy(self, results: list[SearchResult]) -> list[SearchResult]:
@@ -320,6 +330,10 @@ class ContextAssembler:
         A result in `compressed` was only partially kept, so it is rendered as
         one truthful line-range block PER kept span instead of a single header
         that would claim lines the text no longer contains.
+
+        With `cite_tags` every block header (each kept-span header of a compressed
+        result included, the preamble excluded) is prefixed with `[C<n>] `, numbered
+        in the order the blocks are rendered here, one number per symbol.
         """
         preamble = self._make_preamble(results, intent)
 
@@ -329,18 +343,21 @@ class ContextAssembler:
             by_file[r.file.rel_path].append(r)
 
         blocks: list[str] = []
+        tags: dict[int, int] = {}  # symbol_id -> citation tag
 
         for file_path, file_results in by_file.items():
             blocks.append(f"=== {file_path} ===\n")
             for r in sorted(file_results, key=lambda x: x.symbol.line_start):
+                prefix = self._cite_prefix(r, tags)
                 cresult = compressed.get(r.chunk.symbol_id) if compressed else None
                 if cresult is not None:
                     from trelix.retrieval.context_compression import format_compressed_blocks
 
-                    blocks.append(f"{format_compressed_blocks(r, cresult)}\n")
+                    blocks.append(f"{format_compressed_blocks(r, cresult, header_prefix=prefix)}\n")
                     continue
                 header = (
-                    f"[Lines {r.symbol.line_start}-{r.symbol.line_end}] {r.symbol.qualified_name}"
+                    f"{prefix}[Lines {r.symbol.line_start}-{r.symbol.line_end}] "
+                    f"{r.symbol.qualified_name}"
                 )
                 # Call-graph topology only earns a place in the prompt for the
                 # structural intents — everywhere else this must stay
@@ -353,6 +370,33 @@ class ContextAssembler:
 
         body = "\n".join(blocks)
         return f"{preamble}\n{body}" if preamble else body
+
+    def _cite_prefix(self, result: SearchResult, tags: dict[int, int]) -> str:
+        """
+        The `[C<n>] ` prefix for this result's block header, or "" when tags are off.
+
+        `tags` maps symbol_id to tag for the context being rendered: a symbol seen
+        for the first time gets the next number and a CitationSource entry; a
+        symbol rendered again (two results, one symbol) reuses its tag.
+        """
+        if not self.cite_tags:
+            return ""
+        symbol_id = result.chunk.symbol_id
+        tag = tags.get(symbol_id)
+        if tag is None:
+            tag = len(tags) + 1
+            tags[symbol_id] = tag
+            self._citation_sources.append(
+                CitationSource(
+                    tag=tag,
+                    symbol_id=symbol_id,
+                    path=result.file.rel_path,
+                    line_start=result.symbol.line_start,
+                    line_end=result.symbol.line_end,
+                    symbol=result.symbol.qualified_name,
+                )
+            )
+        return cite_tag(tag)
 
     def _make_preamble(self, results: list[SearchResult], intent: str | None) -> str:
         """

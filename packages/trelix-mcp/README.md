@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v3.3.7 — semantic code search with streaming /ask endpoint, watch bridge notifications, and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v3.5.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## ⚠️ Breaking Change in v2.4.0
 
@@ -54,6 +54,48 @@ pip install trelix-mcp "trelix[llm-all]"     # all LLM providers
 ```bash
 claude mcp add trelix -- trelix-mcp
 ```
+
+Or install the Claude Code plugin, which launches a pinned published release of this server
+through `uvx` and adds a skill that says when to use it: `claude plugin marketplace add
+sairam0424/trelix`, then `claude plugin install trelix@trelix` (see
+`docs/integrations/claude-code-plugin.md` in the repository).
+
+To list only the everyday search and indexing tools, add `--tools core` (the default is `--tools full`, every tool):
+
+```bash
+claude mcp add trelix -- trelix-mcp --tools core
+```
+
+To confine the server to one or more repository roots, add `--root PATH` (repeatable;
+`TRELIX_ALLOWED_REPO_ROOTS`, `os.pathsep`-separated and read from the process environment, adds
+more; a blank `--root` value is a startup error). Every `repo_path`, `federation_add_repo` `path`
+and `trelix://repo/...` URI must then lie inside a root, or the call answers an error:
+`repo_path is not inside an allowed repository root`, or
+`path is not inside an allowed repository root` for `federation_add_repo`. `federation_list_repos`
+and `federation_search_all` then list and search only the registered repos inside the roots and
+report the others as `repos_outside_roots`, and `federation_remove_repo` answers an alias whose repo
+is outside them as an unregistered one. Without the flag and the variable, nothing is confined.
+
+```bash
+claude mcp add trelix -- trelix-mcp --root /Users/you/myrepo
+```
+
+### Streamable HTTP (remote clients)
+
+For a client that cannot spawn the process, serve Streamable HTTP instead of stdio. A root is
+required, and a token guards everything but `GET`/`HEAD /health`:
+
+```bash
+TRELIX_MCP_AUTH_TOKEN=... trelix-mcp --transport http --root /Users/you/myrepo
+claude mcp add --transport http trelix http://127.0.0.1:8766/mcp --header "Authorization: Bearer $TRELIX_MCP_AUTH_TOKEN"
+```
+
+Defaults: `--host 127.0.0.1`, `--port 8766`, `--path /mcp`, stateless. `TRELIX_MCP_AUTH_TOKEN`
+(fallback `TRELIX_API_AUTH_TOKEN`) is the token and `TRELIX_MCP_ALLOWED_HOSTS` (fallback
+`TRELIX_API_ALLOWED_HOSTS`) adds hostnames to the Host/Origin guard, which is always on; a
+non-loopback `--host` needs a token or `--allow-unauthenticated`. Add `--stateful` for a client
+that opens a server-initiated GET stream. stdio with no flags is unchanged. Every flag, error text
+and proxy note: [docs/MCP_GUIDE.md, section 19](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#19-streamable-http-transport).
 
 ### Cursor (`~/.cursor/mcp.json`)
 
@@ -166,17 +208,45 @@ TRELIX_MCP_MAX_SUBSCRIBERS=1000
 TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 ```
 
+### Result size limits
+
+```bash
+# Largest page a list tool returns: k (and agent_list_sessions's limit) is clamped to 1..this
+TRELIX_MCP_MAX_K=50
+
+# Budget, in characters, for a list result. Over it the tail is dropped and the response says
+# so; the whole response (both copies a client is sent) is at most twice this. 0 turns the cut off.
+TRELIX_MCP_MAX_RESULT_CHARS=15000
+```
+
+Both are read on every call. A blank value means the default; a value that is not an integer (of at least 1 for `TRELIX_MCP_MAX_K`, at least 0 for `TRELIX_MCP_MAX_RESULT_CHARS`) stops `trelix-mcp` at start-up with exit code 2. See [Result size](#result-size).
+
+### Retriever cache
+
+```bash
+# Most Retrievers kept across tool calls, one per repository (search_code and graph_search_mcp
+# reuse them; each may hold an embedding model with the local provider). Past this bound the
+# least recently used one is dropped, not closed, and the next call for that repo rebuilds it.
+TRELIX_MCP_RETRIEVER_CACHE_SIZE=8
+```
+
+Read on every call. A blank value means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up with exit code 2 and makes a tool call return an error.
+
 ## Tools
+
+`tools/list` returns the tools in a fixed order and marks each one with MCP annotation hints; the server also sends short `instructions` that tell a model to index first and which search tool to use next. Only `search_code`, `get_symbol` and `blast_radius` are marked `readOnlyHint: true`, `agent_clear_session` and `federation_remove_repo` are marked `destructiveHint: true`, and every tool has `openWorldHint: false`. The read-only hint means the index database is left alone, not the whole repository directory: the caveats (query telemetry, the migration of an index written by an older trelix, the `search_code` trace files under `.trelix/debug/`) and the full table are in [docs/MCP_GUIDE.md, section 8](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#8-the-15-mcp-tools).
+
+`--tools full` (default) lists all 15 tools. `--tools core` lists seven: `index_codebase`, `search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`, `graph_search_mcp` and `ask_agent`. The other eight are hidden, not removed. (`repo_map` and `exact_search` do not exist in this server, so `core` does not list them.)
 
 | Tool | Description |
 |------|-------------|
-| `search_code(query, repo_path, k=10, cursor=0)` | Hybrid semantic+BM25 search with cursor pagination |
+| `search_code(query, repo_path, k=10, cursor=0, detail="detailed")` | Hybrid semantic+BM25 search with cursor pagination; `detail="concise"` returns a one-line `signature` instead of each `body` |
 | `index_codebase(repo_path, provider="local")` | Index a repo (run once); emits progress notifications |
-| `get_symbol(qualified_name, repo_path)` | Get full source of a symbol by qualified name |
-| `blast_radius(symbol_name, repo_path)` | Direct callers + importers of a symbol, from the call/import graph (no embedding model, ~60-120 ms) |
+| `get_symbol(qualified_name, repo_path, max_body_chars=20000)` | Get the source of a symbol by qualified name; a longer body is cut and `body_truncated` is `true` (`0` = no limit) |
+| `blast_radius(symbol_name, repo_path, limit=100)` | Direct callers + importers of a symbol, from the call/import graph (no embedding model, ~60-120 ms); `limit` is 1 to 500 |
 | `build_knowledge_graph(repo_path)` | Build code property graph |
-| `graph_search_mcp(query, repo_path)` | Search via knowledge graph |
-| `subscribe_resource(uri, subscription_id)` | Subscribe to change notifications for a trelix:// resource URI (v2.5.0+) |
+| `graph_search_mcp(query, repo_path, k=10, detail="detailed")` | Search via knowledge graph |
+| `subscribe_resource(uri, subscription_id)` | Register a subscription for a trelix:// resource URI (v2.5.0+); no notification is delivered yet, see Resource Subscriptions |
 | `unsubscribe_resource(subscription_id)` | Cancel a resource subscription (v2.5.0+) |
 
 ### Multi-Repo Federation Tools (v2.8.0)
@@ -186,19 +256,19 @@ TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 | `federation_list_repos(config_path=None)` | List all repos registered for federated search |
 | `federation_add_repo(alias, path, weight=1.0, config_path=None)` | Register a repo for federated search (absolute path required) |
 | `federation_remove_repo(alias, config_path=None)` | Unregister a repo by alias |
-| `federation_search_all(query, k=10, cursor=0, config_path=None)` | Search across all registered repos with RRF-weighted fusion |
+| `federation_search_all(query, k=10, cursor=0, config_path=None, detail="detailed")` | Search across all registered repos with RRF-weighted fusion; `repos_unindexed` names the registered repos skipped for having no index |
 
 ### Persistent Agent Session Tools (v2.8.0)
 
 | Tool | Description |
 |------|-------------|
 | `ask_agent(query, repo_path, session_id=None)` | Multi-turn ReAct Q&A with persistent memory (pass session_id to resume) |
-| `agent_list_sessions(repo_path, limit=50)` | List recent agent sessions for a repo |
+| `agent_list_sessions(repo_path, limit=50)` | List recent agent sessions for a repo (`limit` is clamped to 1..`TRELIX_MCP_MAX_K`) |
 | `agent_clear_session(repo_path, session_id)` | Delete a persisted agent session and all its turn history |
 
 ## Resource Subscriptions (v2.5.0)
 
-trelix-mcp supports live index change notifications. When `trelix watch` detects a file change, connected MCP clients receive a `notifications/resources/updated` push — then call `resources/read` to fetch the updated index. Subscribe with the `subscribe_resource` tool.
+trelix-mcp has tools for registering interest in a resource, but it does not push index change notifications yet: see the status note below. Register a URI with the `subscribe_resource` tool.
 
 ```python
 # Subscribe to a repo manifest
@@ -206,14 +276,13 @@ subscribe_resource(
     uri="trelix://repo//path/to/repo/manifest",
     subscription_id="my-sub-001"
 )
-# → client receives notifications/resources/updated when trelix watch fires
-# → call resources/read on the URI to get the refreshed index
+# → the URI is registered; no notification is delivered yet (see below)
 
 # Cancel the subscription
 unsubscribe_resource(subscription_id="my-sub-001")
 ```
 
-The `resources.subscribe` capability is advertised in server capabilities. URIs follow the scheme `trelix://repo/{repo_path}/manifest`. The `notify_file_changed()` hook (wired into `FileWatcher._do_reindex` since v2.7.0) fires per-URI notifications with the `subscriptionId` in `params._meta`.
+The server does not advertise `resources.subscribe` (it reports `false`) and does not serve the `resources/subscribe` request: `subscribe_resource` and `unsubscribe_resource` are ordinary tools that record URIs in an in-memory registry inside the `trelix-mcp` process. URIs follow the scheme `trelix://repo/{repo_path}/manifest`. The `notify_file_changed()` hook (wired into `FileWatcher._do_reindex` since v2.7.0) would fire per-URI notifications with the `subscriptionId` in `params._meta`, but it runs in the `trelix watch` process, where this registry is empty, and nothing starts a watcher inside `trelix-mcp` — so no notification is delivered today.
 
 Subscriptions are capped and TTL'd by default — see [Resource subscription limits](#resource-subscription-limits) (`TRELIX_MCP_MAX_SUBSCRIBERS`, default `1000`; `TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS`, default `3600`). Subscriptions older than the TTL are swept on the next registry access. If the registry is at capacity, `subscribe_resource` does not raise — it returns `{"subscribed": false, "uri": ..., "subscription_id": ..., "error": "..."}` so callers can handle rejection gracefully.
 
@@ -231,6 +300,22 @@ print(page1["results"])          # this page's results
 if page1["next_cursor"] is not None:
     page2 = search_code(query="authentication", repo_path="/repo", k=10, cursor=page1["next_cursor"])
 ```
+
+`next_cursor` is `null` after the last page, and a negative `cursor` is an error result.
+
+## Result size
+
+A tool result costs a client's context twice (FastMCP sends a dict result as a text block and again as `structuredContent`), so these bound it:
+
+- `k` (and `limit` on `agent_list_sessions`) is clamped to 1..`TRELIX_MCP_MAX_K` (default 50); `page_size` in the response is the value used.
+- A list result is cut to fit `TRELIX_MCP_MAX_RESULT_CHARS` (default 15,000; `0` turns it off) by dropping the tail. The budget counts both copies a client is sent, so the whole response is at most twice the budget (30,000 characters by default) and its text under the budget. A cursor-paged response (`search_code`, `federation_search_all`) sets `truncated` and `omitted` and points `next_cursor` at the first dropped result, so paging loses and repeats nothing. A bare array (`blast_radius`, `graph_search_mcp`) keeps the JSON array as its first text block and adds a note block and `_meta.trelix` (`total_available`, `omitted`). One result is always kept, so a single result longer than the budget is returned whole.
+- `detail="concise"` drops each `body`; `get_symbol` cuts a body over `max_body_chars` and reports `body_truncated`; `agent_list_sessions` cuts each session's `query` (its most recent prompt) to 300 characters and reports `query_truncated`.
+
+The full description, with measured sizes, is in [docs/MCP_GUIDE.md](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#output-size-and-limits).
+
+## Errors
+
+An invalid input is a tool error (`isError: true`, one text block, the session carries on) whose text names the argument, shows what was given and says what is valid: a `repo_path` that is blank, does not exist or is a file; a blank `query`, `qualified_name`, `symbol_name`, `alias`, `session_id` or `config_path`; a `federation_add_repo` `path` that is not an absolute directory or a `weight` that is not positive; a negative `cursor` or `max_body_chars`. A repository with no index answers `No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`, and an argument of the wrong type or outside its choices is rejected by FastMCP itself, also as a tool error. `subscribe_resource` and `unsubscribe_resource` accept any string and are outside this contract. `k` and `limit` outside their range are clamped rather than rejected, and the federation tools keep their `error` key for a duplicate alias, a full registry, a non-blank `config_path` that is not a `.json` registry file inside `~/.config/trelix/` or `<cwd>/.trelix/` (`config_path is not inside an allowed config directory` or `config_path is not a repository registry`) and a registry with nothing indexed. Every result, including an empty one (`[]`, `null`), carries a text block that parses to its structured content. Over `--transport http`, an exception a tool did not expect answers `isError: true` with `Error calling tool '<name>'` (no path, no traceback) while every text above is unchanged. Details: [docs/MCP_GUIDE.md, Errors](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#errors).
 
 ## Knowledge Graph Tools
 
@@ -270,23 +355,15 @@ pip install trelix-mcp 'trelix[knowledge-graph]'
 
 ## Watch Bridge (v2.7.0)
 
-The `trelix watch` command now fires MCP notifications after every file re-index, allowing real-time codebase awareness across all subscribed clients:
+After each file re-index, `trelix watch` calls `notify_file_changed()`, which writes `notifications/resources/updated` for the URIs registered with `subscribe_resource`. **No MCP client receives these notifications today.** `trelix watch` is a separate process from `trelix-mcp` and its subscription registry is empty, and nothing in trelix-mcp starts a file watcher, so running `trelix-mcp` in one terminal and `trelix watch /path/to/repo` in another does not connect them. The notification can only reach a client when the watcher runs inside the stdio server process.
 
-```bash
-# Terminal 1: Start trelix-mcp
-trelix-mcp
-
-# Terminal 2: Enable file watching
-trelix watch /path/to/repo
-```
-
-Clients subscribe to a repository's manifest URI via `subscribe_resource`, which takes two
+Registering a subscription to a repository's manifest URI works; `subscribe_resource` takes two
 required strings. There is no glob support:
 
 ```
 subscribe_resource(uri="trelix://repo//path/to/repo/manifest", subscription_id="my-sub-001")
 ```
 
-After each re-index, subscribed clients receive `notifications/resources/updated` carrying only
+Once delivery works, a notification will carry only
 `{"uri": ..., "_meta": {"subscriptionId": ...}}` — no file paths and no stats. Call
 `resources/read` on that URI to see what changed.

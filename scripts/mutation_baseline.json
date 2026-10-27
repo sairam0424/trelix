@@ -3,7 +3,9 @@
     "tests/unit/test_otel_metrics.py",
     "tests/unit/test_otel_metrics_reentry.py",
     "tests/unit/test_otel_tracing.py",
-    "tests/unit/test_structured_logging.py"
+    "tests/unit/test_structured_logging.py",
+    "tests/unit/test_otel_llm_spans.py",
+    "tests/unit/test_reviewer_otel_span.py"
   ],
   "excluded_scopes": {
     "embedder.*": "tests construct a real torch model; 245/317 mutants segfault in torch/nn/modules/module.py convert, identically at --max-children 1 and 8. http_proxy= workaround moved 245 -> 245. Hard limit, not a todo.",
@@ -58,6 +60,27 @@
       },
       "total_mutants": 52
     },
+    "eval.synthesis_records": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 327
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-10-26T01:25:13+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/eval/synthesis_records.py"
+      ],
+      "source_sha256": {
+        "src/trelix/eval/synthesis_records.py": "c44ab92b2f07ff5f7bbdb139d7a552bfe485b1bce77ba72f2600b5422f008edb"
+      },
+      "total_mutants": 327
+    },
     "graph": {
       "ceilings": {
         "no_tests": 5,
@@ -109,6 +132,12 @@
         "src/trelix/indexing/chunker.py": "520acb3c2cbf101c5e22b9a160412b3231754e6299bf15d31a3426bda8e0c813"
       },
       "total_mutants": 187
+    },
+    "indexing.embedding_cache": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/embedding_cache.py"
+      ]
     },
     "indexing.parser.c": {
       "measured": false,
@@ -300,6 +329,18 @@
       },
       "total_mutants": 354
     },
+    "llm.offline": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/llm/offline.py"
+      ]
+    },
+    "llm.otel": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/llm/otel.py"
+      ]
+    },
     "retrieval.bm25": {
       "ceilings": {
         "no_tests": 0,
@@ -320,6 +361,28 @@
         "src/trelix/retrieval/bm25.py": "189a500dd05219f97fb72eb2cc4c7c83bbcce972fd2167e9b4a9a3abf981ba9f"
       },
       "total_mutants": 111
+    },
+    "retrieval.citations": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 1
+      },
+      "counts": {
+        "killed": 154,
+        "survived": 1
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-10-07T08:07:57+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/retrieval/citations.py"
+      ],
+      "source_sha256": {
+        "src/trelix/retrieval/citations.py": "a146561344dc4b6bc139ab484db1c2b440e6eb0be342ed8b8a2cef91f713ef67"
+      },
+      "total_mutants": 155
     },
     "retrieval.fusion": {
       "ceilings": {
@@ -387,6 +450,12 @@
       },
       "total_mutants": 8
     },
+    "store.scale_advisory": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/store/scale_advisory.py"
+      ]
+    },
     "store.vector": {
       "ceilings": {
         "no_tests": 0,
@@ -413,17 +482,23 @@
   },
   "mutmut_config": {
     "also_copy": [
+      ".claude-plugin",
       ".env.example",
       ".gitignore",
       ".github",
       "CHANGELOG.md",
       "config",
       "CONTRIBUTING.md",
+      "docker-compose.yml",
+      "Dockerfile",
       "docs",
+      "eval",
       "helm",
+      "infra",
       "LICENSE",
       "Makefile",
       "packages",
+      "plugins",
       "README.md",
       "scripts",
       "SECURITY.md",

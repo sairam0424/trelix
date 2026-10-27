@@ -401,7 +401,13 @@ def with_retry(
         async def call_api_async() -> Response:
             return await client.get(url)
     """
-    return retry(
+    # tenacity 9.2 narrowed `retry()`'s declared return type to its own `_RetryDecorated`
+    # wrapper (a callable with the decorated function's signature plus `.retry`); 9.1 declares
+    # `Callable[[WrappedFn], WrappedFn]`. This function's contract, "a decorated function keeps
+    # its own signature", holds under both, so the 9.2 return-value complaint is silenced here,
+    # and `unused-ignore` keeps 9.1, where nothing needs ignoring, quiet too (a `cast` would be
+    # redundant there instead). Runtime is untouched.
+    return retry(  # type: ignore[return-value, unused-ignore]
         retry=retry_if_exception(is_retryable_http_error),
         wait=_wait_retry_after_or_exponential(min_wait_seconds, max_wait_seconds),
         stop=stop_after_attempt(max_attempts),

@@ -1,6 +1,6 @@
-# trelix v3.4.3 — Frequently Asked Questions
+# trelix v3.5.0 — Frequently Asked Questions
 
-> Last updated: 2026-10-04 — covers trelix 3.4.3, trelix-mcp 3.4.3, trelix-langchain 3.4.3, and trelix-llama-index 3.4.3.
+> Last updated: 2026-10-27 — covers trelix 3.5.0, trelix-mcp 3.5.0, trelix-langchain 3.5.0, and trelix-llama-index 3.5.0.
 
 ---
 
@@ -27,7 +27,7 @@ trelix index ./my-repo
 trelix search ./my-repo "authentication middleware"
 ```
 
-An API key is only required when you want LLM-synthesized answers via `trelix ask` (needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or equivalent) or when using a cloud embedding provider such as `openai`, `voyage`, or `bedrock-cohere`.
+An API key is only required when you want LLM-synthesized answers via `trelix ask` (needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or equivalent) or when using a cloud embedding provider such as `openai`, `voyage`, or `bedrock-cohere`. A local OpenAI-compatible server is the keyless alternative for `trelix ask` and `trelix review`: set `TRELIX_LLM_BASE_URL` (see [OFFLINE.md](OFFLINE.md)).
 
 ---
 
@@ -53,13 +53,13 @@ For unsupported file types trelix skips the file without error. To add a new lan
 
 ### How large can my codebase be?
 
-The default SQLite backend handles repositories up to roughly **100,000 chunks** (typically a 200–400k line codebase) without noticeable slowdown. For larger repos:
+The default SQLite backend is an exact flat scan: every search compares the query with every stored vector, so latency grows with the number of vectors and their width. `trelix index` and `trelix stats` print a `Flat-scan advisory` on stderr once the store passes the measured threshold for your index's width (table in [CONFIGURATION.md § Storage](CONFIGURATION.md#storage)). Which backend to use:
 
 | Scale | Recommended backend | Install |
 |-------|---------------------|---------|
-| Up to ~100k chunks | SQLite (default) | included |
-| 100k–500k chunks | LanceDB — 3–5x faster insert | `pip install "trelix[lance]"` |
-| 500k+ chunks / multi-team | Qdrant | `pip install "trelix[qdrant]"` |
+| Below the `Flat-scan advisory` threshold for your width | SQLite (default) | included |
+| Past the advisory threshold | LanceDB — 3–5x faster insert at 100k+ chunks (vecdb-bench) | `pip install "trelix[lance]"` |
+| Past the advisory threshold, multi-team | Qdrant (HNSW index) | `pip install "trelix[qdrant]"` |
 
 Switch backends with:
 ```bash
@@ -101,8 +101,8 @@ Indexing is a one-time cost. After that, `trelix watch` incrementally re-indexes
 
 | Command | Retrieval | LLM | Output | Offline |
 |---------|-----------|-----|--------|---------|
-| `trelix search` | Hybrid (vector + BM25 + grep) | Planner only — no synthesis | Ranked code chunks in a table | Only with no chat credential set |
-| `trelix ask` | Hybrid + synthesis — no reranking, same as `search` | Yes | Synthesized natural-language answer | Requires API key |
+| `trelix search` | Hybrid (vector + BM25 + grep) | Planner only — no synthesis | Ranked code chunks in a table | Only with no chat credential and no `TRELIX_LLM_BASE_URL` set |
+| `trelix ask` | Hybrid + synthesis — no reranking, same as `search` | Yes | Synthesized natural-language answer | Requires an API key or a local server (`TRELIX_LLM_BASE_URL`) |
 
 The `search` row used to read "LLM: No / Offline: Yes". That contradicted
 [What is `trelix query`?](#what-is-trelix-query) eleven lines below it, which says the planner
@@ -127,10 +127,12 @@ It is not, however, unconditionally LLM-free. When a chat credential is resolvab
 
 Two ways to get the offline, deterministic, zero-cost behaviour this section used to promise unconditionally:
 
-- **Unset the chat credential.** With no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / Azure equivalent in the environment, retrieval makes **zero** LLM calls. (The planner object is still constructed — that happens unconditionally — but with no resolvable credential it holds no usable client, so it short-circuits to `default_plan()` without calling out. Measured: 0 calls.)
+- **Unset the chat credential, and `TRELIX_LLM_BASE_URL`.** With no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / Azure equivalent and no `TRELIX_LLM_BASE_URL` in the environment, retrieval makes **zero** LLM calls. (The planner object is still constructed — that happens unconditionally — but with no resolvable credential and no local-server URL it holds no usable client, so it short-circuits to `default_plan()` without calling out. Measured: 0 calls.) A keyless `TRELIX_LLM_BASE_URL` *is* a usable client: the planner then sends one call per distinct query to that server, and if the server is down each query waits out the retries before falling back to `default_plan()`.
 - **Freeze the plans.** Set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` to a path. The first pass records each plan (one call per distinct query); every later pass replays from the file and makes **zero** calls. Commit that file to get a CI run that is both free and byte-for-byte reproducible.
 
-So `trelix query` is safe for CI — but for cost and determinism you must either withhold the credential or commit a recorded plan cache. A CI box that has a key set for `trelix ask` will otherwise pay one planner call per distinct query here too.
+To run the planner and `trelix ask` against a local model instead, see [OFFLINE.md](OFFLINE.md); with `TRELIX_LLM_BASE_URL` set the planner call goes to that server.
+
+So `trelix query` is safe for CI — but for cost and determinism you must either withhold the credential and `TRELIX_LLM_BASE_URL` or commit a recorded plan cache. A CI box that has a key or a local-server URL set for `trelix ask` will otherwise pay one planner call per distinct query here too.
 
 ```bash
 trelix query ./my-repo "rate limiting middleware"
@@ -142,7 +144,7 @@ trelix query ./my-repo "rate limiting middleware"
 
 trelix combines three complementary retrieval legs and merges their results with Reciprocal Rank Fusion (RRF):
 
-1. **Vector (dense) search** — ANN over sentence embeddings stored in sqlite-vec HNSW. Captures semantic similarity even when exact terms differ.
+1. **Vector (dense) search** — nearest-neighbour search over sentence embeddings stored in sqlite-vec (an exact flat scan; the `Flat-scan advisory` names the measured threshold). Captures semantic similarity even when exact terms differ.
 2. **Contextual BM25** — Full-text search over FTS5. Fast and precise for identifier names, function signatures, and exact tokens.
 3. **Grep search** — Regex/exact pattern matching over raw source. Required for case-sensitive symbol lookups.
 
@@ -229,13 +231,13 @@ After restarting Claude Code, the trelix tools are available in every conversati
 3. Set the command to `trelix-mcp` (no arguments needed).
 4. Save and restart Cursor.
 
-Cursor will discover the trelix tools automatically via the MCP stdio protocol.
+Cursor will discover the trelix tools automatically via the MCP stdio protocol, the default transport.
 
 ---
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v3.4.3 exposes **15 tools**:
+trelix-mcp v3.5.0 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -245,8 +247,8 @@ trelix-mcp v3.4.3 exposes **15 tools**:
 | `blast_radius` | Find what depends on a symbol |
 | `build_knowledge_graph` | Build the Code Property Graph for a repo |
 | `graph_search_mcp` | Graph BFS search from a seed symbol |
-| `subscribe_resource` | Subscribe to file change notifications (v2.5.0+) |
-| `unsubscribe_resource` | Unsubscribe from file change notifications (v2.5.0+) |
+| `subscribe_resource` | Register a resource subscription (v2.5.0+); no change notification is delivered yet |
+| `unsubscribe_resource` | Remove a resource subscription (v2.5.0+) |
 | `federation_list_repos` | List all repos registered for federated search (v2.8.0+) |
 | `federation_add_repo` | Register a repo for federated search (v2.8.0+) |
 | `federation_remove_repo` | Unregister a repo by alias (v2.8.0+) |
@@ -364,7 +366,7 @@ For code-specific retrieval quality, ranked highest to lowest:
 
 | Provider | Model | CoIR Score | Notes |
 |----------|-------|-----------|-------|
-| `voyage` | voyage-code-3 (256–2048-dim, Matryoshka) | Very High | Best API option; set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2x faster HNSW |
+| `voyage` | voyage-code-3 (256–2048-dim, Matryoshka) | Very High | Best API option; set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for smaller vectors and a cheaper vector search |
 | `local-code` | SFR-Embedding-Code-2B_R (2304-dim) | Very High (vendor claim) | Experimental; CC-BY-NC weights; needs `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` |
 | `nomic-code` | nomic-ai/CodeRankEmbed (768-dim) | High (vendor claim) | Experimental; off-protocol prefixes; needs `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` |
 | `openai` / `azure` | text-embedding-3-large (3072-dim) | High | General-purpose, strong on mixed code+prose |
@@ -378,7 +380,7 @@ v3.1.7: trelix builds it with FlagEmbedding's `FlagModel`, which pools with CLS,
 publishes `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true`.
 Its pooling is unverified, so it cannot be placed in a quality ranking at all — it previously
 held first place here on a "SOTA 2025" label that was the upstream model's, not a measurement
-of trelix. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
+of trelix. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval).
 
 For teams on a budget: `nomic-code` offers strong quality at zero cost after the one-time model download.
 
@@ -536,13 +538,13 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 So pin all four to the same version in your `requirements.txt`:
 
 ```
-trelix==3.4.3
-trelix-mcp==3.4.3
-trelix-langchain==3.4.3
-trelix-llama-index==3.4.3
+trelix==3.5.0
+trelix-mcp==3.5.0
+trelix-langchain==3.5.0
+trelix-llama-index==3.5.0
 ```
 
-The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.4.3 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.4.3 resolving against core 3.0.0 is supported and intended — the four-way 3.4.3 pin above is the combination CI installs and tests, not the only one that works. The one exception is `provider="cohere"` (the direct Cohere embedder), which needs core 3.3.3 or newer.
+The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. `trelix-mcp`, `trelix-langchain` and `trelix-llama-index` 3.5.0 each declare `trelix>=3.5.0`, because each imports core names that first shipped in 3.5.0 (`trelix.core.index_check`, and for `trelix-mcp` also `trelix.core.confinement` and `trelix.api.request_guard.is_health_probe`). Against an older core they fail: `trelix-mcp` at start-up, the two adapters at their first query. A floor is an API compatibility contract rather than a statement about release cadence, so it moves only when an import demands it: before 3.5.0 the adapters declared `trelix>=3.0.0` (the lowest published core verified to expose every name `retriever.py` reads) and `trelix-mcp` declared `trelix>=3.1.5`. The four-way 3.5.0 pin above is the combination CI installs and tests; for the three satellites it is also the oldest core that works.
 
 ---
 
@@ -561,7 +563,7 @@ A typical team setup for a shared codebase:
 
 3. **MCP for individual developers.** Each developer installs `trelix-mcp` locally and points it at either their own local index or the team REST server.
 
-4. **Voyage or local-code embeddings.** For best retrieval quality across a shared index, standardize on one embedding provider. `voyage-code-3` (API) or `local-code` (local, no API key) are recommended over the default `local` provider for teams. **Do not standardize a shared team index on `bge-code`:** it is experimental as of v3.1.7 and its pooling is unverified — see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
+4. **Voyage or local-code embeddings.** For best retrieval quality across a shared index, standardize on one embedding provider. `voyage-code-3` (API) or `local-code` (local, no API key) are recommended over the default `local` provider for teams. **Do not standardize a shared team index on `bge-code`:** it is experimental as of v3.1.7 and its pooling is unverified — see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval).
 
 5. **Federation for multi-repo monorepos.** Register all service repos and use `trelix search-all` or `FederatedRetriever` for cross-repo search.
 
@@ -620,6 +622,8 @@ Available endpoints:
 | `GET /graph/communities` | GET | Community summary list |
 | `GET /graph/visualize` | GET | Export Pyvis HTML, return path |
 | `GET /graph/search` | GET | BFS from symbol: `?repo=<path>&symbol_id=<id>&depth=2` |
+
+The read endpoints answer HTTP 400 (`No index found at ...`) for a repository that has no index, and create nothing; `POST /index` is what creates it.
 
 The server is stateless — all state is in `.trelix/index.db`. Horizontal scaling is possible by mounting the index file as a read-only volume on multiple server instances.
 

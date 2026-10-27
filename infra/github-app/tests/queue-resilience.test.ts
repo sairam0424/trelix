@@ -88,6 +88,51 @@ describe("JobQueue, when a job fails and when it shuts down", () => {
             ]);
         });
 
+        it("survives an async error reporter that rejects, saying so once on the console with a fixed line", async () => {
+            const consoleError = vi
+                .spyOn(console, "error")
+                .mockImplementation(() => {});
+            const unhandled = vi.fn();
+            process.on("unhandledRejection", unhandled);
+            try {
+                const h = makeHarness({ concurrency: 1, capacity: 5 }, () =>
+                    Promise.reject(new Error("logger is down: canary-secret")),
+                );
+                const bad = h.hold("bad");
+                h.queue.submit(bad.job);
+                h.queue.submit(h.hold("good", "g2").job);
+                await settle();
+
+                bad.gate.reject(new Error("boom"));
+                await settle();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+
+                expect(h.started).toEqual(["bad", "good"]);
+                expect(consoleError.mock.calls).toEqual([
+                    ["[queue] a job failed; the error could not be logged"],
+                ]);
+                expect(unhandled).not.toHaveBeenCalled();
+            } finally {
+                process.off("unhandledRejection", unhandled);
+            }
+        });
+
+        it("writes nothing to the console for an async error reporter that resolves", async () => {
+            const consoleError = vi
+                .spyOn(console, "error")
+                .mockImplementation(() => {});
+            const h = makeHarness({}, async () => {});
+            const bad = h.hold("bad");
+            h.queue.submit(bad.job);
+            await settle();
+
+            bad.gate.reject(new Error("boom"));
+            await settle();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            expect(consoleError).not.toHaveBeenCalled();
+        });
+
         it("produces no unhandled rejection for a failing job", async () => {
             const unhandled = vi.fn();
             process.on("unhandledRejection", unhandled);
@@ -109,22 +154,47 @@ describe("JobQueue, when a job fails and when it shuts down", () => {
     });
 
     describe("timers", () => {
-        it("arms none while it accepts, runs and finishes jobs", async () => {
+        it("arms one for each running job, none for a waiting one, and clears it when the job ends", async () => {
             vi.useFakeTimers();
-            const h = makeHarness();
+            const h = makeHarness(); // two run, the third waits
             const held = ["j1", "j2", "j3"].map((key) => h.hold(key));
             for (const { job } of held) {
                 h.queue.submit(job);
             }
             await settle();
-            expect(vi.getTimerCount()).toBe(0);
+            expect(vi.getTimerCount()).toBe(2);
 
+            const timerCounts: number[] = [];
             for (const { gate } of held) {
                 gate.resolve();
                 await settle();
+                timerCounts.push(vi.getTimerCount());
             }
 
-            expect(vi.getTimerCount()).toBe(0);
+            // j1 ends and j3 starts (2 running), then j2 ends (1), then j3 ends (0).
+            expect(timerCounts).toEqual([2, 1, 0]);
+        });
+
+        it("arms none that keeps the process alive", async () => {
+            const countTimeouts = (): number =>
+                process
+                    .getActiveResourcesInfo()
+                    .filter((kind) => kind === "Timeout").length;
+            const before = countTimeouts();
+            // Control: a timer that is not unref'd does show up in this count.
+            const held = setTimeout(() => {}, 60_000);
+            expect(countTimeouts()).toBe(before + 1);
+            clearTimeout(held);
+
+            const h = makeHarness({ jobTimeoutMs: 60_000 });
+            const running = h.hold("running");
+            h.queue.submit(running.job);
+            await settle();
+
+            expect(h.started).toEqual(["running"]);
+            expect(countTimeouts()).toBe(before);
+            running.gate.resolve();
+            await settle();
         });
     });
 
@@ -189,7 +259,8 @@ describe("JobQueue, when a job fails and when it shuts down", () => {
                 abandoned: 0,
                 stillRunning: 1,
             });
-            expect(vi.getTimerCount()).toBe(0);
+            // The grace timer is gone; what is left is the watchdog of the job that is still running.
+            expect(vi.getTimerCount()).toBe(1);
         });
 
         it("clears its timer when the running jobs finish before the grace period ends", async () => {
@@ -200,7 +271,7 @@ describe("JobQueue, when a job fails and when it shuts down", () => {
             await vi.advanceTimersByTimeAsync(0);
 
             const done = h.queue.shutdown(60_000);
-            expect(vi.getTimerCount()).toBe(1);
+            expect(vi.getTimerCount()).toBe(2); // the running job's watchdog and the grace timer
             running.gate.resolve();
             await vi.advanceTimersByTimeAsync(0);
 

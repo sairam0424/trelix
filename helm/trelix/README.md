@@ -43,6 +43,11 @@ Before setting `ingress.enabled: true`, put an authenticating layer in front
 `nginx.ingress.kubernetes.io/auth-*`, or an OAuth2-proxy sidecar/gateway).
 This chart does not automate that setup — only documents the requirement.
 
+The container reads the token once, when it starts, so after a rotation the old
+token stays valid until the pod restarts. A new `apiAuth.token` restarts the pod
+on `helm upgrade`; after you change the Secret behind `apiAuth.existingSecretName`
+run `kubectl rollout restart deployment/<fullname>`.
+
 ## Qdrant is external, not managed by this chart
 
 Setting `store.backend: qdrant` only configures trelix to *connect* to an
@@ -55,13 +60,72 @@ Qdrant's availability and durability are entirely your operational
 responsibility — use Qdrant Cloud or a self-managed cluster you're prepared
 to run.
 
+## trelix-mcp over Streamable HTTP (optional)
+
+`mcp.enabled: true` adds a second container, `trelix-mcp`, to the same pod. It shares the
+PVC and serves the repositories under `persistence.mountPath` (its `--root`) over MCP's
+Streamable HTTP transport, on Service port `mcp` (`mcp.port`). It is off by default, and
+with it off the render is unchanged.
+
+```bash
+helm install my-trelix helm/trelix --set mcp.enabled=true --set mcp.auth.existingSecretName=my-mcp-token
+kubectl port-forward svc/my-trelix 8766:8766
+export TRELIX_MCP_AUTH_TOKEN=<the value stored in the my-mcp-token Secret>
+claude mcp add --transport http trelix http://127.0.0.1:8766/mcp --header "Authorization: Bearer $TRELIX_MCP_AUTH_TOKEN"
+```
+
+- **Token (required).** Set `mcp.auth.token` or `mcp.auth.existingSecretName`. It is not
+  `apiAuth`'s: the REST and MCP tokens are separate. Create the Secret with
+  `kubectl create secret generic my-mcp-token --from-literal=TRELIX_MCP_AUTH_TOKEN=<token>`:
+  a trailing newline makes the token non-printable and the container exits 2. Every request
+  except `GET /health` must carry it.
+- **Rotating the token.** The container reads the token once, when it starts, so the old
+  token stays valid until the pod restarts. With `mcp.auth.token`, `helm upgrade` restarts
+  the pod by itself: the chart hashes the Secret it owns into the pod template
+  (`checksum/secret`). With `mcp.auth.existingSecretName` the chart cannot see the Secret,
+  so after you change it run `kubectl rollout restart deployment/<fullname>`.
+- **Refusals.** `helm template` and `helm install` fail when `mcp.enabled` has no token, or
+  when `persistence.enabled` is false (there is nothing to serve). `helm lint` reports it
+  but exits 0.
+- **Host check.** The container accepts the `Host` names `<fullname>`,
+  `<fullname>.<namespace>` and `<fullname>.<namespace>.svc` (the release's Service names),
+  plus `mcp.allowedHosts` and the loopback names (so a `kubectl port-forward` works); any other
+  name answers 403. An Ingress host or the
+  `.svc.cluster.local` form goes in `mcp.allowedHosts`, which is a list:
+  `--set 'mcp.allowedHosts={trelix.example.com}'`. A plain string fails with
+  `Cannot concat type string as list`. A `*` entry is dropped, so the chart
+  cannot turn the check off, and so is any entry that is not one hostname or IP address (a
+  URL, a wildcard): the container logs a warning (`kubectl logs deploy/<fullname> -c
+  trelix-mcp`) and requests under that name answer 403. The probes use `GET /health`, which
+  is exempt. The Host/Origin 403 text names `TRELIX_MCP_ALLOWED_HOSTS`, which the chart sets from
+  `mcp.allowedHosts`; trelix-mcp reads the REST API's allow-list variable only when that one is
+  unset or blank, so edit `mcp.allowedHosts`, not `extraEnv`.
+- **Image.** `image.tag` must be a release whose `trelix-mcp` has `--transport http`; on an
+  older image the container exits at once on an argument error and crash-loops, and the
+  whole pod, REST API included, stays NotReady and leaves the Service. Check an image with
+  `docker run --rm --entrypoint trelix-mcp <image> --help`.
+- **One replica.** Keep `replicaCount: 1`: the PVC is `ReadWriteOnce`, and both containers
+  share one SQLite index and its single writer.
+- **Ingress.** The chart's Ingress routes to the REST port only; point your own Ingress or
+  Gateway at Service port `mcp`. Responses are `text/event-stream`: keep proxy buffering off
+  (ingress-nginx's default; the annotation `nginx.ingress.kubernetes.io/proxy-buffering`
+  turns it on) and set the read timeout to at least your longest `index_codebase`, e.g.
+  `nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"` (seconds, unitless). TLS is the
+  proxy's job. `service.type: LoadBalancer` or `NodePort` exposes the `mcp` port too. See
+  [MCP_GUIDE section 19](../../docs/MCP_GUIDE.md#19-streamable-http-transport).
+
 ## Values
 
 See `values.yaml` for the full list with defaults and comments. Highlights:
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `3.4.3` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
+| `image.tag` | `3.5.0` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
+| `mcp.enabled` | `false` | Add the `trelix-mcp` container (MCP over Streamable HTTP) to the pod — see "trelix-mcp over Streamable HTTP" above. Needs a token and `persistence.enabled` |
+| `mcp.port` | `8766` | Container and Service port (`mcp`) of `trelix-mcp` |
+| `mcp.allowedHosts` | `[]` | `Host` names `trelix-mcp` accepts besides the release's Service names (an Ingress host, the `.svc.cluster.local` form) |
+| `mcp.auth.token` / `mcp.auth.existingSecretName` | `""` | The bearer token of `trelix-mcp`, which is not `apiAuth`'s; set one. Prefer `existingSecretName` in any shared cluster |
+| `mcp.resources` | `{}` | Resources of the `trelix-mcp` container only |
 | `store.backend` | `sqlite` | `sqlite` \| `qdrant` \| `lance` |
 | `persistence.enabled` | `true` | Shared multi-repo PVC — see "Repo model" above |
 | `persistence.mountPath` | `/data` | |
@@ -73,7 +137,13 @@ Each of `store.qdrant`, `embedder.openai`, `embedder.voyage`,
 `embedder.cohere` supports either a plaintext `apiKey` (dev/local
 convenience — the chart creates one Secret from it) or
 `existingSecretName`/`existingSecretKey` pointing at a Secret you manage
-yourself. Set at most one of the two per credential.
+yourself. Set at most one of the two per credential. Containers read these
+once, when they start: changing a plaintext `apiKey` restarts the pod on
+`helm upgrade` (the chart hashes the Secret it owns into the pod template as
+`checksum/secret`), while a Secret you manage needs
+`kubectl rollout restart deployment/<fullname>` after you change it. The same
+goes for a Secret named in `extraSecretEnv`: the chart cannot see it either, so
+changing it never rolls the pod by itself.
 
 ## The two versions in `Chart.yaml`
 
@@ -97,4 +167,5 @@ helm template test helm/trelix
 helm template test helm/trelix --set store.backend=qdrant --set store.qdrant.apiKey=x
 helm template test helm/trelix --set store.backend=lance
 helm template test helm/trelix --set ingress.enabled=true
+helm template test helm/trelix --set mcp.enabled=true --set mcp.auth.token=ci-test-placeholder
 ```

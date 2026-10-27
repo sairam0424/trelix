@@ -1,4 +1,4 @@
-# Federation Guide — trelix v3.4.3
+# Federation Guide — trelix v3.5.0
 
 Complete guide to searching across multiple independently-indexed repositories in one query.
 
@@ -109,9 +109,10 @@ result = await client.call_tool(
     k=10,
     cursor=0
 )
-# Returns: {"results": [...], "next_cursor": int|None,
-#           "total_available": int, "repos_searched": int,
-#           "repos_skipped": int, "error": str|None}
+# Returns: {"results": [...], "next_cursor": int|None, "total_available": int,
+#           "page_size": int, "truncated": bool, "omitted": int,
+#           "repos_searched": int, "repos_skipped": int,
+#           "repos_unindexed": [alias, ...], "error": str|None}
 ```
 
 ### Security: `config_path` Confinement (v2.8.1)
@@ -121,7 +122,7 @@ All 4 federation MCP tools accept an optional `config_path` parameter to use a c
 1. **`~/.config/trelix/`** — the default user config directory
 2. **`<mcp-server-cwd>/.trelix/`** — the MCP server process's current working directory
 
-Any `config_path` outside both roots is rejected with a `ConfigPathNotAllowedError`. This confinement prevents a malicious or prompt-injected MCP client from reading/writing arbitrary paths on the system.
+Any `config_path` outside both roots is rejected: the tool's result carries `error: "config_path is not inside an allowed config directory"`. The file must also be a registry: a name ending in `.json` that is missing, empty, or a JSON object with a `repos` list. Any other existing file is refused with `error: "config_path is not a repository registry"` and never overwritten. This confinement prevents a malicious or prompt-injected MCP client from reading/writing arbitrary paths on the system. Neither text names the path; the server log has it (see [MCP_GUIDE.md](MCP_GUIDE.md) section 9).
 
 Passing `config_path=None` (the default) uses `~/.config/trelix/repos.json`.
 
@@ -246,8 +247,9 @@ Weight multiplies each RRF score contribution from that repository before the gl
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `DimensionMismatchError` | Repositories were indexed with different embedding providers | Re-index all repositories with the same provider |
-| No results | Repository not yet indexed | Run `trelix index /path/to/repo` for each registered repo |
+| No results, or `Skipping <alias>: No index found at ...` | Repository not yet indexed; `search-all` and `federation_search_all` skip such a repo (and exit `1` / report `error` only when every queried repo is unindexed) | Run `trelix index /path/to/repo` for each registered repo |
 | Slow queries | Cache miss on every call | Use the default `cache_ttl=120.0`; avoid setting `cache_ttl=0` in production |
 | Stale results after re-index | TTL cache still holding old data | Call `fed.clear_cache()` after re-indexing |
-| `ConfigPathNotAllowedError` (MCP only) | `config_path` argument resolves outside `~/.config/trelix/` and `<cwd>/.trelix/` | Use a path within one of the allowed roots, or omit `config_path` to use the default |
+| `config_path is not inside an allowed config directory` (MCP only) | `config_path` argument resolves outside `~/.config/trelix/` and `<cwd>/.trelix/` | Use a path within one of the allowed roots, or omit `config_path` to use the default |
+| `config_path is not a repository registry` (MCP only) | `config_path` names a file whose name does not end in `.json`, or an existing non-empty file that is not a JSON object with a `repos` list | Use a `.json` registry (or a path that does not exist yet), or omit `config_path` to use the default |
 | Registry at capacity (MCP only) | Already have `TRELIX_FEDERATION_MAX_REPOS` repos registered | Remove an unused repo with `federation_remove_repo`, or increase the cap via env var |

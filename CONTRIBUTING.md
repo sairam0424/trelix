@@ -39,24 +39,26 @@ cp .env.example .env
 ## Running Tests
 
 ```bash
-make test           # unit + MCP: 3,114 unit + 102 MCP = 3,216 tests (no coverage)
-make test-fast      # unit tests only, 3,114 (no API calls, fast)
+make test           # unit + MCP tests (no coverage)
+make test-fast      # unit tests only (no API calls, fast)
 make test-cov       # unit tests with the coverage report
 make lint           # ruff check + ruff format (auto-formats before diff-check, cross-platform safe)
 make format         # ruff format
 make typecheck      # mypy
 ```
 
+`scripts/bench_vector_search.py` is a manual benchmark, not a test: it writes multi-gigabyte scratch files and takes 15-25 minutes on a quiet machine, so nothing in CI runs it. Run it with `--workdir` on a scratch volume outside the repository and `--label` naming the machine class (never a hostname); its reports are committed under `docs/reports/` and `tests/unit/test_bench_vector_search.py` checks their shape and that they were produced under sqlite-vec 0.1.9.
+
 **Note on CI checks:** The ruff format step runs as part of linting — files are auto-formatted before the diff-check, ensuring cross-platform consistency (Windows CRLF vs Unix LF).
 
 ### Running specific test subsets
 
 ```bash
-# Unit tests only — no credentials needed
-# Collects 3,114 of 3,220 and deselects the 106 integration tests.
+# Every test except the integration tests — no credentials needed. This includes tests/e2e,
+# which need network access; `make test-fast` is the offline unit run.
 pytest -m "not integration"
 
-# Live integration tests — require Azure or AWS credentials (104 tests)
+# Live integration tests — require Azure or AWS credentials
 pytest tests/integration/
 # tests/integration/test_llm_e2e.py covers Azure + Bedrock chat and embeddings;
 # individual tests skip gracefully when the relevant credentials are absent
@@ -68,6 +70,20 @@ arrival. The marker is registered in `pyproject.toml` under `[tool.pytest.ini_op
 markers`, and `addopts` carries `--strict-markers` so a typo becomes a collection error.
 Both matter — while the marker was unregistered, `-m "not integration"` matched nothing
 and quietly ran the entire suite including the live Azure/Bedrock tests.
+
+### E2E tests
+
+`tests/e2e/` is the real-subprocess suite (the installed `trelix` and `trelix-mcp` console
+scripts, fresh venvs from freshly-built wheels, real sockets). `tests/e2e/conftest.py` tags
+every test there `e2e`, `enable_socket` and `requires_network` by directory, so the suite is
+outside `make test`/`make test-fast` (those name `tests/unit/` only) and runs
+with `make test-e2e`, in CI's `e2e` job and in the release smoke job against the built wheels.
+`tests/e2e/test_review_offline_e2e.py` is the real-socket example that needs no model and no
+network: `trelix review` runs against `tests/e2e/fake_openai_server.py`, a stdlib
+OpenAI-compatible server on `127.0.0.1`. The test loads tiktoken's `cl100k_base` at collection
+so the child process finds it on disk (a cold machine downloads it once there). The console
+script on PATH is what runs, so install your worktree editable (or export
+`PYTHONPATH=<worktree>/src`) before trusting a local run.
 
 ## Branch Strategy
 
@@ -123,15 +139,19 @@ The retrieval enhancement modules live at `src/trelix/retrieval/` and are organi
 | `query_expansion.py` | HyDEExpander (synthetic snippet embedding), MultiQueryExpander (N-variant recall) |
 | `flare.py` | FLARELoop — confidence-gated re-retrieval, _contains_uncertainty phrase check |
 | `telemetry.py` | TelemetryWriter — crash-safe per-query latency/intent recorder |
+| `citations.py` | `[C#]` citation tags (CitationSource; the numbering itself lives in `ContextAssembler._cite_prefix`, called only from `_format_context`), abstention detection (is_abstention) and verify_citations — the model's markers checked against the retrieved sources and the files on disk, reading nothing from the model's text but a marker's digits |
 
-All three modules are crash-safe (return empty/original on any failure) and gated by config flags.
+`query_expansion.py`, `flare.py` and `telemetry.py` are crash-safe (return empty/original on any
+failure) and gated by config flags; `citations.py` is pure (answer text, sources and the filesystem
+in, frozen dataclasses out), and its tags are gated by `TRELIX_RETRIEVAL_CITATIONS`.
 
 **Opt-in config keys** (all default to off — zero impact when disabled):
 
 | Key | Default | Env var |
 |-----|---------|---------|
-| `query_expansion_enabled` | `False` | `TRELIX_QUERY_EXPANSION_ENABLED=true` |
-| `flare_enabled` | `False` | `TRELIX_FLARE_ENABLED=true` |
+| `hyde_fallback_enabled` | `False` | `TRELIX_RETRIEVAL_HYDE_FALLBACK=true` |
+| `multi_query_enabled` | `False` | `TRELIX_RETRIEVAL_MULTI_QUERY=true` |
+| `flare_enabled` | `False` | `TRELIX_RETRIEVAL_FLARE=true` |
 | `telemetry_enabled` | `False` | `TRELIX_TELEMETRY_ENABLED=true` |
 
 **Adding a new query enhancement:**
@@ -149,6 +169,13 @@ The evaluation harness lives at `src/trelix/eval/` and is organized as:
 |------|----------------|
 | `ndcg.py` | Pure-Python ndcg_at_k, recall_at_k, mrr — no pandas dependency |
 | `harness.py` | EvalHarness.run(golden_path) — reads JSONL, retrieves, returns aggregate metrics |
+| `synthesis.py` | SynthesisEvalHarness.run_detailed(golden_path) — one `SynthesisRecord` per golden line; `run()` is their aggregate |
+| `synthesis_records.py` | `SynthesisRecord`, `aggregate_synthesis_metrics` (means with their denominators) and the `--per-query-out` file; abstention and citation facts per record; and the recorded-answers file (`load_replay`, `write_replay_file`) and the pre-run output check (`output_file_problems`); measured by scripts/mutation.py as eval.synthesis_records; pure |
+
+A synthesis golden line may carry the v2 fields `answerable`, `gold_answer` and `expected_citations`;
+the loader refuses a mistyped one with its line number (`validate_synthesis_entry` names the
+field; see `eval/README.md`).
+`trelix eval-synthesis --record`/`--replay` score recorded answers with no synthesis call; retrieval, planner included, still runs.
 
 **Usage:**
 
@@ -165,7 +192,9 @@ trelix eval --golden .trelix/golden.jsonl
 **Adding new metrics:**
 
 1. Add the pure-Python metric function to `src/trelix/eval/ndcg.py`
-2. Wire it into `EvalHarness.run()` in `src/trelix/eval/harness.py`
+2. Add the per-query value to `QueryRecord` and score it in `EvalHarness.run_detailed()`, then
+   average it in `aggregate_metrics()` (all in `src/trelix/eval/harness.py`); `run()` just
+   delegates to those
 3. Write tests in `tests/unit/test_eval_<name>.py` — no LLM calls required for metric functions
 
 ### trelix/agent/ — ReAct Agentic Loop
@@ -227,6 +256,14 @@ trelix ships with built-in support for multiple embedding backends:
 - **Nomic CodeRankEmbed** (`nomic-code`) — Open-source embeddings specialized for code ranking
 - **Azure OpenAI Embeddings** — Enterprise deployment via Azure; set `TRELIX_EMBEDDER_PROVIDER=azure`
 - **Bedrock** — AWS-hosted embeddings via Bedrock
+
+A new provider must also be added to `EMBED_MODEL_FIELDS` in
+`src/trelix/indexing/embedding_cache.py` (the `EmbedderConfig` field holding its model id) and,
+if a configuration knob changes the vectors one model id produces (an output width, an endpoint,
+a normalisation flag), to `_KNOB_FIELDS` there. Those two tables are the on-disk embedding
+cache's fingerprint: a provider missing from them raises at `Indexer` construction with the
+cache on, and a knob missing from them lets two differently configured runs share one cache
+file. `tests/unit/test_embedding_cache.py` pins the provider set.
 
 To use BGE-Code or CodeRank embeddings, install the optional extra:
 
@@ -416,6 +453,11 @@ exceptions. Site 4 used to be one: it was documented as "verify it by hand until
 is added", which is the same silent-mis-publish risk as the adapters had, so it is now
 checked like the rest.
 
+The same job refuses a tag whose `CHANGELOG.md` has no `## [X.Y.Z]` section, or whose section
+is not dated (`## [X.Y.Z] — YYYY-MM-DD`) to the tag's **UTC** creation day. `docker-publish.yml`
+repeats both checks before it logs in to GHCR, so a tag that fails them pushes no images either;
+a `workflow_dispatch` backfill skips them.
+
 Sites 4 and 8–11 are newly gated.
 [docs/BACKWARDS_COMPATIBILITY.md](docs/BACKWARDS_COMPATIBILITY.md#integration-package-policy)
 has always put all three integration packages on the core version; both adapters sat at
@@ -441,14 +483,32 @@ Two things that are **not** version sites, and must not be bumped with them:
 - `helm/trelix/Chart.yaml` has both `version:` (the *chart's* own version, independent of
   trelix; the comment in that file says when it moves) and `appVersion:` (which tracks
   trelix). Only `appVersion` is a version stamp.
-- Both adapters' `dependencies = ["trelix>=3.0.0", ...]`. Lockstep governs the version
-  *stamp* — identity — not the dependency *floor*, which is a compatibility contract that
-  moves only when an import demands it. Each `pyproject.toml:35` records why it reads
-  `3.0.0`: "the lowest published core verified to expose every name used here." An
-  adapter stamped `3.1.2` that declares `trelix>=3.0.0` is saying something true. Raising
+- The `trelix>=` floor in the `dependencies` of the three satellites (`trelix-mcp`,
+  `trelix-langchain`, `trelix-llama-index`; `trelix>=3.5.0` since 3.5.0). Lockstep governs the
+  version *stamp* — identity — not the dependency *floor*, which is a compatibility contract
+  that moves only when an import demands it. Each `pyproject.toml` records why it reads what
+  it reads: through 3.4.3 both adapters read `trelix>=3.0.0`, "the lowest published core
+  verified to expose every name used here", and an adapter stamped `3.1.2` that declared
+  `trelix>=3.0.0` was saying something true. Raising
   the floor to match a release is the mistake CHANGELOG v2.7.1 already reverted
   ("Unjustified dependency-floor bumps reverted") on these same two packages, where it had
-  been raised on an unverified assumption about API usage.
+  been raised on an unverified assumption about API usage. A floor that an import demands
+  does move: `trelix-mcp` and both adapters import `trelix.core.index_check`, which the core
+  ships from 3.5.0, the release that contains the read-surface fix, so the 3.5.0 release PR
+  raised the three `trelix>=` floors to it (CI installs the core editable and cannot see a
+  stale floor, so `TestSatelliteCoreFloorsFollowTheCore` in
+  `tests/unit/test_release_version_gate.py` fails the PR that bumps the version without
+  raising them; an older core under a newer package
+  fails: `trelix-mcp` at start-up, the two adapters at their first query, because they import
+  `require_index` inside the retrieval method). `trelix-mcp` alone also imports
+  `trelix.core.confinement` (`resolve_allowed_roots`, `is_within_allowed_roots`), and its HTTP
+  transport imports `trelix.api.request_guard.is_health_probe` and `bounded_repr`, and
+  passes `rejection_detail` and `cross_site_detail` to `RequestGuardMiddleware`; none of these
+  is in core 3.4.3 or earlier, so the same `trelix>=3.5.0` floor covers them. `trelix-mcp` also passes
+  `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
+  `server.disable(names=, components=)`, so its `fastmcp` floor is `>=4.0.10`, the release
+  those were run against (4.0.0 to 4.0.9 were not tested);
+  `tests/unit/test_dependency_floor_guards.py` fails if it drops below that.
 
 #### Verify by printing what each site says — never by grepping for a version string
 
@@ -553,6 +613,12 @@ script itself, or re-checking an older release:
 Helm chart at the tag, the GitHub Release binaries), which is a different claim
 than "the stamps agreed with the tag."
 
+The automatic run starts only after a successful tag-push run of those two workflows.
+After a `Docker Publish` backfill started by hand, run "Verify Release" yourself from
+the Actions tab, with the version. Start the backfill from the tag ref (a backfill started
+from `main` makes it find the original failed tag run and end green without checking
+anything), or run `python scripts/verify_release.py --version X.Y.Z` locally.
+
 #### Publish `trelix-mcp` to the MCP registry
 
 A green "Verify Release" run is not the end of a release: nothing in CI updates the MCP
@@ -576,6 +642,19 @@ the publish: its output must name the version you just released, in both
 `servers[0].server.version` and `servers[0].server.packages[0].version`. An old version
 there means the publish did not land.
 
+#### Move the Claude Code plugin pin (its own PR, never the release PR)
+
+Once PyPI shows the new `trelix-mcp`, open `chore/claude-plugin-pin-X.Y.Z` into `develop`: set
+the pin in `plugins/trelix/.mcp.json`, `plugin.json`'s `version`, the pinned command and the
+release named in `plugins/trelix/README.md` and `SKILL.md`, the literals in
+`tests/unit/test_claude_plugin_manifest.py` (the expected `.mcp.json` object, the `version`
+literal, the README command row and pin, the tree hash), and in
+`tests/unit/test_claude_plugin_skill.py` the `DEVELOP_ONLY_PARAMETERS` and `DEVELOP_ONLY_FLAG`
+guards (that PR deletes both) and the release its messages name. Put the output of `uvx --from trelix-mcp==X.Y.Z trelix-mcp --version`
+in the PR body: the tests check that the version has a CHANGELOG section and is not newer than
+the stamp, not that PyPI has it. The plugin is fetched from the default branch, so the new pin
+is installable once `develop` is promoted to `main`.
+
 ---
 
 ## Working on Sub-packages
@@ -595,3 +674,49 @@ python -m pytest packages/trelix-llama-index/tests/ --override-ini="testpaths=pa
 ```
 
 Each package has its own `pyproject.toml` and `tests/` directory. The `src/` layout mirrors the main package.
+
+## Working on the Claude Code plugin
+
+`.claude-plugin/marketplace.json` (the marketplace) and `plugins/trelix/` (the plugin: `.mcp.json`,
+`plugin.json`, the `use-trelix-index` skill, the SessionStart hook (`hooks/hooks.json` and the
+stdlib-only `scripts/session_start.py`, which `make lint` and CI's ruff job cover), and a README
+that lists every command the plugin runs) are read by Claude Code, not by this package. Rules:
+
+- **Any change under `plugins/trelix/` bumps `plugin.json`'s `version`** (`<pin>`, or `<pin>.N`
+  for a plugin-only change) **and the `_PLUGIN_TREE_SHA256` literal in
+  `tests/unit/test_claude_plugin_manifest.py`.** Claude Code keeps users on the cached copy until
+  the version string changes, so an unbumped edit reaches nobody. The hash test fails until the
+  literal is updated; its failure message tells you to bump `version` at the same time, because
+  no test can see whether you did.
+- **The pin in `.mcp.json` is the newest published `trelix-mcp`, never the version in this tree.**
+  It moves in its own PR after PyPI shows the release (see the release checklist above), never in
+  a release PR. Tests fail when it is newer than the trelix-mcp stamp or names a version without a
+  `## [X.Y.Z]` CHANGELOG section.
+- **The skill describes the pinned release, not `develop`.** A tool or parameter that only
+  `develop` has stays out of `SKILL.md` until the pin reaches a release that has it;
+  `tests/unit/test_claude_plugin_skill.py` pins the tool names and the develop-only parameters.
+- **Validate before committing; CI validates too.** `.github/workflows/ci.yml`'s `TypeScript SDK`
+  job runs the same two commands through a pinned `npx -y @anthropic-ai/claude-code@<version>`
+  with `--strict`, so a manifest Claude Code would warn on fails CI; the version is a literal in
+  `tests/unit/test_claude_plugin_validate_ci.py` and in the three `npx` lines, moved together by
+  hand (put the output of `npm view @anthropic-ai/claude-code@<version> version dist.integrity`
+  and the two `✔ Validation passed` lines at that version in the PR body; a newer validator that
+  warns on something the old one accepted is a plugin change to make, not a warning to silence).
+  Locally:
+
+  ```bash
+  claude plugin validate --strict .
+  claude plugin validate --strict plugins/trelix
+  ```
+
+  Both must end with `✔ Validation passed`; `--strict` turns a warning into exit 1.
+- **Smoke-test from the checkout.** `claude plugin marketplace add /path/to/this/checkout` loads
+  the plugin in place (edits take effect at the next session or after `/reload-plugins`, no
+  version bump needed); then `claude plugin install trelix@trelix`, open a scratch project, and
+  confirm that `/mcp` shows `plugin:trelix:trelix`, that `/trelix:use-trelix-index` loads the
+  skill, and that the session context carries a line starting `trelix:` (with `claude --debug`,
+  a `trelix session_start: skipped (<reason>)` line says why the hook printed nothing).
+  Afterwards `claude plugin marketplace remove trelix` (it also uninstalls the plugin).
+- The server-registration test in `tests/unit/test_claude_plugin_skill.py` needs `trelix_mcp`
+  and `fastmcp` (`pip install -e packages/trelix-mcp`); without them it skips. CI's unit job has
+  them.

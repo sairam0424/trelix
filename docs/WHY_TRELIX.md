@@ -27,17 +27,17 @@ None of this exists in the existing code-search tooling available today.
 
 ### 1. Zero-Infrastructure Deployment
 
-**What it does:** The entire index — vectors, BM25, call graph, import graph, file summaries — lives in a single SQLite file (`.trelix/index.db`) using WAL mode, FTS5, and sqlite-vec HNSW. No Docker, no Redis, no Postgres, no cloud account required.
+**What it does:** The entire index — vectors, BM25, call graph, import graph, file summaries — lives in a single SQLite file (`.trelix/index.db`) using WAL mode, FTS5, and sqlite-vec (an exact flat scan). No Docker, no Redis, no Postgres, no cloud account required.
 
 **Implementation:**
-- sqlite-vec HNSW provides O(log n) approximate nearest neighbor search inside a stock SQLite file
+- sqlite-vec provides exact nearest-neighbour search (a flat scan) inside a stock SQLite file; `trelix index` and `trelix stats` advise a larger backend once the measured threshold for the index's width is passed
 - FTS5 provides BM25 over symbol names, qualified names, docstrings, bodies, and LLM-generated context summaries
 - Call graph, import graph, and type edges stored as normalized SQLite tables — no graph database needed
 - Everything under `.trelix/` — gitignore it or commit it, your choice
 
 **Why it matters:** Cursor and Copilot require a running IDE extension connected to a cloud backend. Sourcegraph Cody requires a Sourcegraph instance. Trelix runs `trelix index ./repo` and produces a portable file you can put anywhere, query from scripts, or check into CI.
 
-**Who else has it (OSS):** Nobody provides this combination of HNSW vector search + BM25 + call graph in a single embedded file. pgvector DIY requires Postgres. Sourcegraph requires a full server stack.
+**Who else has it (OSS):** Nobody provides this combination of vector search + BM25 + call graph in a single embedded file. pgvector DIY requires Postgres. Sourcegraph requires a full server stack.
 
 ---
 
@@ -49,7 +49,7 @@ None of this exists in the existing code-search tooling available today.
 
 | Leg | Source tag | What it finds |
 |-----|-----------|---------------|
-| 1 | `vector` | Semantically similar chunks (HNSW ANN over embeddings) |
+| 1 | `vector` | Semantically similar chunks (nearest-neighbour search over embeddings: exact flat scan on sqlite, HNSW on Qdrant) |
 | 2 | `bm25` | Keyword-frequency matches (FTS5 over name, body, context\_summary) |
 | 3 | `grep` | Exact or regex symbol name matches (zero-latency SQL LIKE) |
 | 4 | `file_summary` | Files matching at the 2–4 sentence LLM summary level (RAPTOR-style) |
@@ -180,14 +180,14 @@ commercial use pick `local` (Apache 2.0), `voyage`, or `bedrock-cohere`.
 
 ---
 
-### 8. MCP-Native — 6 Tools, 3 Resources, 3 Prompts
+### 8. MCP-Native — Tools, Resources and Prompts
 
-**What it does:** `trelix-mcp` is a first-class MCP server that exposes Trelix retrieval to any MCP client (Claude Code, Cursor, Windsurf, Continue.dev). It speaks stdio transport and integrates in two commands.
+**What it does:** `trelix-mcp` is a first-class MCP server that exposes Trelix retrieval to any MCP client (Claude Code, Cursor, Windsurf, Continue.dev). It speaks stdio (default) or Streamable HTTP (`--transport http`) and integrates in two commands.
 
 **MCP tools:**
 
 ```
-trelix-mcp (stdio transport)
+trelix-mcp (stdio or Streamable HTTP transport)
   ├── search_code(query, repo_path, k=10, cursor=0)                              → {results, next_cursor, total_available}
   ├── index_codebase(repo_path, provider)                                         → dict (stats) + progress notifications
   ├── get_symbol(qualified_name, repo_path)                                       → dict | None
@@ -195,6 +195,8 @@ trelix-mcp (stdio transport)
   ├── build_knowledge_graph(repo_path, detect_communities, extract_concepts)      → dict (stats)
   └── graph_search_mcp(query, repo_path, depth, max_results)                     → list[dict]
 ```
+
+The tree shows the search, indexing and graph tools. The server also registers the resource-subscription, federation and agent-session tools; [MCP_GUIDE.md section 8](MCP_GUIDE.md#8-the-15-mcp-tools) lists every tool.
 
 **Setup:**
 ```bash
@@ -228,7 +230,7 @@ claude mcp add trelix -- trelix-mcp
 
 **What it does:** After a synthesis completes, Trelix inspects the generated answer for uncertainty markers. If the answer says it could not find something, the loop re-retrieves with an enriched query and re-synthesizes, up to `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` total synthesis calls.
 
-**Honest scope — this is the paper's heuristic, not its full method.** The original FLARE (Jiang et al., EMNLP 2023, arXiv:2305.06983) monitors token-level log-probabilities mid-generation. Trelix does **not**: it uses a post-hoc phrase check against a fixed list (`"i don't know"`, `"cannot find"`, `"no relevant code"`, `"insufficient context"`, and seven more in `_DEFAULT_UNCERTAINTY_PHRASES`). There is no probability threshold and no `TRELIX_FLARE_THRESHOLD` setting — the only knobs are `TRELIX_RETRIEVAL_FLARE` (default `false`) and `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` (default `1`, bounded `1`–`3`). Because the check is post-hoc, generation is never paused or resumed mid-stream; the whole answer is regenerated.
+**Honest scope — this is the paper's heuristic, not its full method.** The original FLARE (Jiang et al., EMNLP 2023, arXiv:2305.06983) monitors token-level log-probabilities mid-generation. Trelix does **not**: it uses a post-hoc phrase check against a fixed list (`"i don't know"`, `"cannot find"`, `"no relevant code"`, `"insufficient context"`, and eight more in `_DEFAULT_UNCERTAINTY_PHRASES`). There is no probability threshold and no `TRELIX_FLARE_THRESHOLD` setting — the only knobs are `TRELIX_RETRIEVAL_FLARE` (default `false`) and `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` (default `1`, bounded `1`–`3`). Because the check is post-hoc, generation is never paused or resumed mid-stream; the whole answer is regenerated.
 
 **Implementation:**
 ```
@@ -260,7 +262,7 @@ retrieve → synthesize
 
 | Capability | Trelix | GitHub Copilot Workspace | Cursor | Sourcegraph Cody | pgvector DIY | OpenAI File Search |
 |------------|--------|--------------------------|--------|------------------|--------------|-------------------|
-| **Vector search** | ✅ HNSW sqlite-vec | ✅ cloud | ✅ cloud | ✅ cloud | ✅ Postgres | ✅ cloud |
+| **Vector search** | ✅ sqlite-vec (exact flat scan) | ✅ cloud | ✅ cloud | ✅ cloud | ✅ Postgres | ✅ cloud |
 | **BM25 keyword search** | ✅ FTS5 | ❌ | partial | ✅ | manual | ❌ |
 | **Exact/regex grep** | ✅ | ❌ | partial | ✅ | ❌ | ❌ |
 | **Call-graph expansion** | ✅ 3-priority resolution | ❌ | partial | partial | ❌ | ❌ |
@@ -296,7 +298,7 @@ retrieve → synthesize
 
 **Fit: High.**
 
-`pip install "trelix[local]" && trelix index ./repo && trelix ask ./repo "how does the request lifecycle work?"` — no API key, no cloud, no data egress. The local embedder produces competitive retrieval quality for most codebase exploration tasks. Add `--provider nomic-code` or `--provider local-code` for code-specialized embeddings, still fully offline. (`--provider bge-code` also exists but is **experimental** — its pooling is unverified; see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).)
+`pip install "trelix[local]" && trelix index ./repo && trelix ask ./repo "how does the request lifecycle work?"` — no API key, no cloud, no data egress. The local embedder produces competitive retrieval quality for most codebase exploration tasks. Add `--provider nomic-code` or `--provider local-code` for code-specialized embeddings, still fully offline. (`--provider bge-code` also exists but is **experimental** — its pooling is unverified; see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval).)
 
 ---
 
@@ -336,7 +338,7 @@ pip install trelix-mcp
 claude mcp add trelix -- trelix-mcp
 ```
 
-Trelix's 6 MCP tools are available inside any MCP-compatible client. The `blast_radius` tool is especially useful when you select a function and want to know everything that depends on it before refactoring.
+Trelix's MCP tools are available inside any MCP-compatible client. The `blast_radius` tool is especially useful when you select a function and want to know everything that depends on it before refactoring.
 
 ---
 
@@ -390,15 +392,15 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 - A code review platform with UI (GitHub PR review is CLI-based and MCP-based, not a hosted product)
 - A real-time streaming completions service (retrieval happens at query time, not keystroke time)
 
-### Current version scope (v3.4.3)
+### Current version scope (v3.5.0)
 
-| In v3.4.3 | Planned (post-3.1) |
+| In v3.5.0 | Planned (post-3.1) |
 |-----------|-----------------|
 | 7-leg hybrid retrieval pipeline | Streaming retrieval with incremental result delivery |
 | FederatedRetriever with TTL cache (~90% hit rate) | Advanced taint analysis (Semgrep integration GA) |
 | 20-language Tree-sitter AST parsing | Hosted cloud index option |
 | 6 LLM backends + LiteLLM 100+ providers | |
-| MCP server (15 tools, stdio transport) | |
+| MCP server (15 tools, stdio or Streamable HTTP) | |
 | Extended thinking on Anthropic synthesis (`TRELIX_LLM_THINKING_ENABLED`, opt-in) | |
 | Model-aware context budget derived from the LLM's real context window (opt-in) | |
 | SeleCom query-conditioned context compression (opt-in, result-lossless) | |
@@ -431,7 +433,7 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 
 **LLM synthesis (`trelix ask`) needs an API key.** `trelix ask` — which synthesizes a natural-language answer from retrieved context — calls an LLM. You need at least one provider configured (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, AWS Bedrock credentials, etc.).
 
-`trelix index` and `trelix search` need no chat credential and perform no synthesis, but "completely offline" holds only while no chat credential is present. If one *is* set, `Retriever.retrieve()` draws a query plan from the LLM — one call per distinct query — and a local embedder does not change that, because `--provider local` selects the embedder while the planner reads the chat credential separately. Unset the credential, or freeze plans with `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero-call retrieval; see [FAQ: What is `trelix query`?](FAQ.md#what-is-trelix-query).
+`trelix index` and `trelix search` need no chat credential and perform no synthesis, but "completely offline" holds only while no chat credential and no `TRELIX_LLM_BASE_URL` is present. If either *is* set, `Retriever.retrieve()` draws a query plan from the LLM — one call per distinct query — and a local embedder does not change that, because `--provider local` selects the embedder while the planner reads the chat credential and the local-server URL separately. Unset both, or freeze plans with `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero-call retrieval; see [FAQ: What is `trelix query`?](FAQ.md#what-is-trelix-query).
 
 **Beast-mode features compose but each has a cost.** FLARE adds 0–2 LLM calls per query. HyDE adds 1 LLM call per unique query (cached on repeat). Multi-query expansion adds exactly 1 LLM call per query regardless of the variant count — one completion returns all the phrasings at once (`TRELIX_RETRIEVAL_MULTI_QUERY_COUNT`, default 2). What scales with the count is retrieval, not chat: each of the N variants runs its own leg set, adding N query embeddings. It does compound with HyDE fallback, though, because every variant leg generates its own snippet — on a single-sub-query plan the two together cost N+2 chat calls (4 at the default N=2). GraphRAG map-reduce adds M LLM calls for large result sets. Enabling all features simultaneously on a slow or expensive LLM backend will increase latency and cost. The safe approach is to enable flags one at a time and validate with `trelix eval --golden`.
 

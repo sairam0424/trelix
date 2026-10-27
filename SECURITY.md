@@ -20,7 +20,10 @@ home; the reporting facts live in the other file.
 trelix processes local repository contents and makes network calls to configured LLM/embedding providers. Security-sensitive areas include:
 
 - **Credential handling** — API keys are read from environment variables and never logged or written to disk
-- **MCP server** (trelix-mcp) — executes as a subprocess; only binds to stdio transport (not network)
+- **MCP server** (trelix-mcp) — stdio by default (a subprocess of the MCP client, no network);
+  `--transport http` binds `127.0.0.1:8766` by default, requires a token (`TRELIX_MCP_AUTH_TOKEN`)
+  for any non-loopback bind unless `--allow-unauthenticated`, keeps the Host/Origin guard on and
+  confines every tool call to `--root`/`TRELIX_ALLOWED_REPO_ROOTS` (see MCP over HTTP below)
 - **File system access** — **symlinks are followed by default, including out of the
   repository.** A symlink under `repo_path` whose target lives elsewhere is indexed,
   and because `rel_path` is computed on the unresolved path it is then reported as
@@ -51,6 +54,34 @@ trelix processes local repository contents and makes network calls to configured
   process that writes to an index at a time, or upgrade Python or SQLite. Read-only opens
   do not warn. See "trelix warned about SQLite WAL reset" in
   [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+### Embedding cache on disk (`TRELIX_EMBEDDING_CACHE_ENABLED`)
+
+Off by default; nothing is written. When on, `Indexer` stores the float32 vector of every chunk
+it embeds in `$XDG_CACHE_HOME/trelix/embeddings/<fingerprint>.db` (else
+`~/.cache/trelix/embeddings/`, or `TRELIX_EMBEDDING_CACHE_DIR`, which must be an absolute path),
+keyed by `sha256(chunk_text)`. The file holds no chunk text — hashes and vectors only — but a
+vector is a lossy encoding of the text, and the hash lets anyone who can read the file test
+whether a given text was ever indexed (membership inference). The cache therefore carries the
+sensitivity of every index that wrote to it.
+
+What the code does about it: the directory is created `0o700` and each file created `0o600`
+(POSIX; Windows applies neither); the location comes only from the operator environment
+(`TRELIX_EMBEDDING_CACHE_DIR`, `XDG_CACHE_HOME`, `HOME`), never from the repository or the
+cwd; a relative directory, a `TRELIX_EMBEDDING_CACHE_MAX_MB` below 1, or an unusable directory
+stops the run before any model is loaded rather than running uncached; indexed text is hashed and
+its vector stored, never interpreted.
+
+What it does not do: the hosted GitHub App (`infra/github-app`) forwards every `TRELIX_*` host
+variable except `TRELIX_APP_*` and `TRELIX_GIT_TOKEN` to its `trelix index` child and passes
+`HOME` and `XDG_CONFIG_HOME`, so the child also reads the operator env file. An App host that sets
+`TRELIX_EMBEDDING_CACHE_ENABLED=true` in either place turns the cache on for every tenant's
+index run, and every tenant then shares one `<fingerprint>.db` — a tenant who can read that file
+can test whether another tenant's text was embedded. Never set it on a multi-tenant host. To
+remove a cache, run `trelix cache clear` under the same `TRELIX_EMBEDDING_CACHE_DIR` (or
+`XDG_CACHE_HOME`/`HOME`), or delete the `<fingerprint>.db` files (and any `-journal` sidecar)
+in that directory by hand; the command removes exactly those names, nothing else, and never
+follows a symlink.
 
 ### REST API — /graph/visualize output path constraint
 
@@ -103,16 +134,63 @@ configured the API is open, and a web page can reach `127.0.0.1` in two ways: fi
   on any port, is an allowed origin. A browser request to `http://0.0.0.0:<port>` carries
   that `Host` and gets `403`.
 
+### MCP over HTTP (trelix-mcp --transport http)
+
+`trelix-mcp` serves stdio by default and nothing listens. `--transport http` serves Streamable
+HTTP on `127.0.0.1:8766/mcp` and is guarded from its first release:
+
+- **The same Host/Origin guard, always on.** The check above runs outermost on every request
+  (unless the allowed hosts are `*`), with `localhost`, `127.0.0.1`, `::1`, the bind address when
+  it is a specific one (`0.0.0.0` and `::` are accepted only when listed), every `--allowed-host`
+  and `TRELIX_MCP_ALLOWED_HOSTS` (fallback `TRELIX_API_ALLOWED_HOSTS`). FastMCP's own guard and the
+  MCP SDK's DNS-rebinding check are off, so there is exactly one allow-list. Its Host/Origin 403
+  names `TRELIX_MCP_ALLOWED_HOSTS` and `--allowed-host` (not the REST API's variable), its
+  cross-site 403 does not name the REST variable either, and neither suggests `*`.
+- **A bearer token for anything beyond loopback.** `TRELIX_MCP_AUTH_TOKEN` (fallback
+  `TRELIX_API_AUTH_TOKEN`), process environment only, never argv or a `.env`. Every request but
+  `GET`/`HEAD /health` must carry `Authorization: Bearer <token>` or `X-Trelix-Api-Key: <token>`;
+  the comparison is `hmac.compare_digest` on bytes, the answer is a fixed `401` body with
+  `WWW-Authenticate: Bearer`, and no header value is logged. A non-loopback `--host` with no token
+  is a start-up error (exit 2) unless `--allow-unauthenticated`, which logs one warning.
+- **Confinement is required.** `--transport http` without a `--root` or
+  `TRELIX_ALLOWED_REPO_ROOTS` is a start-up error (exit 2), so every `repo_path` a remote client
+  names is checked against the roots before a tool runs.
+- **What the roots confine.** Every `repo_path` argument, `federation_add_repo`'s `path` and the
+  `trelix://repo/...` resources are checked before the tool runs
+  (`repo_path is not inside an allowed repository root`, `path ...` for `federation_add_repo`).
+  The federation registry is a file the server reads, so its entries are filtered instead:
+  `federation_list_repos` and `federation_search_all` leave out a repository outside the roots and
+  report how many in `repos_outside_roots`, and `federation_remove_repo` answers an alias whose
+  repository is outside as it answers an unregistered one (`removed: false`, no error) and writes
+  nothing. `config_path` is confined to registry files in two directories (next section). A
+  registry entry is hidden, not deleted: the file keeps it.
+- **Unexpected errors are masked.** An exception a tool did not expect answers
+  `Error calling tool '<name>'` with no path or traceback; the deliberate `ToolError` texts are
+  unchanged. Over stdio the texts stay unmasked, as before.
+- **Stateless by default.** No session table and no server-initiated stream unless `--stateful`.
+- **What it is not.** No TLS, OAuth or CORS: a reverse proxy terminates TLS and must pass `Host`
+  as a listed name. Details and the exact texts: `docs/MCP_GUIDE.md` section 19.
+
 ### MCP federation tools — config_path confinement (v2.8.1+)
 
 The `config_path` parameter accepted by `federation_list_repos`,
 `federation_add_repo`, `federation_remove_repo`, and `federation_search_all`
 is validated server-side:
 - The resolved path must be inside `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`
-- Paths outside these roots are rejected with an `{"error": ...}` response
+- The name must end in `.json`, and a file that already exists and is not empty must be a JSON
+  object with a `repos` list. A missing file or an empty one is accepted (the first
+  `federation_add_repo` creates it). Anything else in those directories (`index.db`, the
+  operator's env file, a JSON file that is not a registry) is never read as a registry and never
+  overwritten: `RepoRegistry.load` would read it as an empty registry, and `federation_add_repo`
+  would then write registry JSON over it. `federation_remove_repo` writes the file only when it
+  removed an entry
+- A refused path is rejected with an `{"error": ...}` response
   (never raises — matches the "never raise" convention of every other
-  federation tool)
-- Like the `/graph/visualize` check above (`api/app.py:494`), this uses
+  federation tool) holding exactly one of two fixed texts:
+  `config_path is not inside an allowed config directory` or
+  `config_path is not a repository registry`. Neither names the path or a directory; both go to
+  the server log (`WARNING`, the value escaped and cut to 100 characters)
+- Like the `/graph/visualize` check above (`graph_visualize` in `api/app.py`), this uses
   `Path.is_relative_to()` on the resolved path rather than a string-prefix
   comparison, which avoids a sibling-directory bypass (e.g.
   `~/.config/trelixevil/` would incorrectly pass a naive
@@ -122,6 +200,57 @@ is validated server-side:
   (default 50) entries and the number of repos actually queried per
   `federation_search_all` call, preventing a scripted/adversarial MCP
   client from growing the registry or fan-out unboundedly
+
+### Claude Code plugin — what it runs, reads and writes (`plugins/trelix/`)
+
+The plugin (`.claude-plugin/marketplace.json`, `plugins/trelix/`) runs exactly two
+commands, both listed with their purpose in `plugins/trelix/README.md`:
+
+- `uvx --from trelix-mcp==<pin> trelix-mcp`: the MCP server, the same `trelix-mcp`
+  that `claude mcp add trelix -- trelix-mcp` registers, at the pinned published
+  release. Everything above about the server applies to it unchanged.
+- `uv run --no-project --script "${CLAUDE_PLUGIN_ROOT}/scripts/session_start.py"`,
+  the SessionStart hook (`startup`, `resume`, `clear`; 15 s timeout). The script is
+  standard-library Python (a test pins its import roots and that the name `urlopen`
+  does not appear in it), makes no network call, reads `CLAUDE_PROJECT_DIR` or the
+  hook's stdin `cwd`, and opens only `<project>/.trelix/index.db`, through a
+  `mode=ro` SQLite URI: a missing index is not created and a write would fail
+  (SQLite may create empty `-wal`/`-shm` sidecars beside an existing WAL index, as
+  any read-only open does; when `.trelix/` is not writable and they are absent it
+  cannot open a WAL index at all, and the hook prints nothing). When the index
+  records the commit it was built from (checked against `^[0-9a-f]{7,64}$` before
+  it enters argv) the script runs one child,
+  `git -C <project> rev-list --count <commit>..HEAD`, with
+  `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0` and a 5 s timeout. It prints at
+  most 1,000 characters (the project path, row counts, the build time, 12
+  characters of the commit, the distance, the embedder provider; never a model
+  name, never a key) and exits 0 on every path; on an error it prints nothing and
+  writes `trelix session_start: skipped (<exception type>)` to stderr, which Claude
+  Code keeps in its debug log only.
+
+The plugin files carry no secrets and set no environment variables (`.mcp.json` has
+no `env`; provider keys reach the server from the user's shell or
+`~/.config/trelix/env`). Hook commands run with the user's permissions and inherit
+Claude Code's environment, outside any sandbox (a paraphrase of the hooks
+documentation), on the repository the user opened and Claude Code's own trust dialog
+accepted; beyond the commit-shape check the hook is not hardened against a hostile
+repository.
+
+The skill's `allowed-tools` pre-approves `search_code`, `get_symbol` and
+`blast_radius`: the three tools annotated `readOnlyHint` since 3.5.0
+(`packages/trelix-mcp/tests/test_tool_readonly.py`, which measures the
+index database, not every file). On the pinned
+3.4.3 a call to any of them against an unindexed repository creates an empty,
+gitignored `.trelix/index.db` and answers empty. `search_code` also writes one JSON trace
+of the query per call (`Retriever._flush_trace`) into a `debug/` directory beside the
+index (`.trelix/debug/` for the default `db_path`; 3.4.3 always wrote to `<repo>/.trelix/debug/`), named `<timestamp>_<query>.json`;
+`get_symbol` and `blast_radius` write no such file. The trace holds the query text and
+the data of each pipeline stage, no setting turns it off, and nothing caps or rotates the
+directory, so it grows by at most one file per `search_code` call (the same query twice in
+one second shares a file name); delete it when that matters.
+The grant is kept because the SessionStart line and the skill forbid searching before
+indexing, and it lasts one turn (Claude Code clears it at the next message); the
+pin bump to 3.5.0 makes the statement exact.
 
 ## Out of Scope
 
@@ -144,31 +273,31 @@ paths. Nothing below is a claim about how a model responds to that text; see
   write access is not required — for the review path below, an unmerged pull
   request is enough.
 - **Indexed content is re-emitted verbatim.** A symbol's body is copied into its
-  chunk text (`indexing/chunker.py:149`), and the chunk text is copied into the
-  assembled LLM context (`retrieval/assembler.py:334`). Nothing transforms it in
-  between.
+  chunk text (`Chunker._build_chunk_text` in `indexing/chunker.py`), and the chunk text
+  is copied into the assembled LLM context (`ContextAssembler._format_context` in
+  `retrieval/assembler.py`). Nothing transforms it in between.
 - **Prose-carrying formats are indexed by default, not just code.** Markdown,
   HTML, YAML, TOML and JSON are all in the default `languages` list
-  (`core/config.py:30-52`). `.md`/`.mdx` map to `Language.MARKDOWN`
-  (`indexing/walker.py:47-48`) and are parsed into heading-based sections
-  (`indexing/parser/registry.py:132-136`). Free-form English in a README is
-  first-class indexed content, not an edge case.
+  (`WalkerConfig.languages` in `core/config.py`). `.md`/`.mdx` map to `Language.MARKDOWN`
+  (`EXTENSION_MAP` in `indexing/walker.py`) and are parsed into heading-based sections
+  (the `Language.MARKDOWN` case of `get_parser` in `indexing/parser/registry.py`). Free-form
+  English in a README is first-class indexed content, not an edge case.
 - **Assume attacker influence whenever the repository** accepts pull requests or
   patches from outside your trust boundary; holds test fixtures, recorded HTTP
   responses, or sample payloads; or vendors third-party source. `node_modules`,
-  `vendor` and `Pods` are ignored by default (`core/config.py:62-95`) — but
+  `vendor` and `Pods` are ignored by default (`WalkerConfig.extra_ignore_dirs`) — but
   `third_party/`, `external/`, git submodules and a checked-in SDK are not.
 
 Exposure by default vs opt-in:
 
 | Path | Default | What reaches a model |
 | ---- | ------- | -------------------- |
-| `trelix index` | on | with the default `local` embedder (`EmbedderConfig.provider` in `core/config.py`), nothing leaves the machine; with any remote embedder, every chunk's text is sent to the embedding model (`indexing/indexer.py:959`, `:1021`) |
-| `trelix ask`, `GET /ask` | on | the assembled retrieval context (below) |
-| index-time file summaries | off — `TRELIX_FILE_SUMMARIES_ENABLED` (`core/config.py:1234-1237`) | file path, language, and top symbol signatures truncated to 80 chars (`indexing/file_summarizer.py:85-91`) |
-| agentic loop | off — `TRELIX_RETRIEVAL_AGENTIC` (`core/config.py:656-659`), or `--agentic`/`--session` (`cli/main.py:422-424`). **The MCP `ask_agent` tool ignores this** and forces the loop on unconditionally (`trelix_mcp/server.py:762`); it does require an LLM to be configured. | retrieval context plus prior-turn observations |
+| `trelix index` | on | with the default `local` embedder (`EmbedderConfig.provider` in `core/config.py`), nothing leaves the machine; with any remote embedder, every chunk's text is sent to the embedding model (`Indexer._batch_embed_and_store` and `Indexer._batch_embed_and_store_async` in `indexing/indexer.py`) |
+| `trelix ask`, `GET /ask` | on | the assembled retrieval context (below). With `TRELIX_RETRIEVAL_CITATIONS=true` its blocks carry `[C#]` tags; the model's markers are read back as digits only (`retrieval/citations.py`), the verifier opens only files the index named, under the repository root, for a newline count, and the `Sources:` footer and `trelix ask --json` print the index's path, lines and symbol for each marker, never text the model wrote |
+| index-time file summaries | off — `TRELIX_FILE_SUMMARIES_ENABLED` (`IndexConfig.file_summaries_enabled`) | file path, language, and top symbol signatures truncated to 80 chars (`FileSummarizer.summarize` in `indexing/file_summarizer.py`) |
+| agentic loop | off — `TRELIX_RETRIEVAL_AGENTIC` (`RetrievalConfig.agentic_enabled`), or `--agentic`/`--session` (the `ask` command in `cli/main.py`). **The MCP `ask_agent` tool ignores this** and forces the loop on unconditionally (`ask_agent` in `trelix_mcp/server.py`); it does require an LLM to be configured. | retrieval context plus prior-turn observations |
 | `trelix review` | opt-in command | diff hunk text plus retrieved context |
-| `trelix review --post-comments` | off (`cli/main.py:1540-1546`) | as above, and model output leaves the machine |
+| `trelix review --post-comments` | off (the `post_comments` option of the `review` command in `cli/main.py`) | as above, and model output leaves the machine |
 | `trelix-mcp` tools and resources | on, once the server is registered with a host | verbatim symbol bodies — `search_code` 800 chars, `get_symbol` and the `trelix://…/symbol` resource the **whole** body |
 | `trelix-mcp` `federation_search_all` | on, once repos are registered | verbatim bodies (800 chars) from **every registered repository**. It takes no `repo_path` argument — scope comes from the registry file, not the caller — so a host agent that named no repository can receive content from repositories it never opened. `trelix search-all` emits no body bytes and no REST equivalent exists, so this is the only cross-repo content egress in the product. |
 
@@ -185,32 +314,33 @@ not to anything trelix asks it to do.
 ### What reaches a model, and in what form
 
 1. **Assembled retrieval context, in the same message as your question.**
-   `_USER_TEMPLATE` (`retrieval/synthesizer.py:86-93`) interpolates
+   `_USER_TEMPLATE` (`retrieval/synthesizer.py`) interpolates
    `context_text` and `query` into a single `role="user"` message
-   (`retrieval/synthesizer.py:237-240`, `:274-277`). `context_text` is the output
-   of `ContextAssembler._format_context` (`retrieval/assembler.py:291-337`),
+   (`Synthesizer.stream` and `Synthesizer._stream_response`). `context_text` is the
+   output of `ContextAssembler._format_context` (`retrieval/assembler.py`),
    which emits each result's chunk text verbatim under a `=== <path> ===` /
    `[Lines a-b] <qualified_name>` header. `GET /ask` runs the same two steps
-   (`api/app.py:431-449`).
+   (the `ask` handler in `api/app.py`).
 2. **Agent-loop observations, carried across turns and across processes.** The
    `retrieve` action places up to 300 characters of each matching symbol body in
-   the observation (`agent/loop.py:238`); `get_symbol` places the whole body in
-   (`agent/loop.py:275`). `TurnHistory.to_text()` renders each observation back
-   into the next turn's prompt, truncated to 500 characters
-   (`agent/history.py:87-99`), and that string is concatenated into the user
-   message at `agent/loop.py:168-175`. Turns are persisted to SQLite
-   (`agent/loop.py:146`) and replayed into the prompt when a session is resumed
-   with `--session` (`agent/loop.py:104`, `:112`) — text read in one invocation
+   the observation (`AgentLoop._do_retrieve` in `agent/loop.py`); `get_symbol` places
+   the whole body in (`AgentLoop._do_get_symbol`). `TurnHistory.to_text()` renders each
+   observation back into the next turn's prompt, truncated to 500 characters
+   (`_OBSERVATION_CHAR_LIMIT` in `agent/history.py`), and that string is concatenated
+   into the user message by `AgentLoop._next_action`. Turns are persisted to SQLite
+   (`AgentLoop._persist_turn`) and replayed into the prompt when a session is resumed
+   with `--session` (`AgentLoop.run`) — text read in one invocation
    can therefore re-enter a prompt in a later one. This is about the *text* the
    loop forwards; the loop's *action* confinement is unchanged and is described
    under "Agentic Loop Security" in the v2.2.0 notes below.
 3. **Diff text plus retrieved context, in the review path.** Each hunk's removed
    and added lines are formatted into a user message, followed by up to 3,000
-   characters of retrieved context (`review/reviewer.py:137`, `:147-154`), and
-   sent with a review system prompt (`review/reviewer.py:156-161`). Under `--pr`
-   the diff is the pull-request author's patch, fetched from the GitHub API
-   (`review/github.py:102`) and reassembled into a unified diff at
-   `cli/main.py:1594-1605`.
+   characters of retrieved context (`DiffReviewer._review_hunk` in
+   `review/reviewer.py`), and sent with a review system prompt (`_REVIEW_SYSTEM`,
+   passed by `DiffReviewer._call`). Under `--pr` the diff is the pull-request author's
+   patch, fetched from the GitHub API (`GitHubPRClient.get_pr_files` in
+   `review/github.py`) and reassembled into a unified diff by the `review` command in
+   `cli/main.py`.
 4. **Indexed text also reaches *you* with no model in the loop.** When the agent
    loop hits its turn cap it returns the first three successful observations as
    the answer (`AgentLoop._fallback_answer()` in `agent/loop.py`). With a `local` embedder provider
@@ -231,9 +361,10 @@ not to anything trelix asks it to do.
   whose file is gone is never reaped. Verified for the incremental default, for
   `incremental=false`, and for two consecutive runs — the deleted file's body
   survived all three. The only paths that delete a vanished file's symbols are the
-  live watchers (`indexing/watcher.py:240`, `indexing/multi_watcher.py:144`), which
-  act on filesystem delete events as they happen and cannot recover a deletion that
-  occurred while no watcher was running.
+  live watchers (`FileWatcher.handle_deleted` in `indexing/watcher.py`,
+  `MultiRepoWatcher.run` in `indexing/multi_watcher.py`), which act on filesystem
+  delete events as they happen and cannot recover a deletion that occurred while
+  no watcher was running.
 
   To actually purge content, delete `<repo>/.trelix/index.db` and index again
   (verified: the symbol and its body are then absent).
@@ -269,24 +400,29 @@ Stated as plainly as any benefit in this document:
 
 Each link read from the code:
 
-1. `--pr` requires `GITHUB_TOKEN` (`cli/main.py:1565-1570`) and fetches the PR's
-   patches (`review/github.py:102`).
+1. `--pr` requires `GITHUB_TOKEN` (the `review` command in `cli/main.py`) and fetches
+   the PR's patches (`GitHubPRClient.get_pr_files` in `review/github.py`).
 2. Those patches — authored by the PR author, who need not be trusted — are
-   placed in the LLM user message (`review/reviewer.py:154-161`).
+   placed in the LLM user message (`DiffReviewer._review_hunk` in
+   `review/reviewer.py`).
 3. The model's returned text is parsed into `ReviewComment.comment`
-   (`review/reviewer.py:180`).
+   (`DiffReviewer._classify_reply` and `DiffReviewer._comments` in `review/reviewer.py`).
 4. With `--post-comments`, each `comment` becomes the `body` of an inline GitHub
-   review comment (`cli/main.py:1670-1678`), posted with that same token
-   (`cli/main.py:1679-1686`, `review/github.py:146-207`).
+   review comment (the `if post_comments:` branch of the `review` command in
+   `cli/main.py`), posted with that same token (`GitHubPRClient.post_review` in
+   `review/github.py`).
 
 So untrusted repository text sits at one end of a chain whose other end is an
 authenticated write to GitHub. Two limits bound the chain rather than break it,
 and are worth stating precisely:
 
 - trelix never passes `event=`, so the review is created as the default
-  `"COMMENT"` (`review/github.py:154`) — this path cannot approve a PR.
-- The only field derived from model output is the comment `body`; `path` and
-  `line` come from the parsed diff (`cli/main.py:1671-1673`).
+  `"COMMENT"` (the `event` default of `GitHubPRClient.post_review`) — this path cannot
+  approve a PR.
+- Of the three fields posted, `path` comes from the parsed diff; the comment `body` is
+  model output, and so is `line` (`DiffReviewer._comments` takes the reply's `line_start`
+  and falls back to the hunk's first line when the reply has no usable number). The
+  `review` command's `if post_comments:` branch builds the posted comment from them.
 
 **No exploit was attempted.** What is asserted here is capability — that the code
 connects untrusted input to a write-scoped credential — not that any particular
@@ -346,11 +482,11 @@ Before indexing a repository you do not fully trust:
   does not cover the MCP `ask_agent` tool**, which forces the loop on regardless
   of the variable; if a host has trelix-mcp registered, do not rely on the flag
   alone. The other multi-round path, FLARE, re-retrieves with a fixed query suffix
-  and carries no prior content forward (`retrieval/flare.py:101-103`).
+  and carries no prior content forward (`FLARELoop.run` in `retrieval/flare.py`).
 - Narrow what gets indexed: drop prose formats you do not need from
   `WalkerConfig.languages` and add vendored/fixture directories to
-  `WalkerConfig.extra_ignore_dirs` (`core/config.py:30`, `:62`; env prefix
-  `TRELIX_WALKER_`, `core/config.py:28`).
+  `WalkerConfig.extra_ignore_dirs` (both in `core/config.py`; env prefix
+  `TRELIX_WALKER_`).
 - Confine the walk to the repository with `TRELIX_WALKER_FOLLOW_SYMLINKS=false` if
   the tree contains symlinks you did not place there. By default a symlink out of
   the repository is indexed and reported under an in-repo path; see "File system
@@ -359,8 +495,8 @@ Before indexing a repository you do not fully trust:
   then skips synthesis and prints the context (unless `TRELIX_RETRIEVAL_FLARE=true`,
   `TRELIX_RETRIEVAL_AGENTIC=true`, `--agentic` or `--session` is used; see `ask()` in
   `cli/main.py`), and indexing sends no chunk text to a remote embedding model.
-  Retrieval's query planner is separate: while a chat credential is set it still sends
-  the question text to the chat model, at most once per query per process (the in-memory
+  Retrieval's query planner is separate: while a chat credential or `TRELIX_LLM_BASE_URL` is
+  set it still sends the question text to the chat model, at most once per query per process (the in-memory
   plan cache does not persist between CLI runs; `docs/FAQ.md` explains how to switch that
   off).
   `local` is already the default (`EmbedderConfig.provider` in `core/config.py`), but a
@@ -371,11 +507,11 @@ Before indexing a repository you do not fully trust:
 Scoping a review token:
 
 - Omit `--post-comments` and the GitHub path is read-only: the only write is
-  `post_review` (`review/github.py:146`), reached solely from the
-  `--post-comments` branch (`cli/main.py:1679`).
+  `GitHubPRClient.post_review` (`review/github.py`), reached solely from the
+  `--post-comments` branch of the `review` command (`cli/main.py`).
 - When you do post, use a fine-grained token limited to the single target
   repository, with the scopes named in the client docstring
-  (`review/github.py:54-57` — `pull_requests:write`, `contents:read`). Do not
+  (`GitHubPRClient` in `review/github.py` — `pull_requests:write`, `contents:read`). Do not
   reuse a classic `repo`-scope token: `repo` grants code write across every
   repository the token can reach, which is far wider than this feature needs.
 - Prefer a short-lived CI job token over a long-lived personal token, and treat

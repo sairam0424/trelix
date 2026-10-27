@@ -39,6 +39,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.fixtures.indexed import mark_indexed
 from trelix.api.app import create_app
 
 # A distinctive token planted in files/bodies the caller must never receive.
@@ -464,6 +465,7 @@ class TestAllowedRootsConfiguration:
         second = tmp_path / "two"
         for root in (first, second):
             root.mkdir()
+            mark_indexed(root)
         monkeypatch.setenv("TRELIX_ALLOWED_REPO_ROOTS", os.pathsep.join([str(first), str(second)]))
 
         with patch("trelix.api.app.Retriever") as MockRetriever:

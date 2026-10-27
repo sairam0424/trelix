@@ -1,7 +1,7 @@
 # trelix CLI Reference
 
-**Version:** 3.4.3  
-**Last updated:** 2026-10-04
+**Version:** 3.5.0  
+**Last updated:** 2026-10-27
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
 capability of the library — indexing, retrieval, analysis, federation, watching
@@ -32,6 +32,9 @@ on most commands.
    - [telemetry](#trelix-telemetry)
    - [eval](#trelix-eval)
    - [eval-synthesis](#trelix-eval-synthesis)
+   - [eval-validate](#trelix-eval-validate)
+   - [eval-compare](#trelix-eval-compare)
+   - [eval-suite](#trelix-eval-suite)
    - [taint](#trelix-taint)
    - [review](#trelix-review)
    - [link-tickets](#trelix-link-tickets)
@@ -48,6 +51,8 @@ on most commands.
    - [audit list](#trelix-audit-list)
    - [audit verify](#trelix-audit-verify)
    - [audit export](#trelix-audit-export)
+   - [cache gc](#trelix-cache-gc)
+   - [cache clear](#trelix-cache-clear)
 
 ---
 
@@ -63,7 +68,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 3.4.3
+trelix --version        # trelix 3.5.0
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -110,11 +115,13 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `TRELIX_EMBEDDER_PROVIDER` | `local` | Default embedding provider (overridden per command by `--provider`) |
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI chat model for synthesis |
 | `TRELIX_LLM_PROVIDER` | `openai` | LLM backend for synthesis: `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` |
+| `TRELIX_LLM_BASE_URL` | _(unset)_ | OpenAI-compatible server (Ollama, llama-server, a gateway) for the `openai` backend; `OPENAI_API_KEY` is optional with it set and the output cap is sent as `max_tokens`. `http://` or `https://` with a host, no user name or password, no whitespace. See [CONFIGURATION.md](CONFIGURATION.md#llm--synthesis) |
+| `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` | _(unset)_ | Context length of the server behind `TRELIX_LLM_BASE_URL` (`1024`–`2000000`); with `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` the retrieval budget is this × `TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION` instead of the 12,000 fallback for an unknown model tag. Needs `TRELIX_LLM_BASE_URL`. See [CONFIGURATION.md](CONFIGURATION.md#model-aware-context-budget) |
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | Reranker: `cohere` \| `cross_encoder` \| `plaid` |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant connection URL |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
 | `TRELIX_STORE_BACKEND` | `sqlite` | Vector store backend: `sqlite` \| `qdrant` \| `lance` |
-| `TRELIX_STORE_HNSW` | `true` | Enable HNSW index (sqlite-vec ≥ 0.1.6) |
+| `TRELIX_STORE_HNSW` | `true` | **Inert.** Accepted for compatibility and read nowhere: the sqlite store is always an exact flat scan (no stable sqlite-vec release has shipped an HNSW or any other ANN index). See [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) for the flat-scan advisory |
 | `TRELIX_RETRIEVAL_MULTI_QUERY` | `false` | Multi-query expansion before retrieval |
 | `TRELIX_RETRIEVAL_MULTI_QUERY_COUNT` | `2` | Query variant count for multi-query expansion (1–4) |
 | `TRELIX_RETRIEVAL_SPARSE` | `false` | Enable SPLADE-Code sparse retrieval leg |
@@ -133,7 +140,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse workers during `trelix index` |
-| `TRELIX_USE_BATCH_API` | `false` | Submit new embeddings through OpenAI's Batch API (50% cheaper, up to 24h) instead of embedding synchronously. Honoured by `trelix index`; the `--use-batch-api` flag turns it on for one run regardless. Takes effect only with the `openai` provider |
+| `TRELIX_USE_BATCH_API` | `false` | Submit new embeddings through OpenAI's Batch API (50% cheaper, up to 24h) instead of embedding synchronously. Honoured by `trelix index`; the `--use-batch-api` flag turns it on for one run regardless. Takes effect only with the `openai` provider. Refused together with `TRELIX_EMBEDDING_CACHE_ENABLED=true`, as is `trelix index --resume-batch` (`Cannot resume a Batch API job`): both exit `1` before any model is loaded, because the Batch API path never consults the cache |
 | `TRELIX_CHUNKER_MULTI_GRANULARITY` | `false` | Index sub-symbol blocks and statements (MGS3) |
 | `TRELIX_PARSER_DATAFLOW` | `false` | Extract def-use chains during parsing. Python-only in practice — the extractor requests the Python grammar unconditionally |
 | `TRELIX_PARSER_TAINT` | `false` | **Inert.** `ParserConfig.taint_enabled` is declared but read nowhere in `src/`, so setting this has no effect. Taint analysis happens only when you run `trelix taint`, which does not consult it |
@@ -151,7 +158,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `TRELIX_FEDERATION_MAX_WORKERS` | `4` | **Inert.** `RetrievalConfig.federation_max_workers` is declared but read nowhere in `src/`. `search-all` builds `FederatedRetriever(registry)` with no arguments, so the pool size is always the constructor's own default of 4 — raising this to 16 changes nothing |
 | `TRELIX_FEDERATION_MAX_REPOS` | `50` | Max repos actually queried per `federation_search_all` MCP call, and max repos `federation_add_repo` will accept (range: 1–500) |
 
-**MCP security note:** The four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) confine any caller-supplied `config_path` argument to `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`, rejecting paths outside both roots. Prevents prompt-injected or adversarial clients from pointing registry I/O at arbitrary filesystem locations.
+**MCP security note:** The four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) confine any caller-supplied `config_path` argument to `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`, rejecting paths outside both roots. The name must also end in `.json` and the file must be missing, empty, or a JSON object with a `repos` list; a refused path answers one of two fixed texts, `config_path is not inside an allowed config directory` or `config_path is not a repository registry`, neither of which names the path. Started with `--root` or `TRELIX_ALLOWED_REPO_ROOTS`, `federation_list_repos` and `federation_remove_repo` stay inside the roots too, as `federation_search_all` does: the list and the search leave out the entries outside the roots and report how many in `repos_outside_roots`, and a remove answers such an alias as an unregistered one. Prevents prompt-injected or adversarial clients from pointing registry I/O at arbitrary filesystem locations.
 
 ---
 
@@ -160,17 +167,35 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Error — configuration invalid, index not found, I/O failure, API error, or user cancelled with Ctrl+C |
-| `3` | `trelix review` only — the review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review) (see [`trelix review`](#trelix-review)) |
+| `1` | Error — configuration invalid, index not found, I/O failure, API error, or user cancelled with Ctrl+C. `trelix eval-compare` also exits `1` for a FAIL verdict (see [`trelix eval-compare`](#trelix-eval-compare)) |
+| `2` | `trelix eval-compare` only — INCONCLUSIVE: the candidate run is neither shown to be better nor worse (see [`trelix eval-compare`](#trelix-eval-compare)). A usage error of any command (an unknown option, a missing argument, `trelix ask --json` with `--agentic` or `--session`) also exits `2`; it prints no `verdict:` line |
+| `3` | `trelix review` and `trelix eval-compare` only. `trelix review`: the review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review) (see [`trelix review`](#trelix-review)). `trelix eval-compare`: REFUSED: the two runs cannot be compared, or an input is unusable (see [`trelix eval-compare`](#trelix-eval-compare)) |
 | `4` | `trelix review` only — the review ran but left more of the diff unreviewed than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` allows (default: any hunk). Whatever findings there are have already been printed (see [`trelix review`](#trelix-review)) |
 
 `trelix search`, `ask`, `query`, `call-graph`, `graph` and `stats` exit `1` when `<repo_path>` has
 no index, printing `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.`
 to stderr (`stats` words it slightly differently). They check before opening anything, so they leave
-no `.trelix/` directory behind. The commands that write an index (`index`, `update-index`,
-`watch`) still create it on first use, and so do `eval`, `eval-synthesis`, `review`,
-`telemetry`, `search-all`, `agent sessions` and (only once it finds a flow) `taint`, which do
+no `.trelix/` directory behind. The other read surfaces follow the same rule with the same words:
+the MCP tools answer with a tool error, the REST read routes with HTTP 400, and the LangChain and
+LlamaIndex retrievers raise `trelix.core.index_check.IndexNotFoundError` (a `FileNotFoundError`).
+Two commands do not fail: `trelix review` reviews from the diff alone when the repository has no
+index, and `trelix search-all` skips a registered repo that has none (it exits `1` only when every
+repo it would query is unindexed). None of them creates `.trelix/`. The commands that write an
+index (`index`, `update-index`, `watch`) still create it on first use, and so do `eval`,
+`eval-synthesis`, `telemetry`, `agent sessions` and (only once it finds a flow) `taint`, which do
 not check yet.
+
+`trelix cache gc` and `trelix cache clear` exit `0` when the cache directory does not exist
+(they print `No embedding cache at <dir>.` and create nothing). `cache gc` exits `1` after
+trimming every other file when one cache file cannot be opened or trimmed (`Embedding cache
+unreadable: ...`); `cache clear` exits `1` after the rest when one file cannot be removed
+(`Could not remove: ...`); both exit `1` at once, touching nothing, when the directory exists
+but cannot be listed (`Embedding cache unreadable: ...`), and with `Configuration error:` for
+a relative `TRELIX_EMBEDDING_CACHE_DIR` or a `TRELIX_EMBEDDING_CACHE_MAX_MB` below `1`. `trelix index
+<repo_path> --resume-batch` exits `1` before loading any model when `TRELIX_EMBEDDING_CACHE_ENABLED=true`
+is set, printing `Cannot resume a Batch API job: TRELIX_EMBEDDING_CACHE_ENABLED=true is set, and the
+Batch API poll path bypasses the cache. Re-run with TRELIX_EMBEDDING_CACHE_ENABLED=false to collect
+the job, then re-enable it.`
 
 ---
 
@@ -206,7 +231,8 @@ Run `trelix migrate-vectors <repo> --reset --provider <new-provider>` and then r
 #### Synopsis
 
 ```
-trelix index <repo_path> [--provider PROVIDER] [--verbose]
+trelix index <repo_path> [--provider PROVIDER] [--verbose] [--dry-run]
+                         [--prune [--yes] [--prune-max-percent PERCENT]]
 ```
 
 #### Description
@@ -215,6 +241,13 @@ Scans `<repo_path>`, parses source files with tree-sitter, chunks and embeds
 every symbol, and stores the result in `<repo_path>/.trelix/index.db`. On
 subsequent runs only changed files are re-indexed (incremental mode). Prints
 a summary table with file counts, symbol count, chunk count, and elapsed time.
+With the on-disk embedding cache on (`TRELIX_EMBEDDING_CACHE_ENABLED=true`, see
+[CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time)) the table adds a
+`Chunks from cache` row — the chunks served from the cache instead of the
+provider — whenever that count is above zero.
+On the `sqlite` backend it also prints a `Flat-scan advisory` on stderr when the index
+holds more vectors than the measured threshold for its width (see
+[CONFIGURATION.md § Storage](CONFIGURATION.md#storage)); the exit code is unchanged.
 
 #### Options
 
@@ -222,6 +255,10 @@ a summary table with file counts, symbol count, chunk count, and elapsed time.
 |--------|------|---------|-------------|
 | `--provider` | string | `local` | Embedding provider. See [Embedding providers](#embedding-providers). |
 | `--verbose`, `-v` | flag | `false` | Show DEBUG-level log output from the indexer and embedder. |
+| `--dry-run` | flag | `false` | Cost preview only: walks, chunks and counts tokens, embeds nothing and writes nothing to the index. With the embedding cache on and its file present, the table adds `Chunks already cached` and `Tokens already cached` (read from the cache file read-only, at the width it records; nothing is created) and the priced token count is `Embedding tokens - Tokens already cached + Repair tokens`. With `--prune` it also prints the prune plan against the index as it stands. Cannot be combined with `--yes`. |
+| `--prune` | flag | `false` | After indexing, remove the rows and embeddings of files no longer in the repository. Previews only unless `--yes` is also given, and refuses unless the walk can be shown to be trustworthy. See [Pruning files that no longer exist](#pruning-files-that-no-longer-exist---prune). |
+| `--yes` | flag | `false` | Actually delete what `--prune` found. Only valid with `--prune`. |
+| `--prune-max-percent` | float | `10` | Refuse a prune that would remove more than this percentage of the index. Applies only above 10 candidates, so a small repository can still drop a few files. Raise it only after reading the previewed list. |
 
 #### Examples
 
@@ -245,6 +282,87 @@ trelix index . --verbose
 - Languages indexed by default: Python, JavaScript, TypeScript, TSX, Go, Rust,
   Java, Kotlin, Ruby, C/C++, C#, Razor, Markdown, JSON, YAML, TOML, HTML, CSS.
   Files larger than 500 KB are skipped.
+- On the `sqlite` backend, a `Flat-scan advisory` line on stderr means the store holds more
+  vectors than the measured threshold for its width, so the exact flat scan is slow enough to
+  matter. It never changes the exit code; `TRELIX_STORE_BACKEND=lance` or `qdrant` is the
+  remedy. See [CONFIGURATION.md § Storage](CONFIGURATION.md#storage) for the thresholds.
+
+#### Pruning files that no longer exist (`--prune`)
+
+A plain `trelix index` never deletes anything: a file removed from the repository keeps its
+rows and embeddings. `--prune` indexes as usual, then lists the indexed files this walk did not
+yield. That is a preview; `--prune --yes` deletes them. `trelix index <repo_path> --prune --dry-run`
+previews against the index as it stands, without indexing.
+
+"Indexed but not yielded by this walk" is also what a truncated or differently configured walk
+looks like (measured on trelix's own repository: 35 of 467 files, all present on disk), so a
+deletion is licensed only when every one of these holds. Otherwise trelix prints
+`Prune refused: ...` for each check that failed, deletes nothing, and exits 1:
+
+1. the walk read every directory;
+2. the index recorded a walk config this version can compare;
+3. that config matches this walk's (languages, ignore lists, size cap, symlink setting and the
+   `.gitignore` chain);
+4. every row was written under one walk config (the index keeps the set of walk configs that
+   wrote it);
+5. the index was built by this trelix version;
+6. the deletion is at most `--prune-max-percent` of the index.
+
+The checks read the index as it stood **before** the run that precedes the prune. With no
+candidates nothing is blocked, so trelix prints `Nothing to prune` and exits 0.
+
+**The first prune after upgrading trelix is refused** by check 5 (and by 2 and 4 for an index
+written before those were recorded) until this version has rewritten the index once. With the
+default batch pipeline a plain `trelix index` does not do that: over an unchanged tree it
+prints "Nothing to index — all files up to date." and returns before writing anything, so the
+refusal would repeat. The refusal names the step to take. For most indexes it is this, run with
+the same environment (`TRELIX_WALKER_*` is read from the process environment only) and the same
+`--provider` that built the index:
+
+```bash
+# Re-parses every file and embeds nothing that is unchanged (0 chunks embedded; with file
+# summaries enabled, only a file with a changed symbol is summarised again)
+TRELIX_INCREMENTAL=false trelix index /path/to/myrepo
+# Now preview the prune; add --yes to delete
+trelix index /path/to/myrepo --prune
+```
+
+On Windows there is no inline `VAR=value` prefix: set the variable first (`set TRELIX_INCREMENTAL=false`
+in cmd, `$env:TRELIX_INCREMENTAL = "false"` in PowerShell), run `trelix index`, then clear it
+(`set TRELIX_INCREMENTAL=` or `Remove-Item Env:TRELIX_INCREMENTAL`) so later runs are
+incremental again.
+
+Run them as two commands, because the second reads the record the first wrote. The first
+re-parses every file, so on a large repository it takes a while even though it embeds nothing
+new. Run it under the environment and `--provider` that built the index: a re-index adds the
+walk config of its own run to the index's record, so one run under a changed environment leaves
+two walk configs and the next prune is refused for it (only a rebuild recovers).
+
+The refusals for a given index that name a step all name the same one. For some indexes that
+one step is a **rebuild** (delete `/path/to/myrepo/.trelix/index.db`, run
+`trelix index /path/to/myrepo`, which re-embeds everything, then prune): the ones where the
+re-index would add this run's walk config beside an older one and the next prune would be
+refused for "N different walk configurations". That is an index written before trelix 3.1.3
+that recorded a walk config but not which configs wrote its rows, one whose record was written
+under an older `.gitignore` digest scheme, and one that already holds rows from several walk
+configs.
+
+What the step does not do:
+
+- It does not clear a refusal about a changed walk (3) or about rows written under more than
+  one walk config (4) for an index that recorded a walk config to compare against: those exist
+  to protect files that are still on disk.
+- It does not prove the rows were written under this walk. After the step the prune compares
+  against the walk as it is **now**, not the one that wrote the rows, so a file an older trelix
+  indexed that this walk no longer yields (because of a nested `.gitignore` the older trelix did
+  not read, for instance) is listed as a candidate although it is on disk, and `--yes` would
+  delete its rows. This holds for an index that recorded no walk config at all (the refusal says
+  `this index records no walk config`) and for the plain upgrade (`built by trelix X and this is
+  Y`), where the step passes the version check by re-stamping the version. Check the listed
+  files against the disk before `--yes`, or rebuild.
+
+See [`trelix index --prune` says "Prune refused"](TROUBLESHOOTING.md#trelix-index---prune-says-prune-refused)
+for each message and its fix.
 
 ---
 
@@ -327,7 +445,7 @@ trelix search /my/repo "database connection pool" --provider openai
 #### Synopsis
 
 ```
-trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session ID]
+trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session ID] [--json]
 ```
 
 #### Description
@@ -335,7 +453,7 @@ trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session I
 Retrieves relevant code context and synthesizes a natural-language answer
 using an LLM. With `--provider local` (FLARE and agentic mode off), trelix prints the
 retrieved context text instead of a synthesized answer. Streaming output is
-used when an LLM is available.
+used when an LLM is available; `--json` prints one JSON object instead (schema below).
 
 #### Options
 
@@ -344,6 +462,7 @@ used when an LLM is available.
 | `--provider` | string | `local` | Embedding provider for retrieval. |
 | `--agentic` | flag | `false` | Enable a multi-turn ReAct loop: the agent can issue multiple sub-queries, observe results, and refine its answer. Requires an LLM API key. |
 | `--session` | string | — | Resume a persisted agent session by ID. Implies `--agentic`. See [`trelix agent sessions list`](#trelix-agent-sessions-list). |
+| `--json` | flag | `false` | Print one JSON object (`query`, `answer`, `abstained`, `abstain_reason`, `citations`) instead of streaming; errors go to stderr and stdout stays empty. Needs LLM synthesis: a usage error with `--agentic`/`--session` (exit `2`), refused in context-only mode (exit `1`); see the schema and Notes below. |
 
 #### Examples
 
@@ -356,7 +475,41 @@ OPENAI_API_KEY=sk-... trelix ask . "explain the caching strategy"
 
 # Agentic mode for complex questions
 OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to database" --agentic
+
+# One JSON object with verified citations (tags need TRELIX_RETRIEVAL_CITATIONS=true)
+OPENAI_API_KEY=sk-... TRELIX_RETRIEVAL_CITATIONS=true trelix ask . "how is a jwt verified" --json
 ```
+
+#### JSON output schema
+
+With `--json`, stdout carries exactly one object and nothing else (the answer is not streamed):
+
+```json
+{
+  "query": "how is a jwt verified",
+  "answer": "The token is read from the header [C2] and verified by `verify` [C1].",
+  "abstained": false,
+  "abstain_reason": null,
+  "citations": [
+    {"marker": "[C2]", "status": "valid", "path": "src/auth/middleware.py", "lines": "70-80", "symbol": "AuthMiddleware.bearer", "detail": ""},
+    {"marker": "[C1]", "status": "valid", "path": "src/auth/middleware.py", "lines": "42-67", "symbol": "AuthMiddleware.verify", "detail": ""}
+  ]
+}
+```
+
+- `answer`: the whole answer; after an abstention the `INSUFFICIENT_EVIDENCE:` line, after an
+  empty retrieval the notice `[trelix] No relevant code found — cannot synthesize an answer.`.
+- `abstained`, `abstain_reason`: `true` with `"insufficient_evidence"` or `"no_results"` for the
+  two abstentions, otherwise `false` and `null`. An abstention exits `0` like an answer.
+- `citations`: one object per distinct `[C#]` marker of the answer, in order of first appearance,
+  with exactly the keys `marker`, `status`, `path`, `lines`, `symbol`, `detail`. `status` is
+  `valid`, `file_missing`, `line_out_of_range` or `unknown` (no retrieved chunk carries the tag);
+  `lines` is `"<start>-<end>"`; `detail` is `""` when valid, one line ending `re-index` for
+  `file_missing` and `line_out_of_range` (the index is behind the tree) and `no retrieved chunk
+  has this tag` for `unknown`; `path`, `lines` and `symbol` are `null` for an `unknown` marker.
+  The list is `[]` when the answer has no marker, when it abstained, and whenever
+  `TRELIX_RETRIEVAL_CITATIONS` is off (the prompt never asked for tags, so a `[C1]` in the answer
+  is text). Path, lines and symbol come from the index, never from the model's text.
 
 #### Notes
 
@@ -370,7 +523,9 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
 - FLARE iterative retrieval can be enabled globally with
   `TRELIX_RETRIEVAL_FLARE=true`.
 - If synthesis cannot produce an answer (no LLM configured, bad API key, network or
-  quota error) and the embedder provider is not `local`, the reason is printed to stderr,
+  quota error, or a reply with no answer in it: an empty or whitespace-only stream, or an
+  endpoint that is not an OpenAI-compatible chat API, such as an HTML page from a wrong
+  `OPENAI_BASE_URL`) and the embedder provider is not `local`, the reason is printed to stderr,
   stdout gets no failure banner (a failure before the first token leaves only the closing
   blank line; text already streamed stays) and the command exits `1`. With
   `TRELIX_RETRIEVAL_FLARE=true` (and agentic mode off) a failed synthesis exits `1` whichever
@@ -380,6 +535,51 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
   `TRELIX_RETRIEVAL_AGENTIC=true`) does not go through this check: if the LLM is missing or
   fails, the agent loop falls back to the observations it has (or prints "Could not find
   sufficient context for: <question>") and `ask` exits `0`.
+- When retrieval finds nothing (and an LLM is configured: a missing key is still reported first,
+  as above), the answer is the one-line notice
+  `[trelix] No relevant code found — cannot synthesize an answer.` on stdout, the command exits
+  `0` and the LLM is not called: an answer synthesised from no code context could not be
+  grounded. This holds for the plain path (any non-local embedder) and under
+  `TRELIX_RETRIEVAL_FLARE=true`, where the notice itself contains the uncertainty phrase
+  `no relevant code`, so FLARE re-retrieves and prints the notice once per retrieval round (twice
+  at the default `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=1`), still with no LLM call and exit `0`; in
+  context-only mode (`--provider local`, FLARE off) the assembler's `No relevant code found.` is
+  printed instead, as before.
+- With `TRELIX_RETRIEVAL_CITATIONS=true` the synthesis prompt asks the model to reply with
+  exactly one line starting `INSUFFICIENT_EVIDENCE:` (followed by what is missing, and nothing
+  else) when the retrieved context does not contain what the question needs. That line is the
+  answer: it is streamed to stdout as any answer is, stderr stays empty and the command exits
+  `0`. Under `TRELIX_RETRIEVAL_FLARE=true` it counts as an uncertainty phrase, so FLARE
+  re-retrieves with an enriched query and synthesises again, as for any uncertainty phrase (once
+  at the default `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=1`; every answer streams). The line is
+  recognised whichever way the flag is set; the flag only decides
+  whether the model is told to write it. GraphRAG map-reduce answers (large contexts under the
+  `openai` or `azure` embedder, FLARE path only) are not given the sentence and so never abstain
+  this way.
+- With `TRELIX_RETRIEVAL_CITATIONS=true`, when the model answered (no abstention, no empty
+  retrieval), a blank line and a `Sources:` footer follow the streamed answer, one row per distinct
+  `[C#]` marker in order of first appearance: `  [C2] src/auth/middleware.py:70-80
+  AuthMiddleware.bearer` for a marker whose chunk still fits the file on disk (`valid`),
+  `  [C3] unverified (line_out_of_range): <detail>` for the others (`file_missing` and
+  `line_out_of_range`, whose detail ends `re-index`; `unknown`, whose detail is `no retrieved chunk
+  has this tag`), and `Sources: none cited.` for an answer without markers. The answer text itself
+  is never rewritten: it has already streamed.
+  With the flag off nothing is verified, no footer is printed and stdout is what it was before the
+  footer existed. Under `TRELIX_RETRIEVAL_FLARE=true` the footer follows the last round's answer.
+- `--json` prints one JSON object on stdout and nothing else (schema above); the exit code is `0`
+  for an answer or an abstention. On a synthesis failure stdout stays empty, the reason goes to
+  stderr and the command exits `1`, under `TRELIX_RETRIEVAL_FLARE=true` too: the synthesizer's own
+  notices, which reach stdout in human mode, are kept off it under `--json`. Three refusals, each
+  before the index is opened or the query embedded: `--json` with `--agentic` or `--session` is a
+  usage error, `--json cannot be combined with --agentic or --session.`, exit `2` (raised before
+  the index check); `--json` with `TRELIX_RETRIEVAL_AGENTIC=true` prints `Error: --json is not
+  available in agentic mode (TRELIX_RETRIEVAL_AGENTIC=true): the agent loop prints its own result.
+  Unset it or drop --json.` to stderr and exits `1`; `--json` in context-only mode (`--provider
+  local`, FLARE off) prints `Error: --json needs LLM synthesis; with the local embedder and FLARE
+  off, trelix ask prints the retrieved context only. Use trelix search --json for machine-readable
+  retrieval, or a non-local --provider.` to stderr and exits `1` (with FLARE on, the `local`
+  embedder synthesises, so `--json` works). The index check (`No index found ...`, exit `1`) runs
+  before the last two.
 - Reranking is off for this command and cannot be enabled by environment: `ask` builds
   `RetrievalConfig(rerank=False)` (`ask()` in `src/trelix/cli/main.py`), which outranks
   `TRELIX_RETRIEVAL_RERANK`. Applies to the plain, `--agentic` and FLARE paths alike —
@@ -537,6 +737,12 @@ trelix stats /path/to/large-repo
   deleted, because the default ignore list contains `packages` for .NET NuGet output.
   The walk settings are recorded at index time and any difference is named in the
   output, so this is now detectable rather than silent.
+- **The `Flat-scan advisory` line prints after the coverage rows**, on stderr, on the `sqlite`
+  backend when the index records its embedding width and holds more vectors than the measured
+  threshold for that width (see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage)). It
+  never prints when the width is `not recorded` or not a positive number, never changes the
+  exit code, and reads the row count read-only, so it creates no `.trelix/` (the promise
+  under [Exit codes](#exit-codes)).
 
 ---
 
@@ -763,6 +969,11 @@ trelix serve /my/repo --host 0.0.0.0 --port 9000
   `GET /health` is exempt. Add hostnames with `TRELIX_API_ALLOWED_HOSTS=a.example,b.example`
   or disable with `TRELIX_API_ALLOWED_HOSTS=*`. It does not replace `TRELIX_API_AUTH_TOKEN`.
   See [CONFIGURATION.md](CONFIGURATION.md#rest-api).
+- A read route (`/search`, `/ask`, `/stats`, `/graph`, `/graph/communities`,
+  `/graph/visualize`, `/graph/search`) whose `repo` has no index answers HTTP `400` with
+  `{"detail": "No index found at <repo>/.trelix/index.db. Run trelix index <repo> first."}`
+  and creates nothing (the check runs after authentication and containment). `POST /index`
+  creates the index as before; `POST /parse` and `GET /health` never needed one.
 - The API is undocumented in this reference. Point a browser at
   `http://127.0.0.1:8765/docs` after starting for the auto-generated OpenAPI
   docs.
@@ -920,7 +1131,7 @@ trelix telemetry /my/repo -n 50
 #### Synopsis
 
 ```
-trelix eval [<repo_path>] --golden <file>
+trelix eval [<repo_path>] --golden <file> [--per-query-out <file>]
 ```
 
 #### Description
@@ -953,6 +1164,7 @@ rows differ are not two measurements of the same thing.
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
 | `--golden` | `-g` | string | `.trelix/golden.jsonl` | Path to the golden JSONL file. |
+| `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. |
 
 #### Examples
 
@@ -963,6 +1175,9 @@ trelix eval .
 # Use a custom golden file
 trelix eval . --golden tests/golden_queries.jsonl
 trelix eval /my/repo -g /shared/golden.jsonl
+
+# Keep the per-query scores, to compare two runs query by query
+trelix eval . --golden eval/golden.jsonl --per-query-out /tmp/run-a.json
 ```
 
 #### Golden file format
@@ -973,6 +1188,13 @@ Each line is a JSON object:
 {"query": "how does token refresh work", "relevant_files": ["src/auth.py"]}
 {"query": "database connection pool", "relevant_files": ["src/db/pool.go", "src/db/connection.go"]}
 ```
+
+A line may also carry the optional string keys `id`, `kind`, `lang` and `split`, which label
+the query in the `--per-query-out` file. A line without an `id` is numbered by position
+(`q0001`, `q0002`, ...), so keep explicit ids unique and not shaped like those. `kind` must be
+one of `nl`, `keyword`, `commit`, `issue` and `split` one of `dev`, `test`; any other value
+(or a non-string) refuses the file with a line-numbered error, and `trelix eval-validate`
+reports the same. See `eval/README.md`.
 
 #### Output
 
@@ -993,6 +1215,18 @@ Each line is a JSON object:
 - `<repo_path>` defaults to `.` if omitted.
 - Exits with code 1 if the golden file does not exist, and prints instructions
   for creating one.
+- Exits with code 1 if any query raised during retrieval. Such a query is scored 0.0
+  (never as a hit) and the run continues, so the table is still printed, but it is
+  followed by the number of failed queries and the first five messages: the means
+  include those zeros and are not a valid measurement.
+- `--per-query-out` writes `{"schema_version": 1, "records": [...], "aggregate": {...}}`
+  (ASCII-escaped JSON with sorted keys, mode 0600, written atomically through a temporary
+  file beside the target) once per run, before the exit code is decided, so a run with
+  failed queries still leaves its results, and the file names every failed query where the
+  screen lists the first five (each message is cut at 200 characters in both). Exits with
+  code 1 and a one-line error if the file cannot be written: the directory must exist, and
+  the path must name a file. The record fields and `trelix.eval.stats`, which compares two
+  such files, are described in `eval/README.md`.
 
 ---
 
@@ -1001,7 +1235,7 @@ Each line is a JSON object:
 #### Synopsis
 
 ```
-trelix eval-synthesis [<repo_path>] --golden <file>
+trelix eval-synthesis [<repo_path>] --golden <file> [--per-query-out <file>] [--replay <file> | --record <file>]
 ```
 
 #### Description
@@ -1009,13 +1243,19 @@ trelix eval-synthesis [<repo_path>] --golden <file>
 Evaluates LLM synthesis quality (not just retrieval) by running every query in
 a golden JSONL file through the full retrieve-and-synthesize pipeline and
 scoring the generated answer GroUSE-style: hallucination rate, completeness,
-and faithfulness against the expected answer fragments and symbols.
+and faithfulness against the expected answer fragments and symbols, plus
+whether the answer abstained and whether its `[C#]` citations verify. Every
+query becomes one record (`SynthesisEvalHarness.run_detailed`); the table
+prints their means, ratios and counts, and `--per-query-out` writes the records.
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
 | `--golden` | `-g` | string | `.trelix/golden_synthesis.jsonl` | Path to the golden JSONL file. |
+| `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. Its directory must exist; this is checked before the run starts. |
+| `--replay` | | string | *(none)* | Score the recorded answers in this file: no synthesis call is made, but retrieval (the index, its LLM query planner, the query embedding) still runs. Cannot be combined with `--record`. |
+| `--record` | | string | *(none)* | After the run, write every answer the LLM produced to this file in the `--replay` format (mode 0600, written atomically). Its directory must exist (checked before the run starts) and it cannot be the `--per-query-out` file. Cannot be combined with `--replay`. |
 
 #### Examples
 
@@ -1023,52 +1263,443 @@ and faithfulness against the expected answer fragments and symbols.
 # Evaluate with the default golden file
 trelix eval-synthesis .
 
-# Use a custom golden file
-trelix eval-synthesis . --golden tests/golden_synthesis_queries.jsonl
-trelix eval-synthesis /my/repo -g /shared/golden_synthesis.jsonl
+# Use the sample golden file, and keep every query's scores
+trelix eval-synthesis . --golden eval/golden_synthesis_sample.jsonl
+trelix eval-synthesis /my/repo -g /shared/golden_synthesis.jsonl --per-query-out /tmp/synth-a.json
 ```
 
 #### Golden file format
 
 Each line is a JSON object — a superset of `trelix eval`'s golden format,
-adding two optional fields:
+adding optional fields:
 
 ```jsonl
 {"query": "how does JWT validation work?", "relevant_files": ["src/auth/middleware.py"], "expected_answer_fragments": ["decode", "secret", "bearer"], "expected_symbols": ["AuthMiddleware.verify", "jwt.decode"]}
+{"query": "how is a jwt verified", "relevant_files": ["src/auth/middleware.py"], "expected_answer_fragments": ["decode"], "answerable": true, "gold_answer": "AuthMiddleware.verify decodes the bearer token.", "expected_citations": ["src/auth/middleware.py"]}
 ```
 
 - `expected_answer_fragments` — substrings the synthesized answer should
   contain (case-insensitive). Optional.
 - `expected_symbols` — qualified symbol names the answer should reference.
   Optional.
-- Queries that omit both optional fields still contribute to `n_queries` with
-  a score of `1.0`.
+- `answerable` — `true` or `false`; absent means `true`. The right answer to an
+  unanswerable question is an `INSUFFICIENT_EVIDENCE:` line; unanswerable
+  queries are counted under `Unanswerable queries` and left out of the four
+  scores.
+- `gold_answer` — a non-empty string; stored for a future judge, never scored.
+- `expected_citations` — repo-relative paths a correct answer cites, read as a
+  set (a repeated path counts once); a hit is one that a `valid` `[C#]` marker
+  of the answer refers to (`expected_citations_hit` of
+  `expected_citations_total`).
+- A field present with another type (`"answerable": "no"`, `"gold_answer": ""`,
+  `"expected_citations": "a.py"`, any of them `null`), or a line that is JSON
+  but not an object, is refused with its line number and no query runs; a line
+  that is not JSON is skipped.
+- Queries that omit `expected_answer_fragments` and `expected_symbols` still
+  contribute to `n_queries` with completeness `1.0` (faithfulness still depends
+  on the answer).
 
 #### Output
 
+Six golden lines, three of them unanswerable, run with `TRELIX_RETRIEVAL_CITATIONS=true`:
+two answers abstained, four carried `[C#]` markers and two lines expected citations (the
+worked example of `eval/README.md`):
+
 ```
-    Synthesis Quality Results (GroUSE-style)     
-┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
-┃ Metric             ┃  Score ┃ Direction       ┃
-┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
-│ Hallucination rate │ 0.0500 │ lower = better  │
-│ Completeness       │ 0.9100 │ higher = better │
-│ Faithfulness       │ 0.9400 │ higher = better │
-│ Overall            │ 0.9300 │ higher = better │
-│ Queries evaluated  │     12 │                 │
-└────────────────────┴────────┴─────────────────┘
+                  Synthesis Quality Results (GroUSE-style)                   
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Metric               ┃  Score ┃ Direction                                 ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Hallucination rate   │ 0.0000 │ lower = better                            │
+│ Completeness         │ 0.6667 │ higher = better                           │
+│ Faithfulness         │ 0.2222 │ higher = better                           │
+│ Overall              │ 0.7111 │ higher = better                           │
+│ Abstention precision │ 0.5000 │ higher = better; of 2 abstained           │
+│ Abstention recall    │ 0.3333 │ higher = better; of 3 unanswerable        │
+│ Citation validity    │ 0.6250 │ higher = better; of 4 cited answers       │
+│ Citation recall      │ 0.5000 │ higher = better; of 2 expecting citations │
+│ Queries evaluated    │      6 │                                           │
+│ Unanswerable queries │      3 │ not in the four scores above              │
+│ Unscoreable queries  │      0 │ placeholder scores; see the log           │
+└──────────────────────┴────────┴───────────────────────────────────────────┘
 ```
+
+Each `Direction` cell of the four ratio rows names the denominator the ratio
+ran over, so a `0.5000` is never read without its sample size.
+
+#### Recorded answers (`--record`, `--replay`)
+
+`--record` keeps the answers a run produced, and `--replay` scores them again
+against the same index with no synthesis call, so a scoring change can be
+measured on frozen answers instead of on a fresh sample:
+
+```bash
+trelix eval-synthesis . -g eval/golden_synthesis_sample.jsonl --record /tmp/answers.json
+trelix eval-synthesis . -g eval/golden_synthesis_sample.jsonl --replay /tmp/answers.json
+```
+
+The file is `{"schema_version": 1, "answers": {"<golden query>": "<answer>"}}`
+(ASCII-escaped JSON with sorted keys, mode 0600, written atomically through a
+temporary file beside the target; an existing file is replaced). On `--replay`:
+
+- the file is at most 20 MB, has exactly those two keys, and every value of
+  `answers` is a string (an empty answer is fine); every problem found is
+  reported on one line, `Evaluation failed: replay file: ...`, exit `1`, before
+  the index is opened;
+- every golden query must have an answer, else `Evaluation failed: replay file
+  has no answer for N queries: ...` (the first five are named) and exit `1`
+  before any query runs;
+- answers are keyed by the query text, so two identical golden queries share one
+  answer: the later live answer is the one recorded.
+
+`--replay` and `--record` cannot be combined (exit `2`, a usage error): a replay
+run produces no new answers to record. A replay of a run's own recorded answers
+gives the same table and the same records as that run when no query's retrieval
+failed, no golden query repeats and retrieval returns the same context (see the
+`--replay` note below). These are recorded answers; `trelix eval-suite`'s replay is
+unrelated and freezes query plans.
 
 #### Notes
 
 - `<repo_path>` defaults to `.` if omitted.
 - Requires a configured LLM provider (synthesis makes real LLM calls) —
-  unlike `trelix eval`, which only exercises retrieval.
-- **Unlike `trelix eval`**, a missing golden file does *not* raise an error
-  or exit non-zero — it exits `0` and prints a table of all-zero scores with
-  `Queries evaluated = 0`. Double-check the `--golden` path if you see an
-  all-zero result; it usually means the file wasn't found, not that
-  synthesis quality is actually zero.
+  unlike `trelix eval`, which only exercises retrieval — except with
+  `--replay`, which makes no synthesis call and builds no Synthesizer (retrieval
+  is another matter: see the `--replay` note below).
+- stdout is the results table only: the answers are not echoed as they stream;
+  `--record` keeps them. A run with no LLM configured logs one warning (every
+  answer then scores as empty) instead of printing a notice per query.
+- `--replay` freezes the answers, not the retrieval: it needs the index, and
+  retrieval runs as in a live run. That includes its LLM query planner, which
+  calls the LLM up to once per query when one is configured (that needs its provider,
+  key and network), and, for a non-local embedder, the embedding of the query.
+  Freeze the planner with `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` for a repeatable
+  pair (`eval-synthesis` has no `--plan-cache-file` flag).
+- `--record` and `--per-query-out` are checked once, before the run starts and
+  before the index is opened, because their files are written only after every
+  query has been paid for: the directory of each must already exist and be
+  writable, the path must not be a directory, and the two must be different
+  files (a relative and an absolute spelling, or a path through a symlinked
+  directory, can name the same file; the directories are compared once resolved,
+  so a hard link or a different letter case on a case-insensitive volume is not
+  recognised, and a symlink named as the file is replaced by the write, so it
+  and its target are two files). One
+  line per problem is printed, for example `--record:
+  directory /x/y does not exist` or `--record and --per-query-out must name
+  different files`, and the command exits `1`; the check creates nothing and
+  also applies to `--replay` runs.
+- `--record` and `--per-query-out` are written after the table, and both are
+  attempted: a file that cannot be written (the directory removed during the
+  run, say) is reported (`Could not write the replay file: ...` for this one)
+  and ends the command with exit `1`, but never costs the other file. Nothing
+  is written for a golden file that is refused.
+- A query whose retrieval raised in the live run has no recorded answer, so
+  replaying that file is refused with the message above until the query is
+  fixed, removed from the golden file, or given an answer by hand in the JSON.
+- A missing golden file prints `Golden file not found: <path>` and exits `1`;
+  a file with only blank or non-JSON lines prints the all-zero table and
+  exits `0`.
+- A query that raised (in retrieval or scoring; a model failure is an empty
+  answer, not an error) is counted under `Unscoreable queries` with placeholder
+  scores (hallucination 1.0, the rest 0.0) and the command still exits `0`.
+- Answers on this path are capped at 2,048 tokens: `synthesize()` hands
+  `_stream_response` an `EmbedderConfig`, which has no `synthesis_max_tokens`,
+  so the fallback applies, while plain `trelix ask` streams at
+  `TRELIX_RETRIEVAL_SYNTHESIS_MAX_TOKENS` (12,000). Pre-existing: the eval
+  measures a shorter answer than the CLI gives.
+- The citation rows measure nothing unless `TRELIX_RETRIEVAL_CITATIONS=true`
+  for the run: with the flag off no block is tagged, so every record has
+  `citations_total 0`, `Citation validity` and `Citation recall` read `0.0000`
+  and `Citation validity` reads `of 0 cited answers`, while `Citation recall`
+  still reads `of N expecting citations` for the N lines that carry
+  `expected_citations`.
+- Abstention is read from the answer (`INSUFFICIENT_EVIDENCE:` as its first
+  non-blank characters, `abstain_reason` `insufficient_evidence`) and from an
+  empty retrieval (`no_results`), not from the model's output otherwise; an
+  abstention is still scored by the four means when its line is answerable.
+  The prompt asks the model for `INSUFFICIENT_EVIDENCE:` only when
+  `TRELIX_RETRIEVAL_CITATIONS=true`, so with the flag unset only an empty
+  retrieval registers in practice and the two abstention rows measure little: an
+  `Abstention recall` of `0.0000` then means the model was never asked to refuse.
+- `--per-query-out` writes `{"schema_version": 1, "harness": "synthesis",
+  "records": [...], "aggregate": {...}}` (ASCII-escaped JSON with sorted keys,
+  mode 0600, written atomically through a temporary file beside the target)
+  after the table. Each record has exactly the fifteen fields `id` (the line's
+  `id`, else `q0001`-style by position), `query`, `answerable`, `abstained`,
+  `abstain_reason` (`no_results`, `insufficient_evidence` or `null`),
+  `hallucination`, `completeness`, `faithfulness`, `overall`,
+  `citations_total`, `citations_valid`, `citation_statuses` (an object with a
+  count per `valid`, `file_missing`, `line_out_of_range` and `unknown` status
+  found), `expected_citations_hit`, `expected_citations_total` and `error`
+  (`null` unless the query raised; then the message, cut at 200 characters,
+  beside the placeholder scores and zeroed abstention and citation facts). The
+  golden's `gold_answer` and `expected_citations` stay in the golden file and
+  are not copied into the record. `aggregate` holds sixteen values: the
+  fourteen the table prints (its eleven rows, with `n_abstained`,
+  `n_cited_entries` and `n_expected_citation_entries` inside the `Direction`
+  cells) and `citations_total` and `citations_valid`, which only the file
+  carries; `eval/README.md` defines each one. Exits `1` with a one-line
+  error if the file cannot be written: the directory must exist, and the path
+  must name a file (both are checked before the run starts, see the first
+  `--record` note above).
+
+---
+
+### `trelix eval-validate`
+
+#### Synopsis
+
+```
+trelix eval-validate <golden> [--repo <path>] [--rev <rev>] [--min-per-stratum <n>] [--min-validated <fraction>]
+```
+
+#### Description
+
+Checks a golden JSONL file without running any query: no index is read or created and no
+LLM is called. It checks that every line is schema-valid (the `trelix eval` rules, plus the
+optional golden v2 fields `id`, `lang`, `kind`, `source`, `gold_status` and `split`), that
+no two queries are equal once stripped and case-folded and no two `id`s are equal, and,
+with `--repo`, that every `relevant_files` path exists in the repository at `--rev` (read
+with `git ls-tree`). In a v2 file (some entry has a `kind` or a `gold_status`) it also checks
+that every `kind` that occurs has enough queries and that enough entries have a `gold_status`
+of `validated` or `pooled`. A file where no entry has a `kind` or a `gold_status` is checked
+as v1 and the command says so. The fields, their allowed values and the checks are described
+in `eval/README.md`.
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `<golden>` | | argument | *(required)* | Path to the golden JSONL file. |
+| `--repo` | | string | *(none)* | Git repository to check every `relevant_files` path against. Paths are relative to it, so a subdirectory of a checkout is checked against its own subtree. Without it the path check is skipped and a note says so. |
+| `--rev` | | string | `HEAD` | Revision of `--repo` the paths must exist at. |
+| `--min-per-stratum` | | integer, 0 or more | `20` | v2 files only: the fewest queries each `kind` that occurs may have. |
+| `--min-validated` | | float, 0.0 to 1.0 | `0.95` | v2 files only: the least share of all entries whose `gold_status` is `validated` or `pooled`; an entry with no `gold_status` counts as `unreviewed`. |
+
+#### Examples
+
+```bash
+# Schema and duplicates only
+trelix eval-validate eval/golden.jsonl
+
+# Also check every path against the files committed at HEAD
+trelix eval-validate eval/golden.jsonl --repo .
+
+# ... or as they were at an older revision
+trelix eval-validate eval/golden.jsonl --repo . --rev v3.4.3
+
+# A v2 file, with looser thresholds
+trelix eval-validate my-golden-v2.jsonl --repo . --min-per-stratum 10 --min-validated 0.9
+```
+
+#### Output
+
+One line per violation on stdout, `line N: ...` for an entry (in line order) and then
+`file: ...` for the file as a whole, then any `note:` lines and a one-line summary:
+
+```
+line 2: "relevant_files" path 'src/old.py' does not exist at HEAD
+line 3: duplicate query (same as line 1 once stripped and case-folded)
+note: no entry has a kind or a gold_status, so this file is checked as v1: only the schema, duplicate and (with --repo) path checks ran
+invalid: entries 3, violations 2
+```
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | No violation (the summary line says `valid`). |
+| `1` | One or more violations, or an error printed on stderr: the golden file is missing or cannot be opened, `--repo` is not a directory or not a git repository, or `--rev` is unknown. |
+| `2` | A usage error, including `--min-per-stratum` below 0 or `--min-validated` outside 0 to 1 (or `nan`). |
+
+#### Notes
+
+- Run it before `trelix eval` and whenever files move: a well-formed but stale path scores 0
+  in `trelix eval`, which cannot tell it from a retrieval miss.
+- `--rev` has no effect without `--repo`.
+- It reads the golden file only. A malformed `<stem>-metadata.json` beside it, which
+  `trelix eval` refuses, is not reported.
+
+---
+
+### `trelix eval-compare`
+
+#### Synopsis
+
+```
+trelix eval-compare <base> <cand> --prereg <experiment.yaml>
+```
+
+#### Description
+
+Judges a candidate run against a baseline run under a pre-registration, and is the only command
+that produces a PASS. `<base>` and `<cand>` are `results.json` files (schema_version 1, described in
+`eval/README.md`; not the `trelix eval --per-query-out` file, which names no repository or golden
+file and is refused), and the pre-registration is a YAML file fixed before the run: hypothesis
+(nDCG@10 increases), expected effect, `alpha`, the number of comparisons against this baseline
+(`family_size`), the minimum number of queries and the cost class that sets the hurdle. It needs no
+git, no index and no embedder, and makes no LLM call.
+
+The queries are paired by `id` and resampled with a fixed seed, so the same three files always give
+the same output. The decision set is the `test` records when the baseline file labels every query
+with a `split`, and every record when it labels none. The rule, with its nine rows, is in
+`eval/README.md`.
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `<base>` | | argument | *(required)* | Results file of the baseline run. |
+| `<cand>` | | argument | *(required)* | Results file of the candidate run. |
+| `--prereg` | | string | *(none)* | The pre-registration (YAML). Required, but checked by hand: leaving it out is a refusal (exit `3`) rather than a usage error (exit `2`). |
+
+#### Examples
+
+```bash
+trelix eval-compare /tmp/baseline.json /tmp/candidate.json --prereg /tmp/EXP-declaration-boost.yaml
+```
+
+#### Output
+
+Informational lines first (`comparison:`, `experiment:`, `suite:`, `runs:`, `queries:`, any
+`note:` lines, then `ndcg@10:`, `recall@10:`, `mde:` and `hurdle:`; a FAIL for a candidate query that
+raised and an INCONCLUSIVE for too few queries stop before the statistics and print none of those
+last four), then one `reason:` line for every
+row of the winning class when the verdict is not PASS, and always, last, `verdict:` with one of
+`PASS`, `FAIL`, `INCONCLUSIVE` or `REFUSED`. A refusal prints only the verdict line on stdout and one
+`refused: <reason>` line per reason on stderr. The `reason:` and `verdict:` lines are the contract;
+the lines before them may gain fields. Text that comes from the files (ids, error messages, config
+keys) is printed literally, with control bytes dropped and line breaks turned into spaces, so it
+cannot forge a `verdict:` line.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | PASS: the candidate is better by the pre-registered rule. The only success. |
+| `1` | FAIL: the candidate run has a query that raised, or is confidently worse on nDCG@10 or on recall@10. |
+| `2` | INCONCLUSIVE: too few queries, an expected effect below the minimum detectable effect, no demonstrated gain, a gain below the hurdle, or an unresolved recall guard. A usage error also exits `2` and prints no `verdict:` line, so read that line to tell them apart. |
+| `3` | REFUSED: a file is unreadable or malformed, `--prereg` is missing or invalid, or the runs are not comparable (different suite, queries or labels, not a frozen-plan rerank-off run, swapped arguments, a baseline with an error), or an internal error. |
+
+#### Notes
+
+- A FAIL or INCONCLUSIVE prints why; a refusal prints every reason it found, not just the first.
+- If the reader of stdout or stderr stops reading (`| head -n 20`), the lines still to come are
+  dropped and the exit code is still the verdict's, so a FAIL under `pipefail` is not reported as
+  success. The commands that print through the shared consoles (`stats`, `telemetry`, `graph`, `review`,
+  the search tables) exit `0` on a closed pipe.
+- `pipeline.config` of the two files, `trelix_version` and `embedder` may differ: they are printed as
+  `note:` lines, never refused on.
+- Holm is not applied; `family_size` widens the intervals by Bonferroni. See `eval/README.md`.
+
+---
+
+### `trelix eval-suite`
+
+#### Synopsis
+
+```
+trelix eval-suite <suite.json> --arm <arm> --out <results.json> [--cache-dir <dir>]
+trelix eval-suite <suite.json> --prepare-only [--cache-dir <dir>]
+```
+
+#### Description
+
+Runs one arm of a committed suite: verifies `suite.json` and the sha256 of its golden and plans
+files, checks that every golden query has a frozen plan, clones the pinned commit of the suite's
+repository into the cache (or re-verifies the clone that is there), checks that every gold path
+exists at the pin and would be indexed, then builds ONE index for THIS arm from the clone, replays
+the frozen plans through the retrieval pipeline and writes a `results.json` (schema_version 1) for
+[`trelix eval-compare`](#trelix-eval-compare). With `--prepare-only` it stops after the checks and
+the clone, and indexes nothing.
+
+The settings that change the index or the ranking are forced (local embedder, no reranking, HyDE,
+multi-query or FLARE, no file summaries, no contextual chunking, sqlite in the run directory, a walk
+confined to the clone), whatever the environment says; the rest of the effective configuration is
+recorded in the file's `pipeline.config`. One index per arm: the run directory
+`<cache>/arms/<sha>/<name>/<arm>/` is created by the run and an existing one is refused; nothing under
+the cache is ever deleted by the command. Nothing from the cloned repository is executed, imported or
+installed. The format of `suite.json`, the cache layout, every check and every refusal are in
+`eval/README.md`.
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `<suite.json>` | | argument | *(required)* | Path to the suite's `suite.json`; its golden and plans files sit beside it. |
+| `--arm` | | string | *(none)* | Label of this run, `[a-z0-9][a-z0-9_-]{0,62}`. Required unless `--prepare-only`; there is no default, so two runs cannot share a label by accident. `eval-compare` binds its `comparison_id` to two arms. |
+| `--out` | | string | *(none)* | Where to write `results.json`. Its directory must exist and be writable, and `--out` must not name a directory or an existing file (each arm needs its own results file); all checked before anything is cloned. Required unless `--prepare-only`. |
+| `--cache-dir` | | string | `$XDG_CACHE_HOME/trelix/eval-suites`, else `~/.cache/trelix/eval-suites` | Where clones (`clones/<sha>/<name>/`) and per-arm run directories (`arms/<sha>/<name>/<arm>/`) are kept. Outside every repository, so no `trelix index` walks it. |
+| `--prepare-only` | | flag | off | Verify the suite and its pinned clone, print what was verified, run nothing. Refused together with `--arm` or `--out`: neither reading of the three is guessed. |
+
+#### Examples
+
+No suite is committed yet (`eval/README.md` describes the format): `NAME` and the
+pre-registration path below stand for files of your own.
+
+```bash
+# Verify a suite and warm its clone (CI can do this without an embedder)
+trelix eval-suite eval/suites/NAME/suite.json --prepare-only
+
+# The baseline arm, then a candidate arm from another checkout of trelix against the same suite
+trelix eval-suite eval/suites/NAME/suite.json --arm baseline --out /tmp/baseline.json
+trelix eval-suite eval/suites/NAME/suite.json --arm declaration-boost --out /tmp/cand.json
+trelix eval-compare /tmp/baseline.json /tmp/cand.json --prereg /tmp/EXP-declaration-boost.yaml
+
+# The same, through make (EVAL_RESULTS defaults to .trelix/eval-suite/results.json)
+make eval-suite EVAL_SUITE=eval/suites/NAME/suite.json EVAL_ARM=baseline
+```
+
+#### Output
+
+One line each on stdout: `suite:`, `repository:`, `sha:`, `golden:` (its sha256, the number of
+queries and of distinct gold files), `plans:` (its sha256), `clone:`, then for a run `arm:`,
+`run directory:`, `index: built, embedding dimension N`, one line with `ndcg@10`, `recall@10`,
+`mrr`, the number of queries and the rerank summary, and `results: <path>`; `--prepare-only` ends
+with `prepared: every check passed; nothing was indexed or run` instead. No PASS or FAIL is
+printed: only `trelix eval-compare` judges. Every refusal is one `refused: <reason>` line per
+reason on stderr. Text that comes from the suite or the repository (names, paths, git output) is
+printed literally, with control bytes dropped.
+
+```
+suite: trelix-self (golden_version 2026-10-r1, license MIT)
+repository: https://github.com/sairam0424/trelix.git
+sha: 5fa2a032147f64d698077e8849e603872d76b5d0
+golden: sha256 1cd3713d..., 52 queries, 61 gold files
+plans: sha256 9f0c2e1a..., a recorded plan for every golden query
+clone: /home/me/.cache/trelix/eval-suites/clones/5fa2a032.../trelix-self
+arm: baseline
+run directory: /home/me/.cache/trelix/eval-suites/arms/5fa2a032.../trelix-self/baseline
+index: built, embedding dimension 384
+ndcg@10 0.6333, recall@10 0.7115, mrr 0.5892 over 52 queries; rerank disabled
+results: /tmp/baseline.json
+```
+
+(Illustrative output, not a run you can reproduce: no suite is committed yet. The hashes are
+shortened here and printed whole by the command.)
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | `results.json` was written and no query raised; or, with `--prepare-only`, every check passed. |
+| `1` | A refusal (`suite.json` invalid, a hash mismatch, a golden query without a plan, a clone that is not the pin or not pristine, a gold path missing or not indexed, `--out` unwritable, `--arm` missing or malformed, `--prepare-only` given with `--arm` or `--out`, a run directory that exists, an index error, an index that cannot be built (the `local` extra missing, the disk full), a frozen plan missing at run time; nothing is written in these cases), or queries that raised after `results.json` was written. |
+| `2` | A usage error (an unknown option, a missing argument). |
+
+#### Notes
+
+- `--arm` and `--out` are checked before anything is cloned, so a mistyped path fails in a second.
+- A refusal after the run directory was claimed (an index error, an index that cannot be built, a
+  frozen plan missing at run time) ends with `refused: the run directory PATH is left as it is;
+  delete it before running this arm again`: the command deletes nothing under the cache, and the
+  next run of the same `--arm` would otherwise be refused for a directory this one never named.
+- Only `https://github.com/<owner>/<repo>[.git]` repositories can be named by a `suite.json`
+  (`ALLOWED_REPO_HOSTS` in `trelix.eval.suite`); public repositories only, since git gets no
+  credentials. A local path is accepted only by the Python API's `allow_local=True`, for the tests.
+- The default walker ignores a directory called `packages`, so a gold file under it is refused as
+  "not indexed"; the suite's golden file must leave such queries out (for this repository, two of the
+  shipped golden file's 54 queries).
+- Needs the `local` extra (sentence-transformers) to build the index; `--prepare-only` does not.
 
 ---
 
@@ -1164,7 +1795,9 @@ trelix review [<repo_path>] --pr OWNER/REPO#NUMBER [--post-comments] [--json]
 
 Performs retrieval-augmented code review on a git diff. trelix retrieves
 context for each changed hunk and uses an LLM to generate structured review
-comments with severity labels (`ERROR`, `WARN`, `INFO`).
+comments with severity labels (`ERROR`, `WARN`, `INFO`). A repository with no
+index is still reviewed, from the diff alone and without the retrieved context;
+`review` never creates `.trelix/` (run `trelix index` first for grounded comments).
 
 Without `--pr`, uses a local git diff (from a file or by running `git diff`).
 With `--pr`, fetches the diff directly from the GitHub API.
@@ -1186,9 +1819,9 @@ With `--pr`, fetches the diff directly from the GitHub API.
 | Code | Meaning |
 |------|---------|
 | `0` | The review covered every hunk it was given: "no issues found", or findings with every hunk reviewed. A partial review also exits `0` when `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` allows the share of unreviewed hunks (a warning with the counts goes to stderr). |
-| `1` | Error: invalid configuration, GitHub API failure, unreadable diff. |
-| `3` | The review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review). A hunk cut off after some complete findings keeps them and counts as a partial review, not as one that did not run. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) (with `--pr` it is the only thing on stdout; in local-diff mode a `Reviewing N hunks across M files...` line is printed to stdout before it), so an empty array alone does not mean "clean": check the exit code. |
-| `4` | The review ran but more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` of the hunks were not reviewed because the reply was cut off (even after a retry), refused, filtered, not a review, or the call failed. The default `0.0` means any hunk. The findings are printed first, so stdout carries what there is (with `--json`, the array as usual); the counts go to stderr. Set the variable to `1` to exit `0` for a partial review. |
+| `1` | Error: invalid configuration, GitHub API failure, unreadable diff, or (without `--diff`) a `--base` or `--head` that git cannot resolve to an object, or a `git diff` between them that fails. |
+| `3` | The review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, had its prompt cut by a local server, refused or not a review). A hunk cut off after some complete findings keeps them and counts as a partial review, not as one that did not run. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) and nothing else, so an empty array alone does not mean "clean": check the exit code. |
+| `4` | The review ran but more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` of the hunks were not reviewed because the reply was cut off (even after a retry), a local server cut the prompt (`detail: prompt_truncated`), refused, filtered, not a review, or the call failed. The default `0.0` means any hunk. The findings are printed first, so stdout carries what there is (with `--json`, the array as usual); the counts go to stderr. Set the variable to `1` to exit `0` for a partial review. |
 
 Exit code `2` is not used by `review` itself (it is the usage-error code), so
 `3` and `4` are unambiguous for CI wrappers. With `--post-comments`, nothing is posted
@@ -1235,6 +1868,27 @@ GITHUB_TOKEN=$TOKEN trelix review . --pr acme/backend#142 --post-comments
 
 - `<repo_path>` defaults to `.` if omitted.
 - `--pr` and `--diff`/`--base`/`--head` are mutually exclusive.
+- Without `--diff`, `--base` and `--head` must each resolve to an object that exists (a branch, a tag,
+  a commit id, any other revision that names one object such as `HEAD~2`, `:/text`, `HEAD~1:src` or
+  `HEAD~1:src/foo.py`, or the empty tree to review a repository's first commit; a range such as
+  `HEAD~2..HEAD` is not accepted); otherwise the command
+  prints `cannot resolve --base 'REF' to a git object` to stderr and exits `1`. If `git diff` still fails
+  between two refs that each resolve (a blob against a commit, a timeout, output that is not UTF-8), the
+  command prints `git diff 'BASE' 'HEAD' failed: ...` and exits `1` as well. Refs that resolve but
+  differ in nothing print `No changes found in diff.` and exit `0`. A `--diff` file never looks at the refs.
+- With `--json`, stdout is exactly one JSON array, for a local diff and for `--pr` without `--post-comments`:
+  the findings, or `[]` when there are none, the diff is empty or the review did not run (exit `3`). Progress
+  and status lines such as `Reviewing N hunks across M files...` go to stderr. An error exit (`1`) writes
+  nothing to stdout. `--pr` with `--post-comments` prints `Posted review with N inline comments.` to stdout
+  after the array once the review is posted, so stdout is then more than the array.
+- With `TRELIX_LLM_BASE_URL` set (an OpenAI-compatible local server), a hunk is reported as `truncated`
+  with `detail: prompt_truncated` in the outcome file when the server's reported `prompt_tokens` is
+  under 0.85 x the cl100k_base count of what trelix sent: Ollama drops the head of a prompt longer than
+  its context length (the system prompt goes first) and answers HTTP 200 with a normal finish reason.
+  Nothing is kept from that reply and the hunk is not retried; a review where every hunk was cut this
+  way exits `3`. The check needs `usage` in the reply and the cl100k_base encoding on disk; when either
+  is missing it warns once and stays off. Only the review call is checked: `trelix ask` (a stream) and
+  the query planner's tool call are not.
 - Binary and oversized files from GitHub PRs are skipped automatically.
 - PRs with more than 3,000 changed files will trigger a truncation warning.
 
@@ -1545,6 +2199,12 @@ trelix search-all <query> [--k N] [--json] [--config PATH]
 Runs a hybrid search across all repositories registered in the federation
 registry. Uses Reciprocal Rank Fusion (RRF) weighted by each repo's registered
 weight to merge results. Displays results grouped by source repo.
+
+A registered repo that has no index is skipped, not searched, and named on stderr
+(`Skipping <alias>: No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`);
+it is not opened, so `search-all` never creates an index there. If none of the repos it
+would query has an index, it prints `None of the queried repos has an index.` and exits `1`,
+with nothing on stdout even under `--json`.
 
 #### Options
 
@@ -2027,4 +2687,132 @@ trelix audit prune --retention-days 90
 
 ---
 
-*End of CLI Reference — trelix v3.4.3*
+### `trelix cache gc`
+
+#### Synopsis
+
+```
+trelix cache gc [--max-mb N]
+```
+
+#### Description
+
+Trims every file of the on-disk index-time embedding cache
+(`TRELIX_EMBEDDING_CACHE_*`, see
+[CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time)) to its size cap,
+evicting the least recently used rows first and returning the space with
+`VACUUM`. `trelix index` applies the same trim at the end of each run; this is the
+same trim on demand, for instance after lowering `TRELIX_EMBEDDING_CACHE_MAX_MB`.
+It takes no repository argument and never opens an index: the directory comes from
+`TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`, else
+`~/.cache/trelix/embeddings`. Only files named `<32 hex chars>.db` (one per
+embedder fingerprint) are opened, in name order (a directory carrying such a name
+is left alone, as `clear` leaves it, and so is any symlink, whatever it points at:
+`gc` never trims a file outside the directory, and `clear` unlinks the link without
+following it); each is opened at the width it records, so no embedder is loaded and
+no width check can fail.
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--max-mb` | integer >= 1 | `TRELIX_EMBEDDING_CACHE_MAX_MB` (`4096` when unset) | Trim every file to about this many MB. `0` is a usage error (exit 2). |
+
+#### Examples
+
+```bash
+# Trim every cache file to the configured cap
+trelix cache gc
+
+# Trim to 512 MB per file this once, without changing the environment
+trelix cache gc --max-mb 512
+```
+
+#### Output
+
+One line per cache file, in name order:
+
+```
+9837970b2d56d811957572da7bae6138.db: 512000 -> 327680 rows, 838860800 -> 536870912 bytes
+```
+
+A file already within the cap prints with unchanged counts. With no cache
+directory: `No embedding cache at <dir>.`
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every file was trimmed (or was already within the cap), or there is no cache directory. |
+| `1` | At least one file could not be opened or trimmed (`Embedding cache unreadable: ...`; the others were still trimmed), the directory exists but cannot be listed (`Embedding cache unreadable: ...`; nothing trimmed), or `TRELIX_EMBEDDING_CACHE_*` is invalid (`Configuration error: ...`). |
+| `2` | Usage error, e.g. `--max-mb 0`. |
+
+#### Notes
+
+- The cap is a trim, not a limit: one `trelix index` run can write past it, and
+  the trim after that run (or this command) brings the file back.
+- Rows are evicted by `last_used_at`; a chunk served from the cache during an index
+  run counts as used, a `--dry-run` preview does not (it opens the file read-only).
+- A file of a model you no longer use is never removed by `gc` (it only shrinks);
+  `trelix cache clear` removes every file.
+- `gc` creates nothing. A 0-byte file (a first open interrupted before its first
+  commit, which `trelix index` would initialise) is reported as `not a trelix
+  embedding cache`, exit 1; a symlink carrying a cache file's name is skipped whatever
+  its target, so nothing is created or trimmed outside the directory; `trelix cache
+  clear` removes both.
+
+---
+
+### `trelix cache clear`
+
+#### Synopsis
+
+```
+trelix cache clear
+```
+
+#### Description
+
+Deletes every embedding cache file (`<32 hex chars>.db`) and SQLite journal
+sidecar (`<32 hex chars>.db-journal`) directly inside the cache directory, and
+prints what it removed. Nothing else in that directory is touched: no other
+name, no subdirectory (it never recurses), and a symlink carrying a cache file's
+name is unlinked, never followed. The directory itself stays. This is the removal
+step [SECURITY.md](../SECURITY.md#embedding-cache-on-disk-trelix_embedding_cache_enabled)
+describes, and the way out when a cache file is refused as another width or
+schema.
+
+#### Options
+
+None.
+
+#### Examples
+
+```bash
+trelix cache clear
+# Removed 2 file(s), 1073819648 bytes, from /home/me/.cache/trelix/embeddings
+```
+
+#### Output
+
+`Removed N file(s), M bytes, from <dir>` (`M` is the sum of the removed files'
+sizes), or `No embedding cache at <dir>.` when the directory does not exist.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every matching file was removed, or there is no cache directory. |
+| `1` | At least one file could not be removed (`Could not remove: ...`; the others were still removed and counted), the directory exists but cannot be listed (`Embedding cache unreadable: ...`; nothing removed), or `TRELIX_EMBEDDING_CACHE_*` is invalid (`Configuration error: ...`). |
+
+#### Notes
+
+- Run it with the same `TRELIX_EMBEDDING_CACHE_DIR` (or `XDG_CACHE_HOME`/`HOME`)
+  as the `trelix index` runs that wrote the cache; the command reads only those
+  variables and has no repository argument.
+- The next `trelix index` with the cache on re-embeds every chunk once and
+  refills the cache.
+
+---
+
+*End of CLI Reference — trelix v3.5.0*

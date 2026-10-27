@@ -7,7 +7,7 @@ packages = ["src/trelix_llama_index"]
 
 [project]
 name = "trelix-llama-index"
-version = "3.4.3"
+version = "3.5.0"
 description = "LlamaIndex retriever for trelix code intelligence"
 readme = "README.md"
 # `license` and the License classifier are what PyPI renders, NOT the shipped file.
@@ -32,8 +32,15 @@ classifiers = [
 # from. Nothing here catches that: retriever.py reads `IndexConfig`/`EmbedderConfig` and
 # `SearchResult`/`RetrievedContext` attributes directly, but tests/test_retriever.py
 # mocks the core wholesale, so the suite passes against a core that isn't installed.
-# 3.0.0 is the lowest published core verified to expose every name used here.
-dependencies = ["trelix>=3.0.0", "llama-index-core>=0.10.0"]
+# 3.0.0 was the lowest published core verified to expose every name used here.
+#
+# trelix>=3.5.0 (v3.5.0): retriever.py imports `require_index` from trelix.core.index_check
+# inside _get_trelix_retriever, and that module is not in the last core before 3.5.0 (3.4.3).
+# Against an older core the adapter installs and imports, then fails at the first query, and a
+# machine that already held that core satisfied the old floor, so `pip install -U
+# trelix-llama-index` kept it. tests/unit/test_release_version_gate.py
+# (TestSatelliteCoreFloorsFollowTheCore) fails a release that bumps the version without this.
+dependencies = ["trelix>=3.5.0", "llama-index-core>=0.10.0"]
 
 [project.urls]
 Homepage = "https://github.com/sairam0424/trelix"

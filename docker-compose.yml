@@ -33,3 +33,33 @@ services:
       # Add a hostname (comma-separated) to serve under another name; `*` disables the
       # check. It does not replace TRELIX_API_AUTH_TOKEN. GET /health is always exempt.
       - TRELIX_API_ALLOWED_HOSTS=${TRELIX_API_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}
+
+  # Optional: the same repository over MCP (Streamable HTTP), for a client that cannot spawn
+  # the process. Behind the `mcp` profile, so plain `docker compose up` does not start it:
+  #   TRELIX_MCP_AUTH_TOKEN=<secret> docker compose --profile mcp up
+  trelix-mcp:
+    image: ghcr.io/sairam0424/trelix:latest
+    profiles: ["mcp"]
+    # The image's entrypoint is `trelix`; this service runs the other console script.
+    entrypoint: ["trelix-mcp"]
+    command: ["--transport", "http", "--host", "0.0.0.0", "--port", "8766", "--root", "/repo"]
+    ports:
+      # Loopback only, as for the REST port above.
+      - "127.0.0.1:8766:8766"
+    volumes:
+      - "${REPO_PATH:-.}:/repo"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - TRELIX_EMBEDDER_PROVIDER=${TRELIX_EMBEDDER_PROVIDER:-openai}
+      # Not `${...:?}`: Compose interpolates services in inactive profiles too, so `:?` would
+      # make plain `docker compose up` fail. The container exits 2 without a token instead.
+      - TRELIX_MCP_AUTH_TOKEN=${TRELIX_MCP_AUTH_TOKEN:-}
+      # The Host names a client may use; add the one you publish under (comma-separated).
+      - TRELIX_MCP_ALLOWED_HOSTS=${TRELIX_MCP_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}
+    # The image's own HEALTHCHECK probes 8765, which this service does not serve.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

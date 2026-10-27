@@ -71,7 +71,21 @@ SLOW_FILES = frozenset(
     {
         "regressions/test_regressions.py",
         "unit/test_audit_wipe_detection.py",
+        # The Claude Code plugin's SessionStart hook: 13 of the file's 17 tests run the hook
+        # script as a child interpreter (one to six runs each) and six of those build a git
+        # repository first, so its cost is structural (about 20 child processes). Measured
+        # 2026-10-07 on two runs: 11.82s at a load average of 31 to 35 (the slowest test, five
+        # child runs, 2.00s; the git-backed ones 1.1s to 1.4s each) and 3.67s at a load of 11
+        # to 19; both are quoted, as for test_regressions.py, and the loaded run is the one the
+        # full suite sees.
+        "unit/test_claude_plugin_session_start.py",
         "unit/test_cli_closed_stdout.py",
+        # Measured 5.21s for 4 tests on this tree (load 34-38): two real Indexer runs over a
+        # tree-sitter-parsed tmp repo (the first loads the parsers). Its sibling
+        # test_cli_cache.py (gc/clear, 17 tests, one 30,000-row cache file) measured 1.53s on
+        # the same run and is not listed.
+        "unit/test_cli_cache_index_rows.py",
+        "unit/test_cli_eval_suite.py",
         "unit/test_cli_smoke.py",
         "unit/test_cli_watch_all_signals.py",
         "unit/test_connectors.py",
@@ -79,7 +93,32 @@ SLOW_FILES = frozenset(
         "unit/test_dotenv_anchoring.py",
         "unit/test_dry_run.py",
         "unit/test_embedder.py",
+        # Measured 24.65s for 15 tests on this tree (load 25-35): eight real Indexer runs
+        # over a tree-sitter-parsed tmp repo, plus two CliRunner invocations.
+        "unit/test_embedding_cache_indexer.py",
         "unit/test_eval_harness.py",
+        # The four `trelix eval-suite` files that make real git clones of a repository built in
+        # a temp directory (the CLI file is listed above with the other test_cli_* files).
+        # Measured 2026-10-06 as call+setup+teardown per file at a load average of 23 to 29:
+        # clone 16.2s, git isolation 8.2s, gold 6.3s, CLI 3.3s to 5.2s; the CLI file measured
+        # 9.3s at load 42 and 38.6s at load 70 to 83 on 2026-10-07, so every run but one is at
+        # or above the threshold and all are quoted, as for test_regressions.py. The spec file
+        # (1.7s) stays out.
+        "unit/test_eval_suite_clone.py",
+        "unit/test_eval_suite_git_isolation.py",
+        "unit/test_eval_suite_gold.py",
+        # The three `run_suite` files and the CLI run file. The indexer file is slow by
+        # construction: ten real index builds (two byte-identical files, four parse workers) plus
+        # one real-Indexer canary run, 17.3s at a load average of 48 to 52 on 2026-10-07 (11.5s +
+        # 1.0s at load 30; the real Chunker needs tiktoken's cl100k_base cache offline). The
+        # other two are 54 stub-driven tests that each clone the demo repository: 27.5s together
+        # at load 48 to 52. The CLI run file is six such tests through Typer, split out of
+        # test_cli_eval_suite.py (above) on 2026-10-07. (test_makefile_eval_suite_target.py
+        # reads one file and stays out.)
+        "unit/test_cli_eval_suite_run.py",
+        "unit/test_eval_suite_run.py",
+        "unit/test_eval_suite_run_indexer.py",
+        "unit/test_eval_suite_run_refusals.py",
         "unit/test_indexer_vector_repair.py",
         "unit/test_marker_taxonomy.py",
         "unit/test_otel_metrics.py",
@@ -161,12 +200,20 @@ SECURITY_FILES = frozenset(
         "unit/test_audit_undetectable.py",
         "unit/test_audit_verify_snapshot.py",
         "unit/test_audit_wipe_detection.py",
+        "unit/test_claude_plugin_session_start.py",
         "unit/test_cli_audit_read_only.py",
         "unit/test_cli_markup_safety.py",
         "unit/test_cli_serve_exposure_warning.py",
         "unit/test_config_error_redaction.py",
+        "unit/test_confinement.py",
         "unit/test_defuse.py",
         "unit/test_dotenv_anchoring.py",
+        "unit/test_eval_suite_clone.py",
+        "unit/test_eval_suite_git_isolation.py",
+        "unit/test_eval_suite_gold.py",
+        "unit/test_eval_suite_repo_url.py",
+        "unit/test_eval_suite_run_indexer.py",
+        "unit/test_eval_suite_run_refusals.py",
         "unit/test_graph_visualizer_escaping.py",
         "unit/test_network_is_blocked.py",
         "unit/test_oidc.py",

@@ -1,4 +1,4 @@
-# trelix User Guide — v3.4.3
+# trelix User Guide — v3.5.0
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -22,7 +22,7 @@
 13. [CLI Flags and Configuration Reference](#13-cli-flags-and-configuration-reference)
 14. [API Quick Reference](#14-api-quick-reference)
     - [REST API authentication](#rest-api-authentication)
-    - [Caller-supplied query routing (`intent_hint` / `hyde_snippet_hint`)](#caller-supplied-query-routing-intent_hint-hyde_snippet_hint)
+    - [Caller-supplied query routing (`intent_hint` / `hyde_snippet_hint`)](#caller-supplied-query-routing-intent_hint--hyde_snippet_hint)
     - [Dry-run file parsing](#dry-run-file-parsing)
     - [Ticket linking and connector sync (CLI-only)](#ticket-linking-and-connector-sync-cli-only)
 
@@ -236,7 +236,7 @@ User Query
 
 ### Leg 1 — Vector (always active)
 
-**What it does:** Converts your query into a dense vector using the same embedding model used at index time, then searches over all chunk vectors — an exact flat scan on the default SQLite backend, or an Approximate Nearest Neighbor (ANN) search over a real HNSW index on the optional Qdrant backend (scales to 500k+ chunks).
+**What it does:** Converts your query into a dense vector using the same embedding model used at index time, then searches over all chunk vectors — an exact flat scan on the default SQLite backend, or an Approximate Nearest Neighbor (ANN) search over a real HNSW index on the optional Qdrant backend (for indexes past the flat-scan advisory threshold).
 
 **Why it matters:** This is the semantic leg. It finds code that *means the same thing* as your query even when no words match. "User credential verification" will find `authenticate_user()` even if neither word appears in the function.
 
@@ -503,7 +503,7 @@ trelix has three primary query commands. Each serves a different purpose. Knowin
 trelix search ./my-repo "<query>"
 ```
 
-**What it does:** Runs the full retrieval pipeline (all enabled legs, RRF fusion, graph expansion, optional reranking) and returns a ranked table of results. No LLM synthesis. No external API call **if no chat credential is set** — a local embedding provider is not sufficient on its own, because the retrieval planner reads the chat credential independently and makes one call per distinct query when it finds one.
+**What it does:** Runs the full retrieval pipeline (all enabled legs, RRF fusion, graph expansion, optional reranking) and returns a ranked table of results. No LLM synthesis. No external API call **if no chat credential and no `TRELIX_LLM_BASE_URL` is set** — a local embedding provider is not sufficient on its own, because the retrieval planner reads the chat credential and the local-server URL independently and makes one call per distinct query when it finds either.
 
 **Output:** A Rich table with score, file path, symbol name, line numbers, and language.
 
@@ -541,7 +541,7 @@ trelix ask ./my-repo "<question>"
 
 **What it does:** Runs the full retrieval pipeline, assembles a context window from the top results, and sends the context to an LLM to synthesize a natural language answer. Streams tokens live as they are generated. For large contexts (>8,000 tokens or >20 results), activates GraphRAG map-reduce to avoid context window overflows.
 
-**Output:** Streaming natural language answer with source citations at the end.
+**Output:** a streamed natural-language answer. With `TRELIX_RETRIEVAL_CITATIONS=true` the answer cites `[C#]` tags and ends with a `Sources:` footer that verifies each tag against the retrieved chunk and the file on disk. `--json` prints one JSON object (`query`, `answer`, `abstained`, `abstain_reason`, `citations`) instead of streaming.
 
 **When to use it:**
 - You want to understand *how something works*, not just find where it is.
@@ -549,7 +549,7 @@ trelix ask ./my-repo "<question>"
 - You are debugging and need a summary of what a chain of functions does.
 - You want an architecture overview.
 
-**Requires:** An LLM API key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY`, etc.) or a local Ollama instance via LiteLLM.
+**Requires:** An LLM API key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY`, etc.) or an OpenAI-compatible local server (Ollama, llama-server) via `TRELIX_LLM_BASE_URL`, with no key — see [OFFLINE.md](OFFLINE.md).
 
 **Key options:** `trelix ask` takes three flags — `--provider`, `--agentic`, and
 `--session`. Streaming is the built-in behaviour whenever an LLM is available; there is
@@ -1037,7 +1037,7 @@ pip install trelix-mcp
 claude mcp add trelix -- trelix-mcp
 ```
 
-That is the entire setup. trelix-mcp launches as a stdio MCP server. Claude Code can now use trelix tools in any conversation.
+That is the entire setup. trelix-mcp launches as a stdio MCP server by default; `--transport http` serves remote clients instead, see MCP_GUIDE section 19. Claude Code can now use trelix tools in any conversation.
 
 ### Cursor
 
@@ -1132,7 +1132,7 @@ Returns full symbol metadata including body, docstring, line range, and call edg
 ```
 blast_radius(symbol_name="UserRepository.get_by_email", repo_path="./my-repo")
 ```
-Returns a list of dicts describing all callers and importers of the named symbol, ordered by dependency depth.
+Returns a list of dicts describing the callers and importers of the named symbol (at most 100 by default; `limit` raises that to 500), ordered by dependency depth.
 
 **`build_knowledge_graph`** — Build the Code Property Graph.
 ```
@@ -1150,12 +1150,12 @@ graph_search_mcp(query="auth middleware", repo_path="./my-repo", depth=2, max_re
 ```
 Returns structurally adjacent symbols to the query's top results, traversed via the Code Property Graph.
 
-> **v2.5.0 — MCP resource subscriptions.** trelix-mcp now advertises `resources.subscribe=True` in server capabilities and exposes two new tools:
+> **v2.5.0 — MCP resource subscription tools.** trelix-mcp exposes two tools for registering interest in a resource. It does not advertise `resources.subscribe` (it reports `false`) and does not serve the `resources/subscribe` request, and no change notification is delivered yet:
 >
-> - **`subscribe_resource(uri, subscription_id)`** — Subscribe to a `trelix://` resource URI. When the underlying file changes and the index is updated, the server fires a `notifications/resources/updated` notification (URI + `subscriptionId` in `_meta`).
+> - **`subscribe_resource(uri, subscription_id)`** — Register a `trelix://` resource URI in the server's in-memory registry. The server is meant to send `notifications/resources/updated` (URI + `subscriptionId` in `_meta`) when the index changes, but that only works if a file watcher runs inside the `trelix-mcp` process, and nothing starts one.
 > - **`unsubscribe_resource(subscription_id)`** — Cancel an active subscription by ID.
 >
-> URI scheme: `trelix://repo/{repo_path}/manifest`. The wire protocol is: `resources/subscribe` → `notifications/resources/updated` → `resources/read`. This is the standard MCP subscription flow and allows assistants to react to live code changes without polling.
+> URI scheme: `trelix://repo/{repo_path}/manifest`. The intended flow is `subscribe_resource` → `notifications/resources/updated` → `resources/read`; see [MCP_GUIDE.md](MCP_GUIDE.md) section 17 for what works today.
 
 ### Example Claude Code session
 
@@ -1210,7 +1210,7 @@ No API key, no cost, fast. Quality is adequate for basic navigation and learning
 pip install "trelix[bge-code]"
 TRELIX_EMBEDDER_PROVIDER=bge-code trelix index ./my-repo
 ```
-This provider is **experimental as of v3.1.7 and its retrieval quality is unverified.** trelix builds it with FlagEmbedding's `FlagModel`, which pools with CLS (`DEFAULT_POOLING_METHOD = "cls"`; `pooling()` returns `last_hidden_state[:, 0]`), while BAAI publishes `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true` in `1_Pooling/config.json`. The "2025 CoIR leader" standing previously stated here was the upstream model's and was never a measurement of this implementation; it is retracted. It does run fully offline after the first model download (~3GB) and needs no API key. On CPU it is slower (plan for 30–60 seconds for a 10k-chunk index, vs. 3 seconds with local). For an offline provider without this open question, use `local-code` or `nomic-code`. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
+This provider is **experimental as of v3.1.7 and its retrieval quality is unverified.** trelix builds it with FlagEmbedding's `FlagModel`, which pools with CLS (`DEFAULT_POOLING_METHOD = "cls"`; `pooling()` returns `last_hidden_state[:, 0]`), while BAAI publishes `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true` in `1_Pooling/config.json`. The "2025 CoIR leader" standing previously stated here was the upstream model's and was never a measurement of this implementation; it is retracted. It does run fully offline after the first model download (~3GB) and needs no API key. On CPU it is slower (plan for 30–60 seconds for a 10k-chunk index, vs. 3 seconds with local). For an offline provider without this open question, use `local-code` or `nomic-code`. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval).
 
 **Best API-based quality for code:**
 ```bash
@@ -1220,7 +1220,7 @@ TRELIX_EMBEDDER_PROVIDER=voyage trelix index ./my-repo
 ```
 Voyage AI's `voyage-code-3` is the best API-based code embedding model. The Matryoshka architecture means you can choose your dimension tradeoff:
 ```bash
-TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512  # 2× faster HNSW, minimal quality loss
+TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512  # smaller vectors, a cheaper vector search, minimal quality loss
 TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=1024 # full quality (default)
 ```
 
@@ -1237,17 +1237,17 @@ Bedrock-Cohere uses asymmetric retrieval: `search_document` at index time, `sear
 Voyage AI's `voyage-code-3` uses Matryoshka Representation Learning: the model trains a single embedding that can be truncated to any dimension without retraining. This means you can trade off quality vs. speed:
 
 ```bash
-# Full quality: 1024 dims, slower HNSW
+# Full quality: 1024 dims
 TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=1024
 
-# 2× faster HNSW, ~2% quality loss: 512 dims
+# Half the width of 1024, ~2% quality loss: 512 dims
 TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512
 
-# 4× faster HNSW, ~5% quality loss: 256 dims (very large repos only)
+# A quarter of the width, ~5% quality loss: 256 dims
 TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=256
 ```
 
-For repos under 100k chunks, stay at 1024. For larger repos where HNSW latency becomes noticeable, try 512.
+Stay at 1024 while the index is below the `Flat-scan advisory` threshold for its width ([CONFIGURATION.md § Storage](CONFIGURATION.md#storage)). Past it, the remedy is `TRELIX_STORE_BACKEND=lance` or `qdrant`. A narrower width makes each vector cheaper to scan on the default sqlite store but does not remove the flat scan, and the advisory applies the threshold of the nearest measured width at or above yours (the committed table is not monotonic, so a narrower width can fire the advisory earlier; see [CONFIGURATION.md § Storage](CONFIGURATION.md#storage)).
 
 ### Changing providers (requires re-index)
 
@@ -1325,7 +1325,7 @@ trelix telemetry — ./my-repo — last 10 queries
 
 *Typical ranges:*
 - `grep+bm25`: 10–50ms
-- `vector`: 30–100ms (HNSW query)
+- `vector`: grows with index size on the default sqlite store (an exact flat scan); measured figures are in the benchmark linked from [CONFIGURATION.md § Storage](CONFIGURATION.md#storage)
 - `vector+bm25+grep` (RRF): 40–150ms
 - `+graph` (BFS expansion): add 50–200ms depending on graph size
 - `+reranker` (Cohere): add 300–800ms (network round trip)
@@ -1567,15 +1567,16 @@ TRELIX_LLM_PROVIDER=anthropic TRELIX_LLM_MODEL=claude-haiku-4-5 trelix ask ./my-
 ## 13. CLI Flags and Configuration Reference
 
 **[docs/CLI_REFERENCE.md](CLI_REFERENCE.md) is the authoritative, per-command flag
-reference.** It is generated against the real Typer application and covers all 30
-commands and subcommands with synopsis, options, examples, and notes. Read it there
+reference.** It is generated against the real Typer application and covers every
+command and subcommand with synopsis, options, examples, and notes. Read it there
 rather than here — a second full flag table in this guide would only drift out of date.
 
 Three things are worth stating plainly before you go looking for a flag:
 
 **1. The repo is a positional argument, never a flag.** Every command that operates on a
-repository takes it as the first positional argument. There is no `--repo` anywhere in
-trelix.
+repository takes it as the first positional argument. The only `--repo` is on
+`eval-validate`, which checks a golden file and names the git repository its paths are
+checked against.
 
 ```bash
 trelix index  ./my-repo
@@ -1645,12 +1646,12 @@ that copy-pasted commands fail loudly rather than silently:
 | `--token` (on `review`) | the `GITHUB_TOKEN` environment variable |
 | `--debounce`, `--graph` (on `watch`) | nothing — `watch` takes only `--provider`; there is no debounce flag *or* env var |
 | `--since`, `--query-filter`, `--json` (on `telemetry`) | `--limit`/`-n`, or query the `query_telemetry` table with `sqlite3` |
-| `--repo` (anywhere) | the repo is positional |
+| `--repo` (on any command but `eval-validate`) | the repo is positional |
 | `--embedder` | `--provider` |
-| `trelix-mcp --version` / `--cache-dir` | `trelix-mcp` parses no arguments at all; use `python -c "import trelix_mcp; print(trelix_mcp.__version__)"` |
+| `trelix-mcp --cache-dir` | nothing — `trelix-mcp` accepts only `--help`, `--version`, `--tools core\|full`, `--root PATH` and the HTTP flags `--transport stdio\|http`, `--host`, `--port`, `--path`, `--allowed-host`, `--stateful` and `--allow-unauthenticated` (MCP_GUIDE section 19) |
 
 There is also no `trelix config`, `trelix doctor`, `trelix mcp`, or `trelix federation
-stats` command. `trelix --help` lists the real 23 top-level commands.
+stats` command. `trelix --help` lists the real top-level commands.
 
 ### Key environment variables
 
@@ -1802,7 +1803,7 @@ To fetch the next page, pass the previous response's `next_cursor` as the `curso
 | `repo` | string | yes | Path to indexed repo |
 | `k` | integer | no | Number of results per page (default: 10) |
 | `cursor` | integer | no | Pagination offset (default: 0) |
-| `intent_hint` | string | no | One of the 8 `IntentType` values — see [Caller-supplied query routing](#caller-supplied-query-routing-intent_hint-hyde_snippet_hint) below |
+| `intent_hint` | string | no | One of the 8 `IntentType` values — see [Caller-supplied query routing](#caller-supplied-query-routing-intent_hint--hyde_snippet_hint) below |
 | `hyde_snippet_hint` | string | no | Short hypothetical code snippet (HyDE); only used when `intent_hint` is also valid |
 
 ### Caller-supplied query routing (`intent_hint` / `hyde_snippet_hint`)
@@ -2136,6 +2137,9 @@ A sample file is provided at `eval/golden_synthesis_sample.jsonl`. Copy and adap
 - `relevant_files` (optional) — files that should be retrieved (not currently used by the harness scorer, but useful for documentation)
 - `expected_answer_fragments` (optional) — strings that MUST appear in a correct answer (case-insensitive)
 - `expected_symbols` (optional) — qualified names that should appear WITHOUT being hallucinated
+- `answerable` (optional, default `true`) — `false` marks a question the repository does not answer; such queries are counted and left out of the four scores
+- `gold_answer` (optional) — a non-empty reference answer, stored for a future judge and never scored
+- `expected_citations` (optional) — repo-relative paths a correct answer cites; the eval counts the ones that a `valid` `[C#]` marker of the answer refers to (`Citation recall`), which needs `TRELIX_RETRIEVAL_CITATIONS=true` for the run
 
 ### Running the evaluation
 
@@ -2146,17 +2150,32 @@ trelix eval-synthesis ./my-repo --golden ./eval/golden_synthesis.jsonl
 
 Output:
 ```
-                     Synthesis Quality Results (GroUSE-style)
-┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┓
-┃ Metric              ┃  Score ┃ Direction         ┃
-┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━┩
-│ Hallucination rate  │ 0.0000 │ lower = better    │
-│ Completeness        │ 0.8333 │ higher = better   │
-│ Faithfulness        │ 0.7250 │ higher = better   │
-│ Overall             │ 0.8783 │ higher = better   │
-│ Queries evaluated   │      3 │                   │
-└─────────────────────┴────────┴───────────────────┘
+                  Synthesis Quality Results (GroUSE-style)
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Metric               ┃  Score ┃ Direction                                 ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Hallucination rate   │ 0.0000 │ lower = better                            │
+│ Completeness         │ 0.8333 │ higher = better                           │
+│ Faithfulness         │ 0.7250 │ higher = better                           │
+│ Overall              │ 0.8783 │ higher = better                           │
+│ Abstention precision │ 0.0000 │ higher = better; of 0 abstained           │
+│ Abstention recall    │ 0.0000 │ higher = better; of 0 unanswerable        │
+│ Citation validity    │ 0.0000 │ higher = better; of 0 cited answers       │
+│ Citation recall      │ 0.0000 │ higher = better; of 0 expecting citations │
+│ Queries evaluated    │      3 │                                           │
+│ Unanswerable queries │      0 │ not in the four scores above              │
+│ Unscoreable queries  │      0 │ placeholder scores; see the log           │
+└──────────────────────┴────────┴───────────────────────────────────────────┘
 ```
+
+The four ratio rows read `0.0000` in this run because `TRELIX_RETRIEVAL_CITATIONS` is unset: no block is
+tagged, so the model is never asked to cite or to abstain with `INSUFFICIENT_EVIDENCE:`. See
+`eval/README.md` for how each row is computed.
+
+The table is all that reaches stdout; add `--record FILE` to keep the answers and `--replay FILE` to
+score them again with no synthesis call (retrieval, including its planner, still runs). The directory of
+`--record FILE` and of `--per-query-out FILE` must already exist, and the two cannot be the same file;
+both are checked before the run starts, not after it has been paid for.
 
 ### Python API
 
@@ -2189,7 +2208,7 @@ print(f"Overall: {metrics['overall']:.3f}")
 
 Everything below is **additive and off by default** — a v2.12.0 setup keeps behaving exactly as it did until you flip a flag. Each item lists the primary switch; the full env-var tables live in [CONFIGURATION.md](CONFIGURATION.md).
 
-- **Extended thinking on synthesis** (`TRELIX_LLM_THINKING_ENABLED=true`, budget `TRELIX_LLM_THINKING_BUDGET_TOKENS`, default `4096`) — lets an Anthropic model reason before it answers, for the "why does this design work?" questions where a one-pass answer is thin. Only the synthesizer opts in: the index-time call sites (per-symbol contextual chunking, per-file summarization) deliberately never do, so enabling it does not inflate indexing cost. Thinking tokens are billed as **output** tokens, and the request is forced to `temperature=1.0`.
+- **Extended thinking on synthesis** (`TRELIX_LLM_THINKING_ENABLED=true`, budget `TRELIX_LLM_THINKING_BUDGET_TOKENS`, default `4096`) — lets an Anthropic model reason before it answers, for the "why does this design work?" questions where a one-pass answer is thin. Only the synthesizer opts in: the index-time call sites (per-symbol contextual chunking, per-file summarization) deliberately never do, so enabling it does not inflate indexing cost. Thinking tokens are billed as **output** tokens, and on a budget model over Bedrock the request is forced to `temperature=1.0`. Claude 5 and newer, and Opus 4.7 and newer, reject a token budget and use adaptive thinking instead: the budget setting is ignored, no temperature is forced, and the model decides whether to think at all (see [CONFIGURATION.md](CONFIGURATION.md#extended-thinking-anthropic)).
 
 - **Model-aware context budgets** — `context_token_budget` still defaults to `12000`, which is byte-for-byte v2.12.0 behavior. Set `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` (`none`/`auto`/empty also work) to derive it from the model's own context window instead: `window × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION` (default `0.5`). Expect little change from the budget alone — `rerank_top_n` and `top_k_vector` still cap candidates first. Set `TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET=true` (default `false`) to scale those ceilings too, which does raise per-query cost.
 
@@ -2205,7 +2224,7 @@ Everything below is **additive and off by default** — a v2.12.0 setup keeps be
 
 ## Phase 1–3 Features (v2.7.0)
 
-- **Watch bridge MCP notifications** — file-system watcher now emits real-time MCP events when the index is updated, enabling editors and agents to subscribe to live re-indexing signals.
+- **Watch bridge hook** — `trelix watch` calls `notify_file_changed()` after each re-index. No MCP client receives the resulting notification yet, because `trelix watch` runs in a separate process from `trelix-mcp`; see [MCP_GUIDE.md](MCP_GUIDE.md) section 12.
 - **Cross-repo symbol resolution** — symbol lookups can now resolve definitions that live in a sibling or dependency repository; configure via `cross_repo_paths` in `trelix.config.json`.
 - **Streaming indexing** (`TRELIX_INDEXER_STREAMING=1`) — large repositories are indexed incrementally in a streaming pass, reducing peak memory usage and enabling partial results during initial index builds.
 - **VS Code extension** (`workspace-vscode/`) — first-party extension adds inline symbol hover, semantic search palette, and a Trelix side-panel directly inside VS Code.
@@ -2213,4 +2232,4 @@ Everything below is **additive and off by default** — a v2.12.0 setup keeps be
 
 ---
 
-*trelix v3.4.3 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v3.5.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

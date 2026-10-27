@@ -54,6 +54,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -71,6 +72,13 @@ from trelix.core.console_safety import safe_text as _safe_text
 from trelix.core.models import IndexedFile, Language, Symbol
 from trelix.embedder.base import BaseEmbedder, OpenAIEmbedder, make_embedder
 from trelix.indexing.chunker import Chunker, ContextualChunker
+from trelix.indexing.embedding_cache import (
+    CachedIndexEmbedder,
+    EmbeddingCache,
+    embedder_fingerprint,
+    prepare_cache_dir,
+    resolve_cache_dir,
+)
 from trelix.indexing.parser.base import ParseResult
 from trelix.indexing.parser.registry import get_parser
 from trelix.indexing.walker import FileWalker, detect_language
@@ -78,6 +86,17 @@ from trelix.store.db import Database
 from trelix.store.vector import BaseVectorStore, make_vector_store
 
 logger = logging.getLogger("trelix.indexing")
+
+# Raised by Indexer.__init__ before any model is loaded. The Batch API strategy hands
+# texts to OpenAI's submit_batch and reads vectors back in a later run, so a cache
+# wrapper cannot sit in front of it without a miss-partition that would couple the
+# cache to the vector store; the two settings are refused together instead (owner
+# decision D2 in the C-4 design). Only the `openai` provider ever takes that path.
+_BATCH_API_CACHE_CONFLICT = (
+    "--use-batch-api / TRELIX_USE_BATCH_API cannot be combined with "
+    "TRELIX_EMBEDDING_CACHE_ENABLED=true: the Batch API path submits texts to OpenAI "
+    "without consulting the cache. Disable one of the two."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -381,8 +400,9 @@ class Indexer:
         self._progress_cb = progress_callback
         db_path = config.db_path_absolute
         self.db = Database(db_path)
-        # Load embedder first so we can query its actual dimension
-        self.embedder: BaseEmbedder = make_embedder(config.embedder)
+        # Load embedder first so we can query its actual dimension; _build_embedder also
+        # applies the embedding cache's pre-load refusals and wraps the embedder when on.
+        self.embedder, self._embedding_cache = self._build_embedder(config)
         self.vector_store: BaseVectorStore = make_vector_store(
             config=config,
             dimension=self.embedder.dimension,
@@ -418,6 +438,75 @@ class Indexer:
             raise  # Re-raise with the clear user-facing message
         except Exception as exc:
             logger.debug("DimensionGuard.check failed (non-fatal): %s", exc)
+
+    def _build_embedder(self, config: IndexConfig) -> tuple[BaseEmbedder, EmbeddingCache | None]:
+        """The embedder for this run, wrapped in the on-disk cache when it is enabled.
+
+        The cache's refusals (Batch API conflict, unusable directory) run BEFORE
+        `make_embedder`: a `local` embedder downloads weights, an API one bills. The cache
+        file is keyed by the configured identity but sized by the REAL width of the
+        embedder just built — `effective_dimension` is a constant 384 for every local model.
+        """
+        cache_dir = self._prepare_embedding_cache_dir(config)
+        raw: BaseEmbedder = make_embedder(config.embedder)
+        if cache_dir is None:
+            return raw, None
+        cache = EmbeddingCache.open(
+            cache_dir / f"{embedder_fingerprint(config.embedder)}.db",
+            dimension=raw.dimension,
+        )
+        return CachedIndexEmbedder(raw, cache), cache
+
+    @staticmethod
+    def _prepare_embedding_cache_dir(config: IndexConfig) -> Path | None:
+        """The usable cache directory, or None when the cache is off.
+
+        Raises before any model load: `ValueError` when the Batch API strategy would
+        actually be taken (`use_batch_api` with the `openai` provider — any other provider
+        falls through to synchronous embedding and only warns, so it is not refused), and
+        `EmbeddingCacheError` when the directory cannot be created or written.
+        """
+        if not config.embedding_cache.enabled:
+            return None
+        if config.use_batch_api and config.embedder.provider == "openai":
+            raise ValueError(_BATCH_API_CACHE_CONFLICT)
+        return prepare_cache_dir(resolve_cache_dir(config.embedding_cache))
+
+    def _embedding_cache_or_none(self) -> EmbeddingCache | None:
+        # getattr, as `_record_provenance` does for `_provenance`: the indexer unit suite
+        # builds partial instances with `object.__new__(Indexer)` and never runs __init__.
+        cache: EmbeddingCache | None = getattr(self, "_embedding_cache", None)
+        return cache
+
+    def _cache_hits(self) -> int:
+        """Positions served from the embedding cache so far; 0 without a cache."""
+        cache = self._embedding_cache_or_none()
+        return cache.hits if cache is not None else 0
+
+    def _enforce_cache_cap(self) -> None:
+        """Trim the cache file to TRELIX_EMBEDDING_CACHE_MAX_MB after a run. Never fatal.
+
+        Two indexers can share one file, and `VACUUM` under another writer's lock raises
+        `database is locked` after SQLite's timeout. The run that just finished is not
+        made to fail for a trim that can happen next time; the stats are already final.
+        The same holds when the operator deleted the file mid-run (SECURITY.md's removal
+        step): `enforce_size_cap` starts with `stat`, which raises `FileNotFoundError`,
+        an `OSError` rather than a `sqlite3.Error`.
+        """
+        cache = self._embedding_cache_or_none()
+        if cache is None:
+            return
+        try:
+            evicted = cache.enforce_size_cap(self.config.embedding_cache.max_mb * 1024 * 1024)
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning("embedding cache: size cap not enforced this run (%s)", exc)
+            return
+        logger.info(
+            "embedding cache: %d hits, %d misses, %d rows evicted",
+            cache.hits,
+            cache.misses,
+            evicted,
+        )
 
     def _build_chunker(self, config: IndexConfig) -> Chunker:
         """
@@ -536,8 +625,9 @@ class Indexer:
             "symbols_extracted": 0,
             "chunks_total": 0,
             "chunks_embedded": 0,
-            # Same two keys, same meaning, as index()'s dict — a stat that exists on only
+            # Same keys, same meaning, as index()'s dict — a stat that exists on only
             # one of the two pipelines is a stat the CLI cannot render honestly.
+            "chunks_from_cache": 0,
             "chunks_missing_vectors": None,
             "chunks_reconciled": 0,
             "errors": 0,
@@ -584,6 +674,7 @@ class Indexer:
                         results["symbols_extracted"] += call_result.get("symbols_updated", 0)
                         results["chunks_embedded"] += call_result.get("chunks_updated", 0)
                         results["chunks_total"] += call_result.get("chunks_updated", 0)
+                        results["chunks_from_cache"] += call_result.get("chunks_from_cache", 0)
                     else:
                         results["files_skipped"] += 1
                 else:
@@ -653,10 +744,12 @@ class Indexer:
             ]
             if repaired:
                 self._log_repair_intent(len(repaired))
+                hits_before = self._cache_hits()
                 try:
                     self._batch_embed_and_store(repaired, results)
                     results["chunks_reconciled"] = len(repaired)
                     results["chunks_total"] += len(repaired)
+                    results["chunks_from_cache"] += self._cache_hits() - hits_before
                 except Exception as exc:
                     # Contained rather than raised, matching every other failure in this
                     # loop: the files that DID index are committed, and aborting here would
@@ -687,6 +780,7 @@ class Indexer:
         except Exception as exc:
             logger.debug("Streaming index: resolution pass failed (non-fatal): %s", exc)
 
+        self._enforce_cache_cap()
         results["elapsed_seconds"] = round(time.perf_counter() - t_start, 2)
         self._record_provenance()
         return results
@@ -868,6 +962,9 @@ class Indexer:
             "symbols_extracted": 0,
             "chunks_total": 0,
             "chunks_embedded": 0,
+            # Phase-3 chunks whose vector came from the on-disk embedding cache rather than
+            # the provider (TRELIX_EMBEDDING_CACHE_ENABLED). Always present, 0 when off.
+            "chunks_from_cache": 0,
             # Phase 2.5 outcome, split three ways so "no summaries" cannot masquerade as
             # "all summaries". Always present, including when file_summaries_enabled is
             # False — three zeros beside a disabled flag is unambiguous, a missing key
@@ -1030,6 +1127,10 @@ class Indexer:
                 "— embedding synchronously instead.[/yellow]"
             )
 
+        # Snapshot here, after the Phase 2.5/2.6 side embeds (which go through the same
+        # wrapper but are not "chunks"), so `chunks_from_cache` means Phase-3 chunks, as
+        # `chunks_embedded` does. Repaired chunks are in `pending` and so are counted.
+        hits_before = self._cache_hits()
         if pending and use_batch_api:
             self._report_progress(3, "Submitting/polling Batch API job…", 0.0, stats)
             self._batch_embed_and_store_via_batch_api(pending, stats)
@@ -1046,6 +1147,8 @@ class Indexer:
         # embed above raised, which is the point.
         if pending and not record_early:
             self._record_embedding_dimension()
+        stats["chunks_from_cache"] = self._cache_hits() - hits_before
+        self._enforce_cache_cap()
 
         # ── Sparse embedding phase (SPLADE-Code) — runs when sparse_enabled=True ──
         if self.config.retrieval.sparse_enabled and pending:
@@ -2279,7 +2382,9 @@ class Indexer:
                 the resolve still fires when it matters.
 
         Returns:
-            {"status": "ok", "symbols_updated": N, "chunks_updated": N, "ms": N}
+            {"status": "ok", "symbols_updated": N, "chunks_updated": N,
+             "chunks_from_cache": N, "ms": N}
+            (plus "skipped": True when the file's hash was unchanged)
             {"status": "error", "error": "<message>"}
         """
 
@@ -2305,6 +2410,7 @@ class Indexer:
                     "status": "ok",
                     "symbols_updated": 0,
                     "chunks_updated": 0,
+                    "chunks_from_cache": 0,
                     "ms": round((time.perf_counter() - t0) * 1000),
                     "skipped": True,
                 }
@@ -2342,6 +2448,7 @@ class Indexer:
                     "status": "ok",
                     "symbols_updated": 0,
                     "chunks_updated": 0,
+                    "chunks_from_cache": 0,
                     "ms": round((time.perf_counter() - t0) * 1000),
                 }
 
@@ -2352,8 +2459,10 @@ class Indexer:
             if summary_request is not None:
                 self._summarize_files([summary_request], inner_stats)
 
+            hits_before = self._cache_hits()
             if pending:
                 self._batch_embed_and_store(pending, inner_stats)
+            chunks_from_cache = self._cache_hits() - hits_before
 
             # Cross-file resolution: all four passes are O(total_calls + total_imports)
             # regardless of how many files changed, so skipping them for small watch
@@ -2384,6 +2493,7 @@ class Indexer:
                 "status": "ok",
                 "symbols_updated": inner_stats["symbols_extracted"],
                 "chunks_updated": inner_stats["chunks_embedded"],
+                "chunks_from_cache": chunks_from_cache,
                 "ms": round((time.perf_counter() - t0) * 1000),
             }
 
