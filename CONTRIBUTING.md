@@ -483,26 +483,28 @@ Two things that are **not** version sites, and must not be bumped with them:
 - `helm/trelix/Chart.yaml` has both `version:` (the *chart's* own version, independent of
   trelix; the comment in that file says when it moves) and `appVersion:` (which tracks
   trelix). Only `appVersion` is a version stamp.
-- Both adapters' `dependencies = ["trelix>=3.0.0", ...]`. Lockstep governs the version
-  *stamp* — identity — not the dependency *floor*, which is a compatibility contract that
-  moves only when an import demands it. Each `pyproject.toml:35` records why it reads
-  `3.0.0`: "the lowest published core verified to expose every name used here." An
-  adapter stamped `3.1.2` that declares `trelix>=3.0.0` is saying something true. Raising
+- The `trelix>=` floor in the `dependencies` of the three satellites (`trelix-mcp`,
+  `trelix-langchain`, `trelix-llama-index`; `trelix>=3.5.0` since 3.5.0). Lockstep governs the
+  version *stamp* — identity — not the dependency *floor*, which is a compatibility contract
+  that moves only when an import demands it. Each `pyproject.toml` records why it reads what
+  it reads: through 3.4.3 both adapters read `trelix>=3.0.0`, "the lowest published core
+  verified to expose every name used here", and an adapter stamped `3.1.2` that declared
+  `trelix>=3.0.0` was saying something true. Raising
   the floor to match a release is the mistake CHANGELOG v2.7.1 already reverted
   ("Unjustified dependency-floor bumps reverted") on these same two packages, where it had
   been raised on an unverified assumption about API usage. A floor that an import demands
   does move: `trelix-mcp` and both adapters import `trelix.core.index_check`, which the core
-  ships from the release that contains the read-surface fix, so that release's PR raises the
-  three `trelix>=` floors to it (CI installs the core editable and cannot see a stale floor,
-  so `TestSatelliteCoreFloorsFollowTheCore` in `tests/unit/test_release_version_gate.py` fails
-  the PR that bumps the version without raising them; an older core under a newer package
+  ships from 3.5.0, the release that contains the read-surface fix, so the 3.5.0 release PR
+  raised the three `trelix>=` floors to it (CI installs the core editable and cannot see a
+  stale floor, so `TestSatelliteCoreFloorsFollowTheCore` in
+  `tests/unit/test_release_version_gate.py` fails the PR that bumps the version without
+  raising them; an older core under a newer package
   fails: `trelix-mcp` at start-up, the two adapters at their first query, because they import
   `require_index` inside the retrieval method). `trelix-mcp` alone also imports
   `trelix.core.confinement` (`resolve_allowed_roots`, `is_within_allowed_roots`), and its HTTP
-  transport will import `trelix.api.request_guard.is_health_probe` and `bounded_repr`, and
+  transport imports `trelix.api.request_guard.is_health_probe` and `bounded_repr`, and
   passes `rejection_detail` and `cross_site_detail` to `RequestGuardMiddleware`; none of these
-  is in a published core yet, so the next release's PR raises `trelix-mcp`'s `trelix>=` floor
-  to that release as well. `trelix-mcp` also passes
+  is in core 3.4.3 or earlier, so the same `trelix>=3.5.0` floor covers them. `trelix-mcp` also passes
   `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
   `server.disable(names=, components=)`, so its `fastmcp` floor is `>=4.0.10`, the release
   those were run against (4.0.0 to 4.0.9 were not tested);

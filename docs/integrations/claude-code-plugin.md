@@ -51,9 +51,9 @@ Claude which case applies, and the skill tells it to ask you before indexing.
 
 On the pinned release a search against a repository with no index does not fail: it answers
 `results: []` and leaves an empty `.trelix/index.db` behind. The skill therefore forbids
-concluding "not found" from an empty result alone. (The next release, `develop` today after
-#467, answers `No index found at <path>. Run trelix index <repo> first.` instead; the plugin
-picks that up with the next pin bump.)
+concluding "not found" from an empty result alone. (Release 3.5.0 and later answer
+`No index found at <path>. Run trelix index <repo> first.` instead; the plugin picks that up
+with the pin bump to 3.5.0.)
 
 ## What the SessionStart line looks like
 

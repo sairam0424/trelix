@@ -120,7 +120,7 @@ See `values.yaml` for the full list with defaults and comments. Highlights:
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `3.4.3` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
+| `image.tag` | `3.5.0` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
 | `mcp.enabled` | `false` | Add the `trelix-mcp` container (MCP over Streamable HTTP) to the pod — see "trelix-mcp over Streamable HTTP" above. Needs a token and `persistence.enabled` |
 | `mcp.port` | `8766` | Container and Service port (`mcp`) of `trelix-mcp` |
 | `mcp.allowedHosts` | `[]` | `Host` names `trelix-mcp` accepts besides the release's Service names (an Ingress host, the `.svc.cluster.local` form) |

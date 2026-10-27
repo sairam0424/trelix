@@ -23,10 +23,10 @@ from tests.unit.eval_compare_fixtures import (
 
 class TestNotes:
     def test_a_different_trelix_version_is_a_note_not_a_refusal(self) -> None:
-        verdict = verdict_of(base_doc(), cand_doc(0.5625, trelix_version="3.4.4"))
+        verdict = verdict_of(base_doc(), cand_doc(0.5625, trelix_version="3.5.0"))
 
         assert verdict.outcome == "PASS"
-        assert "note: trelix_version differs: base 3.4.3, cand 3.4.4" in verdict.lines
+        assert "note: trelix_version differs: base 3.4.3, cand 3.5.0" in verdict.lines
 
     def test_a_different_embedder_is_a_note_per_field(self) -> None:
         embedder = {

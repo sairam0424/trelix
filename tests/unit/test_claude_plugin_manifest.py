@@ -36,7 +36,7 @@ CHANGELOG = _ROOT / "CHANGELOG.md"
 
 # The whole server declaration. No `env` (keys come from the user's environment, never the
 # plugin), no `type` (an entry without one is stdio), no `--tools` (the pinned release has
-# no such flag; the pin-bump PR adds `"--tools", "core"` once 3.4.4 is published).
+# no such flag; the pin-bump PR adds `"--tools", "core"` once 3.5.0 is published).
 EXPECTED_MCP_JSON = {
     "mcpServers": {
         "trelix": {
@@ -116,7 +116,7 @@ def test_plugin_manifest_uses_default_component_locations() -> None:
     load from their default locations; `version` is the trelix-mcp pin.
 
     MUTATIONS that must make this fail: add `"mcpServers": {}`; set `version` to `"1.0.0"`;
-    move the .mcp.json pin to `3.4.4` without touching `version` (the pin-bump PR that forgets
+    move the .mcp.json pin to `3.5.0` without touching `version` (the pin-bump PR that forgets
     `version` leaves every user on the cached copy with the old pin).
     """
     data = _load(PLUGIN_MANIFEST)
@@ -165,7 +165,7 @@ def test_pin_trails_the_core_stamp_and_names_a_released_section() -> None:
     and CHANGELOG.md has its `## [X.Y.Z]` section. (This is the offline guard; PyPI itself
     is checked by hand in the pin-bump PR body.)
 
-    MUTATION that must make this fail: pin `3.4.4` while CHANGELOG has no `## [3.4.4]`.
+    MUTATION that must make this fail: pin `3.5.0` and remove CHANGELOG's `## [3.5.0]` heading.
     """
     pin = _pin()
     with MCP_PYPROJECT.open("rb") as handle:
@@ -205,7 +205,7 @@ def test_bare_release_mentions_in_the_plugin_docs_name_the_pin() -> None:
     """Every "trelix-mcp X.Y.Z" in README.md and SKILL.md is the `.mcp.json` pin, read from
     that file here (an independent observation, not the test's own literal).
 
-    MUTATION that must make this fail: change SKILL.md's "trelix-mcp 3.4.3" to 3.4.4.
+    MUTATION that must make this fail: change SKILL.md's "trelix-mcp 3.4.3" to 3.5.0.
     """
     args = _load(MCP_JSON)["mcpServers"]["trelix"]["args"]
     pin = next(a for a in args if a.startswith("trelix-mcp==")).split("==", 1)[1]

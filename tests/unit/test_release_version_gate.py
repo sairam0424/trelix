@@ -214,18 +214,18 @@ def _floor_is_installable(core: Version, floor: Version) -> bool:
 @pytest.mark.parametrize(
     ("core", "floor", "needed", "allowed"),
     [
-        # develop today: core 3.4.3, old floors
-        ("3.4.3", "3.1.5", "3.4.4", True),
+        # develop before the release: core 3.4.3, old floors
+        ("3.4.3", "3.1.5", "3.5.0", True),
         # the release PR bumped the version and skipped the floors: the case this guard is for
-        ("3.4.4", "3.1.5", "3.4.4", False),
-        ("3.4.4", "3.4.3", "3.4.4", False),
+        ("3.5.0", "3.1.5", "3.5.0", False),
+        ("3.5.0", "3.4.3", "3.5.0", False),
         # the release PR did both
-        ("3.4.4", "3.4.4", "3.4.4", True),
+        ("3.5.0", "3.5.0", "3.5.0", True),
         # a later core with the floor at the needed release, and with a floor that fell behind
-        ("3.5.0", "3.4.4", "3.4.4", True),
-        ("3.5.0", "3.4.3", "3.4.4", False),
+        ("3.6.0", "3.5.0", "3.5.0", True),
+        ("3.6.0", "3.4.3", "3.5.0", False),
         # a release candidate sorts before the final release, so the floor is not demanded yet
-        ("3.4.4rc1", "3.1.5", "3.4.4", True),
+        ("3.5.0rc1", "3.1.5", "3.5.0", True),
     ],
 )
 def test_the_floor_rule_fires_exactly_when_the_core_reaches_the_needed_release(
@@ -237,11 +237,11 @@ def test_the_floor_rule_fires_exactly_when_the_core_reaches_the_needed_release(
 @pytest.mark.parametrize(
     ("core", "floor", "installable"),
     [
-        ("3.4.4", "3.4.4", True),
-        ("3.4.4", "3.4.3", True),
+        ("3.5.0", "3.5.0", True),
+        ("3.5.0", "3.4.3", True),
         ("3.4.3", "3.4.3", True),
-        ("3.4.3", "3.4.4", False),
-        ("3.4.4", "3.5.0", False),
+        ("3.4.3", "3.5.0", False),
+        ("3.5.0", "3.6.0", False),
     ],
 )
 def test_a_floor_above_the_core_of_the_tree_is_not_installable(
@@ -254,7 +254,8 @@ class TestSatelliteCoreFloorsFollowTheCore:
     """A satellite's `trelix>=` floor must reach the first core release that has what it imports.
 
     WHY THIS EXISTS. `trelix-mcp` and the two adapters import core names that are not in the last
-    published core, while their floors still name an older one (`trelix>=3.1.5`, `trelix>=3.0.0`).
+    published core, while their floors still named an older one (`trelix>=3.1.5`, `trelix>=3.0.0`)
+    until 3.5.0.
     `pip install -U trelix-mcp` on a machine that already has that core then keeps it, satisfies
     the floor, and `trelix-mcp` exits 1 on start; an adapter fails at its first query, because it
     imports the name inside the retrieval method. The floors are raised by the release PR
@@ -272,16 +273,17 @@ class TestSatelliteCoreFloorsFollowTheCore:
     lacks, raise its entry to the release that will ship the name.
     """
 
-    # Published core 3.4.3 has none of these names (checked with `git cat-file -e v3.4.3:<path>`
-    # for the modules, and by reading v3.4.3's request_guard.py and federation/retriever.py):
+    # The last core before 3.5.0, 3.4.3, has none of these names (checked with
+    # `git cat-file -e v3.4.3:<path>` for the modules, and by reading v3.4.3's request_guard.py
+    # and federation/retriever.py):
     #   trelix-mcp      trelix.core.index_check (server.py, resources.py), trelix.core.confinement
     #                   (cli.py, confinement.py), trelix.api.request_guard.is_health_probe
     #                   (http.py) and FederatedRetriever.unindexed_repos (server.py)
     #   both adapters   trelix.core.index_check.require_index (retriever.py)
     SATELLITE_MIN_CORE: dict[str, str] = {
-        "trelix-mcp": "3.4.4",
-        "trelix-langchain": "3.4.4",
-        "trelix-llama-index": "3.4.4",
+        "trelix-mcp": "3.5.0",
+        "trelix-langchain": "3.5.0",
+        "trelix-llama-index": "3.5.0",
     }
 
     @pytest.mark.parametrize("satellite", sorted(SATELLITE_MIN_CORE))
