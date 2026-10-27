@@ -49,7 +49,8 @@ claude plugin install trelix@trelix
 ```
 
 The server registers as `plugin:trelix:trelix` and its tools as `mcp__plugin_trelix_trelix__<tool>`.
-The first start downloads the pinned release (about a minute); to warm the cache beforehand, run
+The first start downloads the pinned release and its dependencies (about 280 MiB in the uv
+cache; about 10 s measured on one fast connection); to warm the cache beforehand, run
 the launch command from `plugins/trelix/.mcp.json` once with `--version`. Prerequisites,
 embeddings, every command the plugin runs, update and uninstall:
 [integrations/claude-code-plugin.md](integrations/claude-code-plugin.md).
@@ -279,8 +280,8 @@ answered as an unknown tool. (`repo_map` and `exact_search` do not exist in this
 3.5.0 is the first release with `--tools`, and with `--transport` (section 19). Releases 3.2.2
 through 3.4.3 accept only `--help` and `--version` and exit 2 on `--tools`; releases before 3.2.2
 ignore argv altogether (see the 3.2.2 CHANGELOG entry). The Claude Code plugin (section 3, Option
-A) pins `trelix-mcp==3.4.3`, so it launches its pinned server without the flag, and passes
-`--tools core` once its pin reaches 3.5.0 or later.
+A) pins a release that has the flag and launches it with `--tools core`, so Claude Code sees only
+the seven tools above; register the server yourself without the flag (Option B) to have all 15.
 
 ### Output size and limits
 
@@ -1344,7 +1345,7 @@ claude plugin marketplace update trelix && claude plugin update trelix@trelix   
 ```
 
 On the first session after installing, the cold start downloads the pinned `trelix-mcp` through
-`uvx` and can take a minute, so the server may show as connecting or failed until that finishes.
+`uvx`, so the server may show as connecting or failed until that finishes.
 Warm the cache once with the launch command from `plugins/trelix/.mcp.json` plus `--version`
 (`uvx --from trelix-mcp==<pin> trelix-mcp --version`), then start a new session or run
 `/reload-plugins`. `uv` must be on your `PATH`.
