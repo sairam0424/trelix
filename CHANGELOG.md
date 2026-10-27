@@ -59,9 +59,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   4.13.12, `ip-address` 10.5.0 to 10.7.2 and `brace-expansion` 5.0.9 to 5.0.12. They affect
   `workspace-vscode` only, not the Python packages or the GitHub App. `npm audit` for that workspace
   went from 13 findings to 8, all in development tooling (`@vscode/vsce`, `mocha`), when they were
-  applied on 2026-10-04; the production tree reported none. Advisories published after that date,
-  including some against `proxy-addr` and `@modelcontextprotocol/sdk` in the production tree, are
-  not covered by these updates.
+  applied on 2026-10-04; the production tree reported none. Production-tree advisories reported
+  since then are fixed in the entry below.
+- **Production dependencies of the VS Code extension and the GitHub App are patched.** This is a
+  lockfile-only update made on 2026-10-27 (no `package.json` changes, no development-only package
+  changed version). `workspace-vscode` takes `@modelcontextprotocol/sdk` 1.30.1 to 1.32.1 (five
+  advisories, three of them high), `proxy-addr` 2.0.7 to 2.0.8 (critical: GHSA-jqcg-44mw-7w3h, IP
+  spoofing through an IPv4-mapped IPv6 trust subnet), `body-parser` 2.3.0 to 2.4.0 (high:
+  GHSA-27r3-jxmh-p828, denial of service through trailing bytes after a compressed request body),
+  `zod` 4.4.3 to 4.6.7 (high), `fast-uri` 3.1.8 to 3.1.9 (medium) and `ip-address` 10.7.2 to 10.7.4
+  (medium). `qs` 6.16.0 to 6.16.1 and `content-type` 2.0.0 to 2.1.0 (the copy `body-parser` uses)
+  move because `body-parser` 2.4.0 requires them; neither has an advisory. `infra/github-app` takes
+  the four it shares: `proxy-addr`, `body-parser`, `qs` and `content-type`, to the same versions.
+  `npm audit --omit=dev` now reports no findings for `workspace-vscode` or `infra/github-app`, and
+  still none for `packages/trelix-typescript`. Findings in development tooling are not part of this
+  entry.
 - **The release job's build tools are pinned.** `release.yml` ran `pip install build twine`, so the
   job that builds what is uploaded to PyPI took whatever version of either tool was newest on the day
   of the tag. It now installs `build==1.6.1` and `twine==7.0.0`, checked together on 2026-10-05:
