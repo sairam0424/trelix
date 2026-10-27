@@ -1637,6 +1637,8 @@ All four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `
 
 The check uses `Path.is_relative_to()` (not a naive string `startswith()`) to avoid sibling-directory bypasses like `~/.config/trelixevil/`. If the path is outside both roots, a `ConfigPathNotAllowedError` (a `ValueError` subclass) is raised, and the MCP tool returns `{"...: False/[]/0, "error": str}` rather than raising. `config_path=None` passes through unchanged (meaning "use the registry's own default").
 
+The file must also be a registry: a name ending in `.json` whose file is missing, empty, or a JSON object with a `repos` list. `RepoRegistry.load` reads any other file as an empty registry that keeps the path, and the next `federation_add_repo` would write registry JSON over it, so the same `ConfigPathNotAllowedError` is raised for such a file. The `error` is always one of two fixed texts, `config_path is not inside an allowed config directory` or `config_path is not a repository registry`; neither names the path or a directory (both go to the server log). Separately, when `trelix-mcp` is started with `--root` or `TRELIX_ALLOWED_REPO_ROOTS`, `federation_list_repos` and `federation_remove_repo` stay inside the roots too, as `federation_search_all` does.
+
 This confinement is documented in CHANGELOG.md [Unreleased]/[2.8.1] Security section (issue #69).
 
 ---

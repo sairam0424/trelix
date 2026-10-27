@@ -22,7 +22,7 @@
 13. [CLI Flags and Configuration Reference](#13-cli-flags-and-configuration-reference)
 14. [API Quick Reference](#14-api-quick-reference)
     - [REST API authentication](#rest-api-authentication)
-    - [Caller-supplied query routing (`intent_hint` / `hyde_snippet_hint`)](#caller-supplied-query-routing-intent_hint-hyde_snippet_hint)
+    - [Caller-supplied query routing (`intent_hint` / `hyde_snippet_hint`)](#caller-supplied-query-routing-intent_hint--hyde_snippet_hint)
     - [Dry-run file parsing](#dry-run-file-parsing)
     - [Ticket linking and connector sync (CLI-only)](#ticket-linking-and-connector-sync-cli-only)
 
@@ -1210,7 +1210,7 @@ No API key, no cost, fast. Quality is adequate for basic navigation and learning
 pip install "trelix[bge-code]"
 TRELIX_EMBEDDER_PROVIDER=bge-code trelix index ./my-repo
 ```
-This provider is **experimental as of v3.1.7 and its retrieval quality is unverified.** trelix builds it with FlagEmbedding's `FlagModel`, which pools with CLS (`DEFAULT_POOLING_METHOD = "cls"`; `pooling()` returns `last_hidden_state[:, 0]`), while BAAI publishes `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true` in `1_Pooling/config.json`. The "2025 CoIR leader" standing previously stated here was the upstream model's and was never a measurement of this implementation; it is retracted. It does run fully offline after the first model download (~3GB) and needs no API key. On CPU it is slower (plan for 30–60 seconds for a 10k-chunk index, vs. 3 seconds with local). For an offline provider without this open question, use `local-code` or `nomic-code`. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
+This provider is **experimental as of v3.1.7 and its retrieval quality is unverified.** trelix builds it with FlagEmbedding's `FlagModel`, which pools with CLS (`DEFAULT_POOLING_METHOD = "cls"`; `pooling()` returns `last_hidden_state[:, 0]`), while BAAI publishes `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true` in `1_Pooling/config.json`. The "2025 CoIR leader" standing previously stated here was the upstream model's and was never a measurement of this implementation; it is retracted. It does run fully offline after the first model download (~3GB) and needs no API key. On CPU it is slower (plan for 30–60 seconds for a 10k-chunk index, vs. 3 seconds with local). For an offline provider without this open question, use `local-code` or `nomic-code`. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval).
 
 **Best API-based quality for code:**
 ```bash
@@ -1567,8 +1567,8 @@ TRELIX_LLM_PROVIDER=anthropic TRELIX_LLM_MODEL=claude-haiku-4-5 trelix ask ./my-
 ## 13. CLI Flags and Configuration Reference
 
 **[docs/CLI_REFERENCE.md](CLI_REFERENCE.md) is the authoritative, per-command flag
-reference.** It is generated against the real Typer application and covers all 34
-commands and subcommands with synopsis, options, examples, and notes. Read it there
+reference.** It is generated against the real Typer application and covers every
+command and subcommand with synopsis, options, examples, and notes. Read it there
 rather than here — a second full flag table in this guide would only drift out of date.
 
 Three things are worth stating plainly before you go looking for a flag:
@@ -1651,7 +1651,7 @@ that copy-pasted commands fail loudly rather than silently:
 | `trelix-mcp --cache-dir` | nothing — `trelix-mcp` accepts only `--help`, `--version`, `--tools core\|full`, `--root PATH` and the HTTP flags `--transport stdio\|http`, `--host`, `--port`, `--path`, `--allowed-host`, `--stateful` and `--allow-unauthenticated` (MCP_GUIDE section 19) |
 
 There is also no `trelix config`, `trelix doctor`, `trelix mcp`, or `trelix federation
-stats` command. `trelix --help` lists the real 26 top-level commands.
+stats` command. `trelix --help` lists the real top-level commands.
 
 ### Key environment variables
 
@@ -1803,7 +1803,7 @@ To fetch the next page, pass the previous response's `next_cursor` as the `curso
 | `repo` | string | yes | Path to indexed repo |
 | `k` | integer | no | Number of results per page (default: 10) |
 | `cursor` | integer | no | Pagination offset (default: 0) |
-| `intent_hint` | string | no | One of the 8 `IntentType` values — see [Caller-supplied query routing](#caller-supplied-query-routing-intent_hint-hyde_snippet_hint) below |
+| `intent_hint` | string | no | One of the 8 `IntentType` values — see [Caller-supplied query routing](#caller-supplied-query-routing-intent_hint--hyde_snippet_hint) below |
 | `hyde_snippet_hint` | string | no | Short hypothetical code snippet (HyDE); only used when `intent_hint` is also valid |
 
 ### Caller-supplied query routing (`intent_hint` / `hyde_snippet_hint`)

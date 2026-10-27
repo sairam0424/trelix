@@ -170,7 +170,7 @@ Restart the IDE after saving. Trelix's tools then appear alongside JetBrains' bu
 
 ## 8. The 15 MCP Tools
 
-Trelix-mcp exposes 15 MCP tools organized into four functional groups:
+Trelix-mcp exposes 15 MCP tools organized into five functional groups:
 
 1. **Core search & indexing** (4 tools): `search_code`, `index_codebase`, `get_symbol`, `blast_radius`
 2. **Graph analysis** (2 tools): `build_knowledge_graph`, `graph_search_mcp`
@@ -1004,7 +1004,7 @@ export TRELIX_FEDERATION_MAX_REPOS=100  # raise the cap to 100
 
 ---
 
-## 10. The 3 MCP Resources
+## 10. The 4 MCP Resources
 
 MCP resources are read-only data endpoints that the AI can fetch without executing a tool. Use them to give the model static context about the indexed codebase.
 
@@ -1523,12 +1523,14 @@ confinement check does expand it, so it answers the refusal when your home is ou
 Stateless by default: each `POST /mcp` stands alone, no `mcp-session-id` is issued and `GET /mcp`
 answers `405`. A client that opens a server-initiated (GET) stream needs `--stateful`, which keeps
 per-client sessions (`GET /mcp` without one answers `400`, `Missing session ID`); two caveats. Idle
-sessions: `fastmcp` 4.0.x never ends an idle one and 4.1.x ends it after 1800 s, the `mcp` SDK's
-default; `FASTMCP_HTTP_SESSION_IDLE_TIMEOUT=<seconds>` in the environment sets that timeout (`none`
-disables it on 4.1.x; 4.0.x fails to start on `none`), and no flag or `mcp.run` argument reaches
-it. Set it only together with `--stateful`: on `mcp` 2.0.x the default stateless server will not
-start with it (`session_idle_timeout is not supported in stateless mode`). Session cap: the SDK
-caps them at 10,000 from `mcp` 2.3.0 (the 2.0.0 floor has no cap).
+sessions: `fastmcp` 4.0.x never ends an idle one and 4.1.x ends it after 1800 s with `mcp` 2.2.0
+or newer, the `mcp` SDK's default from that release (earlier `mcp` releases have no such default;
+recent `fastmcp` 4.1.x releases require `mcp` 2.2.0 or newer); `FASTMCP_HTTP_SESSION_IDLE_TIMEOUT=<seconds>` in the
+environment sets that timeout (`none` disables it on 4.1.x; 4.0.x fails to start on `none`), and no
+flag or `mcp.run` argument reaches it. Set it only together with `--stateful`: on `mcp` before
+2.2.0 (2.0.x and 2.1.x) the default stateless server will not start with it
+(`session_idle_timeout is not supported in stateless mode`). Session cap: the SDK caps them at
+10,000 from `mcp` 2.2.0 (earlier releases, the 2.0.0 floor included, have no cap).
 `ask_agent`'s clarify continuation works within one process on either setting. Both protocol eras
 (`2025-11-25` and `2026-07-28`) are negotiated on the one endpoint.
 

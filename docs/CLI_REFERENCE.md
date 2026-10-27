@@ -158,7 +158,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `TRELIX_FEDERATION_MAX_WORKERS` | `4` | **Inert.** `RetrievalConfig.federation_max_workers` is declared but read nowhere in `src/`. `search-all` builds `FederatedRetriever(registry)` with no arguments, so the pool size is always the constructor's own default of 4 — raising this to 16 changes nothing |
 | `TRELIX_FEDERATION_MAX_REPOS` | `50` | Max repos actually queried per `federation_search_all` MCP call, and max repos `federation_add_repo` will accept (range: 1–500) |
 
-**MCP security note:** The four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) confine any caller-supplied `config_path` argument to `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`, rejecting paths outside both roots. Prevents prompt-injected or adversarial clients from pointing registry I/O at arbitrary filesystem locations.
+**MCP security note:** The four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) confine any caller-supplied `config_path` argument to `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`, rejecting paths outside both roots. The name must also end in `.json` and the file must be missing, empty, or a JSON object with a `repos` list; a refused path answers one of two fixed texts, `config_path is not inside an allowed config directory` or `config_path is not a repository registry`, neither of which names the path. Started with `--root` or `TRELIX_ALLOWED_REPO_ROOTS`, `federation_list_repos` and `federation_remove_repo` stay inside the roots too, as `federation_search_all` does: the list and the search leave out the entries outside the roots and report how many in `repos_outside_roots`, and a remove answers such an alias as an unregistered one. Prevents prompt-injected or adversarial clients from pointing registry I/O at arbitrary filesystem locations.
 
 ---
 
@@ -1634,17 +1634,20 @@ installed. The format of `suite.json`, the cache layout, every check and every r
 
 #### Examples
 
+No suite is committed yet (`eval/README.md` describes the format): `NAME` and the
+pre-registration path below stand for files of your own.
+
 ```bash
 # Verify a suite and warm its clone (CI can do this without an embedder)
-trelix eval-suite eval/suites/trelix-self/suite.json --prepare-only
+trelix eval-suite eval/suites/NAME/suite.json --prepare-only
 
 # The baseline arm, then a candidate arm from another checkout of trelix against the same suite
-trelix eval-suite eval/suites/trelix-self/suite.json --arm baseline --out /tmp/baseline.json
-trelix eval-suite eval/suites/trelix-self/suite.json --arm declaration-boost --out /tmp/cand.json
-trelix eval-compare /tmp/baseline.json /tmp/cand.json --prereg eval/experiments/EXP-declaration-boost.yaml
+trelix eval-suite eval/suites/NAME/suite.json --arm baseline --out /tmp/baseline.json
+trelix eval-suite eval/suites/NAME/suite.json --arm declaration-boost --out /tmp/cand.json
+trelix eval-compare /tmp/baseline.json /tmp/cand.json --prereg /tmp/EXP-declaration-boost.yaml
 
 # The same, through make (EVAL_RESULTS defaults to .trelix/eval-suite/results.json)
-make eval-suite EVAL_SUITE=eval/suites/trelix-self/suite.json EVAL_ARM=baseline
+make eval-suite EVAL_SUITE=eval/suites/NAME/suite.json EVAL_ARM=baseline
 ```
 
 #### Output
@@ -1672,7 +1675,8 @@ ndcg@10 0.6333, recall@10 0.7115, mrr 0.5892 over 52 queries; rerank disabled
 results: /tmp/baseline.json
 ```
 
-(Illustrative numbers; the hashes are shortened here and printed whole by the command.)
+(Illustrative output, not a run you can reproduce: no suite is committed yet. The hashes are
+shortened here and printed whole by the command.)
 
 #### Exit codes
 
