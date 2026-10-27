@@ -71,9 +71,10 @@ To confine the server to one or more repository roots, add `--root PATH` (repeat
 more; a blank `--root` value is a startup error). Every `repo_path`, `federation_add_repo` `path`
 and `trelix://repo/...` URI must then lie inside a root, or the call answers an error:
 `repo_path is not inside an allowed repository root`, or
-`path is not inside an allowed repository root` for `federation_add_repo`. `federation_search_all`
-then searches only the registered repos inside the roots and reports the others as
-`repos_outside_roots`. Without the flag and the variable, nothing is confined.
+`path is not inside an allowed repository root` for `federation_add_repo`. `federation_list_repos`
+and `federation_search_all` then list and search only the registered repos inside the roots and
+report the others as `repos_outside_roots`, and `federation_remove_repo` answers an alias whose repo
+is outside them as an unregistered one. Without the flag and the variable, nothing is confined.
 
 ```bash
 claude mcp add trelix -- trelix-mcp --root /Users/you/myrepo
@@ -314,7 +315,7 @@ The full description, with measured sizes, is in [docs/MCP_GUIDE.md](https://git
 
 ## Errors
 
-An invalid input is a tool error (`isError: true`, one text block, the session carries on) whose text names the argument, shows what was given and says what is valid: a `repo_path` that is blank, does not exist or is a file; a blank `query`, `qualified_name`, `symbol_name`, `alias`, `session_id` or `config_path`; a `federation_add_repo` `path` that is not an absolute directory or a `weight` that is not positive; a negative `cursor` or `max_body_chars`. A repository with no index answers `No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`, and an argument of the wrong type or outside its choices is rejected by FastMCP itself, also as a tool error. `subscribe_resource` and `unsubscribe_resource` accept any string and are outside this contract. `k` and `limit` outside their range are clamped rather than rejected, and the federation tools keep their `error` key for a duplicate alias, a full registry, a non-blank `config_path` outside the allowed roots and a registry with nothing indexed. Every result, including an empty one (`[]`, `null`), carries a text block that parses to its structured content. Over `--transport http`, an exception a tool did not expect answers `isError: true` with `Error calling tool '<name>'` (no path, no traceback) while every text above is unchanged. Details: [docs/MCP_GUIDE.md, Errors](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#errors).
+An invalid input is a tool error (`isError: true`, one text block, the session carries on) whose text names the argument, shows what was given and says what is valid: a `repo_path` that is blank, does not exist or is a file; a blank `query`, `qualified_name`, `symbol_name`, `alias`, `session_id` or `config_path`; a `federation_add_repo` `path` that is not an absolute directory or a `weight` that is not positive; a negative `cursor` or `max_body_chars`. A repository with no index answers `No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`, and an argument of the wrong type or outside its choices is rejected by FastMCP itself, also as a tool error. `subscribe_resource` and `unsubscribe_resource` accept any string and are outside this contract. `k` and `limit` outside their range are clamped rather than rejected, and the federation tools keep their `error` key for a duplicate alias, a full registry, a non-blank `config_path` that is not a `.json` registry file inside `~/.config/trelix/` or `<cwd>/.trelix/` (`config_path is not inside an allowed config directory` or `config_path is not a repository registry`) and a registry with nothing indexed. Every result, including an empty one (`[]`, `null`), carries a text block that parses to its structured content. Over `--transport http`, an exception a tool did not expect answers `isError: true` with `Error calling tool '<name>'` (no path, no traceback) while every text above is unchanged. Details: [docs/MCP_GUIDE.md, Errors](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#errors).
 
 ## Knowledge Graph Tools
 

@@ -204,7 +204,7 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **Zero-infra default** — single SQLite file (`.trelix/index.db`) with sqlite-vec (flat scan) + FTS5 BM25
 - **Real-time watching** — `trelix watch` auto-indexes on every file save
 - **Works offline** — `--provider local` uses sentence-transformers, no API key needed for embeddings. It selects the *embedder* only: if a chat credential or `TRELIX_LLM_BASE_URL` is present, the retrieval planner still makes one LLM call per distinct query. Unset both for a fully offline path
-- **BGE-Code-v1 / Nomic CodeRankEmbed** — code-specialized embedding providers (`bge-code`, `nomic-code`). `bge-code` is **experimental**: its pooling is unverified against BAAI's published `pooling_mode_lasttoken: true`, so no quality claim is made — see [docs/PROVIDERS.md](docs/PROVIDERS.md#bge-code-baaibge-code-v1)
+- **BGE-Code-v1 / Nomic CodeRankEmbed** — code-specialized embedding providers (`bge-code`, `nomic-code`). `bge-code` is **experimental**: its pooling is unverified against BAAI's published `pooling_mode_lasttoken: true`, so no quality claim is made — see [docs/PROVIDERS.md](docs/PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval)
 - **Matryoshka voyage embeddings** — compact 256/512-dim voyage-code-3 via `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS`
 - **PLAID late-interaction reranker** — 7–45× faster ColBERT via RAGatouille (`rerank_provider=plaid`)
 - **Multi-granularity indexing** — LLM file-level summaries alongside symbol chunks (`TRELIX_FILE_SUMMARIES_ENABLED=true`)

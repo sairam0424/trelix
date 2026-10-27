@@ -29,6 +29,9 @@ the PR body)
     `test_the_table_reads_fourteen_of_the_sixteen_aggregate_values`.
 15. Count only cited lines in `n_expected_citation_entries`, or read `n_cited_entries` for the
     recall row -> `test_with_the_flag_off_the_citation_rows_read_zero_and_...`.
+16. Resolve the file name too (`Path.resolve()` of the whole path) -> both
+    `TestOutputFilesNamedThroughSymlinks` tests (a symlink at the name is refused as the same file;
+    a symlink loop raises RuntimeError on Python 3.12).
 (The records here are built by `make_record`, so a mutation inside `scored_record` is killed by
 test_synthesis_eval_metrics.py's end-to-end test, not here.)
 """
@@ -40,6 +43,7 @@ import io
 import json
 import re
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -55,6 +59,7 @@ from trelix.eval.synthesis import SynthesisEvalHarness
 from trelix.eval.synthesis_records import (
     SynthesisRecord,
     aggregate_synthesis_metrics,
+    output_file_problems,
     write_synthesis_per_query_file,
 )
 from trelix.store.dimension_guard import DimensionMismatchError
@@ -283,7 +288,23 @@ class TestTheCommand:
         assert [record["id"] for record in document["records"]] == ["e1", "e2", "e3", "e4"]
 
     def test_an_unwritable_file_exits_1_after_the_table(self, tmp_path: Path) -> None:
-        result = _invoke(tmp_path, "--per-query-out", "/nonexistent/dir/out.json")
+        # A directory that is there when the command starts (a missing one is refused before the
+        # run, see test_cli_eval_synthesis_replay.py) and gone when the run ends.
+        gone = tmp_path / "gone"
+        gone.mkdir()
+
+        def run_detailed_removing_the_directory(
+            *_args: object, **_kwargs: object
+        ) -> list[SynthesisRecord]:
+            gone.rmdir()
+            return R
+
+        result = _invoke(
+            tmp_path,
+            "--per-query-out",
+            str(gone / "out.json"),
+            run_detailed=run_detailed_removing_the_directory,
+        )
         assert result.exit_code == 1
         assert "Queries evaluated" in result.output
         assert "Could not write per-query results:" in result.output
@@ -329,3 +350,27 @@ class TestTheCommandOverTheR5bRecords:
         document = json.loads(out.read_text(encoding="utf-8"))
         assert document["aggregate"]["citations_valid"] == 4.0
         assert [record["id"] for record in document["records"]] == _R5B_IDS
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+class TestOutputFilesNamedThroughSymlinks:
+    """The pre-run check calls two paths one file only when the write to one would replace the
+    other: a symlinked directory leads to the same file, a symlink at the name is replaced."""
+
+    def test_a_symlink_at_the_file_name_and_its_target_are_two_files(self, tmp_path: Path) -> None:
+        (tmp_path / "f.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "filelink.json").symlink_to("f.json")
+        link, target = str(tmp_path / "filelink.json"), str(tmp_path / "f.json")
+
+        assert output_file_problems(link, target) == []
+        assert output_file_problems(target, link) == []
+
+    def test_a_symlink_loop_is_compared_by_name_and_never_raises(self, tmp_path: Path) -> None:
+        (tmp_path / "loop1").symlink_to("loop2")
+        (tmp_path / "loop2").symlink_to("loop1")
+        loop = str(tmp_path / "loop1")
+
+        assert output_file_problems(loop, loop) == [
+            "--record and --per-query-out must name different files"
+        ]
+        assert output_file_problems(loop, str(tmp_path / "o.json")) == []

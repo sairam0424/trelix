@@ -61,7 +61,7 @@ EXPECTED_PLUGIN_FILES = [
 ]
 # sha256 over `rel_path\0bytes\0` for every file above, in that order. Any edit under
 # plugins/trelix/ changes it and must come with a bump of plugin.json's `version`.
-_PLUGIN_TREE_SHA256 = "5b716b17afea0e6c6cc1147964015112cd1035193557913557b2baf9a44891ba"
+_PLUGIN_TREE_SHA256 = "fb52e45237e26f40d7f48fd27aa8cf7be78243ce609b8a68aec5942f42c41184"
 # The row of the README's "Every command the plugin executes" table that is the server launch.
 _README_LAUNCH_ROW = (
     "| Session start, by Claude Code | `uvx --from trelix-mcp==3.4.3 trelix-mcp` "

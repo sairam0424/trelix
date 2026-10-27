@@ -834,7 +834,9 @@ hallucination: `hallucination_rate 0.3333`, `completeness 0.6667`, `unscoreable 
 `n_unanswerable 0.0`, `n_queries 3.0`.
 
 `--per-query-out FILE` writes the records and the aggregate as JSON; `docs/CLI_REFERENCE.md`
-(`trelix eval-synthesis`) lists the document's keys. One record (`e4` of the example), as written:
+(`trelix eval-synthesis`) lists the document's keys. The directory of `FILE` must already exist: it is
+checked before the run starts (see "Recorded answers" below). One record (`e4` of the example), as
+written:
 
 ```json
 {
@@ -913,6 +915,16 @@ Limits to know:
   succeed. A query whose synthesis raised is recorded as `""`, which is what it was scored with.
 - The file holds answers that quote retrieved code, so it is as sensitive as the index: it is
   written with mode 0600, atomically, and an existing file is replaced.
+- `--record FILE` and `--per-query-out FILE` are checked once, before the run starts and before the
+  index is opened, because the files are written only after every query has been paid for. The
+  directory of each must already exist and be writable, the path must not be a directory, and the two
+  flags cannot name the same file (`--record and --per-query-out must name different files`; a
+  relative and an absolute spelling, or a path through a symlinked directory, can name the same
+  file; a symlink named as the file is replaced by the write, so it and its target are two files).
+  The command prints one line per problem, for example `--record: directory /x/y does not exist`, and
+  exits `1`; nothing is created by the check. A `--replay` run is checked too. The files are still
+  written after the run, and a failure then (the directory removed in the meantime) is reported as
+  before.
 - At most 20 MB, exactly the two keys above, every answer a string; every problem found is reported
   at once.
 

@@ -180,7 +180,7 @@ commercial use pick `local` (Apache 2.0), `voyage`, or `bedrock-cohere`.
 
 ---
 
-### 8. MCP-Native — 6 Tools, 3 Resources, 3 Prompts
+### 8. MCP-Native — Tools, Resources and Prompts
 
 **What it does:** `trelix-mcp` is a first-class MCP server that exposes Trelix retrieval to any MCP client (Claude Code, Cursor, Windsurf, Continue.dev). It speaks stdio (default) or Streamable HTTP (`--transport http`) and integrates in two commands.
 
@@ -195,6 +195,8 @@ trelix-mcp (stdio or Streamable HTTP transport)
   ├── build_knowledge_graph(repo_path, detect_communities, extract_concepts)      → dict (stats)
   └── graph_search_mcp(query, repo_path, depth, max_results)                     → list[dict]
 ```
+
+The tree shows the search, indexing and graph tools. The server also registers the resource-subscription, federation and agent-session tools; [MCP_GUIDE.md section 8](MCP_GUIDE.md#8-the-15-mcp-tools) lists every tool.
 
 **Setup:**
 ```bash
@@ -296,7 +298,7 @@ retrieve → synthesize
 
 **Fit: High.**
 
-`pip install "trelix[local]" && trelix index ./repo && trelix ask ./repo "how does the request lifecycle work?"` — no API key, no cloud, no data egress. The local embedder produces competitive retrieval quality for most codebase exploration tasks. Add `--provider nomic-code` or `--provider local-code` for code-specialized embeddings, still fully offline. (`--provider bge-code` also exists but is **experimental** — its pooling is unverified; see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).)
+`pip install "trelix[local]" && trelix index ./repo && trelix ask ./repo "how does the request lifecycle work?"` — no API key, no cloud, no data egress. The local embedder produces competitive retrieval quality for most codebase exploration tasks. Add `--provider nomic-code` or `--provider local-code` for code-specialized embeddings, still fully offline. (`--provider bge-code` also exists but is **experimental** — its pooling is unverified; see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval).)
 
 ---
 
@@ -336,7 +338,7 @@ pip install trelix-mcp
 claude mcp add trelix -- trelix-mcp
 ```
 
-Trelix's 6 MCP tools are available inside any MCP-compatible client. The `blast_radius` tool is especially useful when you select a function and want to know everything that depends on it before refactoring.
+Trelix's MCP tools are available inside any MCP-compatible client. The `blast_radius` tool is especially useful when you select a function and want to know everything that depends on it before refactoring.
 
 ---
 

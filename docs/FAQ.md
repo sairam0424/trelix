@@ -380,7 +380,7 @@ v3.1.7: trelix builds it with FlagEmbedding's `FlagModel`, which pools with CLS,
 publishes `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true`.
 Its pooling is unverified, so it cannot be placed in a quality ranking at all — it previously
 held first place here on a "SOTA 2025" label that was the upstream model's, not a measurement
-of trelix. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
+of trelix. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval).
 
 For teams on a budget: `nomic-code` offers strong quality at zero cost after the one-time model download.
 
@@ -563,7 +563,7 @@ A typical team setup for a shared codebase:
 
 3. **MCP for individual developers.** Each developer installs `trelix-mcp` locally and points it at either their own local index or the team REST server.
 
-4. **Voyage or local-code embeddings.** For best retrieval quality across a shared index, standardize on one embedding provider. `voyage-code-3` (API) or `local-code` (local, no API key) are recommended over the default `local` provider for teams. **Do not standardize a shared team index on `bge-code`:** it is experimental as of v3.1.7 and its pooling is unverified — see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
+4. **Voyage or local-code embeddings.** For best retrieval quality across a shared index, standardize on one embedding provider. `voyage-code-3` (API) or `local-code` (local, no API key) are recommended over the default `local` provider for teams. **Do not standardize a shared team index on `bge-code`:** it is experimental as of v3.1.7 and its pooling is unverified — see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1--experimental-do-not-use-for-retrieval).
 
 5. **Federation for multi-repo monorepos.** Register all service repos and use `trelix search-all` or `FederatedRetriever` for cross-repo search.
 

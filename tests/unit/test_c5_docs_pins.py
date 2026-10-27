@@ -12,7 +12,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import typer.main
+
 from tests._env_isolation import BEAST_MODE_DEFAULTS
+from trelix.cli.main import app
 from trelix.eval.synthesis import validate_synthesis_entry
 from trelix.retrieval.flare import _DEFAULT_UNCERTAINTY_PHRASES
 
@@ -299,10 +302,71 @@ def test_eval_readme_has_the_recorded_answers_section() -> None:
     assert "zero LLM calls" not in section and "no LLM configuration" not in section
 
 
+def test_the_pre_run_output_check_is_documented_where_the_flags_are() -> None:
+    cli = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    start, end = cli.index("### `trelix eval-synthesis`"), cli.index("### `trelix eval-validate`")
+    section = _squash(cli[start:end])
+    readme = _squash((_REPO_ROOT / "eval/README.md").read_text(encoding="utf-8"))
+    guide = _squash((_REPO_ROOT / "docs/USER_GUIDE.md").read_text(encoding="utf-8"))
+
+    assert (
+        "`--record` and `--per-query-out` are checked once, before the run starts and before "
+        "the index is opened" in section
+    )
+    assert "`--record: directory /x/y does not exist`" in section
+    assert "`--record and --per-query-out must name different files`" in section
+    assert (
+        "a symlink named as the file is replaced by the write, so it and its target are two files"
+        in section
+    )
+    assert (
+        "so a hard link or a different letter case on a case-insensitive volume is not recognised"
+        in section
+    )
+    assert "the check creates nothing and also applies to `--replay` runs" in section
+    assert "Its directory must exist; this is checked before the run starts. |" in section
+    assert (
+        "Its directory must exist (checked before the run starts) and it cannot be the "
+        "`--per-query-out` file." in section
+    )
+    assert (
+        "(both are checked before the run starts, see the first `--record` note above)" in section
+    )
+    assert (
+        "The directory of `FILE` must already exist: it is checked before the run starts" in readme
+    )
+    assert (
+        "`--record FILE` and `--per-query-out FILE` are checked once, before the run starts "
+        "and before the index is opened" in readme
+    )
+    assert "`--record and --per-query-out must name different files`" in readme
+    assert (
+        "a symlink named as the file is replaced by the write, so it and its target are two files"
+        in readme
+    )
+    assert "both are checked before the run starts, not after it has been paid for." in guide
+
+
+def test_the_help_of_the_two_output_flags_says_when_the_directory_is_checked() -> None:
+    options = {
+        option.name: option.help
+        for option in typer.main.get_command(app).commands["eval-synthesis"].params
+    }
+
+    per_query_out, record = options["per_query_out"], options["record"]
+
+    assert "Its directory must exist; this is checked before the run starts." in per_query_out
+    assert (
+        "Its directory must exist (checked before the run starts) and it cannot be the "
+        "--per-query-out file." in record
+    )
+
+
 def test_contributing_names_the_replay_functions() -> None:
     text = (_REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
 
     assert "(`load_replay`, `write_replay_file`)" in text
+    assert "the pre-run output check (`output_file_problems`)" in text
 
 
 def test_architecture_eval_synthesis_row_lists_the_flags() -> None:

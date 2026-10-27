@@ -73,7 +73,10 @@ The server works on the repository you pass as `repo_path`, inside `<repo_path>/
 `build_knowledge_graph` / `graph_search_mcp` write graph metadata into it. On the pinned 3.4.3 a
 call to `search_code`, `get_symbol` or `blast_radius` against a repository with **no** index
 creates an empty, gitignored `.trelix/index.db` and answers empty (`search_code` with
-`results: []`, `blast_radius` with `[]`, `get_symbol` with `null`); nothing else is written.
+`results: []`, `blast_radius` with `[]`, `get_symbol` with `null`). `search_code` also writes one
+JSON trace of the query per call, named `.trelix/debug/<timestamp>_<query>.json`, holding the query
+text and the data of each pipeline stage; no setting turns it off and nothing caps or rotates the
+directory, so delete it when that matters. `get_symbol` and `blast_radius` write nothing else.
 
 ## What Claude sees at session start
 
@@ -121,9 +124,10 @@ A tool error that names `sentence-transformers` means neither option is in place
 
 The skill's `allowed-tools` pre-approves `search_code`, `get_symbol` and `blast_radius`: the three
 tools annotated `readOnlyHint` on this repository's `develop` branch
-(`packages/trelix-mcp/tests/test_tool_readonly.py`). On the pinned 3.4.3 a call to any of them
-against an unindexed repository creates an empty `.trelix/index.db` (see above); nothing else is
-written. The grant is kept because the skill forbids searching before indexing, and it lasts one
+(`packages/trelix-mcp/tests/test_tool_readonly.py`, which measures the index database, not every
+file). On the pinned 3.4.3 a call to any of them against an unindexed repository creates an empty
+`.trelix/index.db`, and every `search_code` call also writes a trace file (see above). The grant is
+kept because the skill forbids searching before indexing, and it lasts one
 turn (Claude Code clears it at your next message). Every other tool keeps its permission prompt:
 `index_codebase` (writes the index, spends embedding money), `ask_agent` (spends LLM money,
 stores sessions), `build_knowledge_graph` and `graph_search_mcp` (write graph metadata), and the

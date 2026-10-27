@@ -377,6 +377,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `tests/unit/test_observability_doc_pins.py` pins the sentence about when trelix installs its
   `MeterProvider` (on the first counted embedding provider call; never for `bge-code` or
   `nomic-code`) to the embedder code.
+- **Documentation that no longer matched the code is corrected.** `CONTRIBUTING.md` named
+  `TRELIX_QUERY_EXPANSION_ENABLED` and `TRELIX_FLARE_ENABLED` as the switches for query expansion and
+  FLARE; neither binds anything (the settings are `TRELIX_RETRIEVAL_HYDE_FALLBACK`,
+  `TRELIX_RETRIEVAL_MULTI_QUERY` and `TRELIX_RETRIEVAL_FLARE`). Seven links (five to the `bge-code`
+  section of `docs/PROVIDERS.md`, two to the `intent_hint` section of `docs/USER_GUIDE.md`) pointed
+  at anchors that do not exist, and `docs/integrations/vscode-plugin.md` named a file that does not
+  exist. `SECURITY.md` said the line of a posted review comment comes from the parsed diff; it comes
+  from the model's reply. Its `file:line` citations are now symbol names, and it says that
+  `search_code` writes one JSON trace of the query to `.trelix/debug/` on every call, with no cap, no
+  rotation and no switch. `docs/MCP_GUIDE.md` said four tool groups where it lists five, and three
+  resources where the server registers four. Test, command, tool and resource counts that had
+  drifted are removed from `CONTRIBUTING.md`, `docs/USER_GUIDE.md` and `docs/WHY_TRELIX.md`. No code
+  changes.
 - **The Helm chart rolls the pod when a Secret it manages changes.** The API token, the
   `trelix-mcp` token and the Qdrant and embedder keys reach the containers as environment
   variables, which a container reads once, when it starts. A `helm upgrade` with a new
@@ -391,6 +404,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   notes now say so for each token). When the chart does own a Secret, upgrading to this chart
   version replaces the pod once, and so does a later change of the chart `version` alone,
   because the Secret's `helm.sh/chart` label is part of the hash. Chart version 0.2.8.
+- **`trelix eval-synthesis` checks `--record` and `--per-query-out` before the run starts.** Both
+  files were written only after every golden query had been answered, so a missing directory was
+  found after the run had been paid for and the recorded answers were lost, and when both flags
+  named one file the second write silently replaced the first. The command now exits `1` before the
+  index is opened, with one line per problem, when the directory of either file does not exist or
+  cannot be written to, when a path is a directory, or when the two flags name the same file (also
+  when one is written relative and the other absolute, or reached through a symlinked directory);
+  for example `--record: directory /x/y does not exist`. A `--replay` run gets the same check. The
+  write after the run is unchanged and still reports a failure.
 
 ### Added
 - **`trelix-mcp --transport http` serves MCP over Streamable HTTP** on `127.0.0.1:8766/mcp`

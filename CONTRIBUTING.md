@@ -39,8 +39,8 @@ cp .env.example .env
 ## Running Tests
 
 ```bash
-make test           # unit + MCP: 3,114 unit + 102 MCP = 3,216 tests (no coverage)
-make test-fast      # unit tests only, 3,114 (no API calls, fast)
+make test           # unit + MCP tests (no coverage)
+make test-fast      # unit tests only (no API calls, fast)
 make test-cov       # unit tests with the coverage report
 make lint           # ruff check + ruff format (auto-formats before diff-check, cross-platform safe)
 make format         # ruff format
@@ -54,11 +54,11 @@ make typecheck      # mypy
 ### Running specific test subsets
 
 ```bash
-# Unit tests only — no credentials needed
-# Collects 3,114 of 3,220 and deselects the 106 integration tests.
+# Every test except the integration tests — no credentials needed. This includes tests/e2e,
+# which need network access; `make test-fast` is the offline unit run.
 pytest -m "not integration"
 
-# Live integration tests — require Azure or AWS credentials (104 tests)
+# Live integration tests — require Azure or AWS credentials
 pytest tests/integration/
 # tests/integration/test_llm_e2e.py covers Azure + Bedrock chat and embeddings;
 # individual tests skip gracefully when the relevant credentials are absent
@@ -149,8 +149,9 @@ in, frozen dataclasses out), and its tags are gated by `TRELIX_RETRIEVAL_CITATIO
 
 | Key | Default | Env var |
 |-----|---------|---------|
-| `query_expansion_enabled` | `False` | `TRELIX_QUERY_EXPANSION_ENABLED=true` |
-| `flare_enabled` | `False` | `TRELIX_FLARE_ENABLED=true` |
+| `hyde_fallback_enabled` | `False` | `TRELIX_RETRIEVAL_HYDE_FALLBACK=true` |
+| `multi_query_enabled` | `False` | `TRELIX_RETRIEVAL_MULTI_QUERY=true` |
+| `flare_enabled` | `False` | `TRELIX_RETRIEVAL_FLARE=true` |
 | `telemetry_enabled` | `False` | `TRELIX_TELEMETRY_ENABLED=true` |
 
 **Adding a new query enhancement:**
@@ -169,7 +170,7 @@ The evaluation harness lives at `src/trelix/eval/` and is organized as:
 | `ndcg.py` | Pure-Python ndcg_at_k, recall_at_k, mrr — no pandas dependency |
 | `harness.py` | EvalHarness.run(golden_path) — reads JSONL, retrieves, returns aggregate metrics |
 | `synthesis.py` | SynthesisEvalHarness.run_detailed(golden_path) — one `SynthesisRecord` per golden line; `run()` is their aggregate |
-| `synthesis_records.py` | `SynthesisRecord`, `aggregate_synthesis_metrics` (means with their denominators) and the `--per-query-out` file; abstention and citation facts per record; and the recorded-answers file (`load_replay`, `write_replay_file`); measured by scripts/mutation.py as eval.synthesis_records; pure |
+| `synthesis_records.py` | `SynthesisRecord`, `aggregate_synthesis_metrics` (means with their denominators) and the `--per-query-out` file; abstention and citation facts per record; and the recorded-answers file (`load_replay`, `write_replay_file`) and the pre-run output check (`output_file_problems`); measured by scripts/mutation.py as eval.synthesis_records; pure |
 
 A synthesis golden line may carry the v2 fields `answerable`, `gold_answer` and `expected_citations`;
 the loader refuses a mistyped one with its line number (`validate_synthesis_entry` names the
