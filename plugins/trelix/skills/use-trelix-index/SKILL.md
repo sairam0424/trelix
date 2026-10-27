@@ -21,27 +21,36 @@ from an index it keeps in `<repo_path>/.trelix/index.db`. Every trelix tool take
    <provider>. Pass repo_path="<repo>" to every trelix tool.` Only the third means search, and
    its `<repo>` is the `repo_path` to pass. Without such a line (the hook did not run), check
    that `<repo_path>/.trelix/index.db` exists (for example `ls <repo_path>/.trelix/index.db`).
-   A file left behind by the trap in step 3 exists but is empty and also answers `[]`; when in
-   doubt, grep first.
+   A file that version 3.4.3 left behind (step 3) exists but is empty and answers `[]`
+   (the SessionStart line calls it `empty (0 files)`); when in doubt, grep first.
 2. If it does not exist, do not search. Ask the user before calling
    `mcp__plugin_trelix_trelix__index_codebase(repo_path)`: it embeds every symbol in the
    repository, which takes minutes on a large tree and costs money with an API embedder.
    Until the index exists, use grep.
-3. On this release of the server (trelix-mcp 3.4.3) a search on a repository WITHOUT an
-   index does not fail: it answers `results: []` and leaves an empty `.trelix/index.db`
-   behind. An empty result therefore proves nothing on its own.
+3. On this release of the server (trelix-mcp 3.5.0) a search on a repository WITHOUT an
+   index fails with a tool error, `No index found at <repo>/.trelix/index.db. Run trelix
+   index <repo> first.`, and writes nothing. Read it as "not indexed", never as "not found",
+   and index with `index_codebase` (step 2). Version 3.4.3 answered empty (or, with no
+   embedder, a `sentence-transformers` error) and left an empty `.trelix/index.db` behind, so such a
+   file can still exist (step 1).
 
 ## Workflow
 
 - `mcp__plugin_trelix_trelix__search_code(query, repo_path, k=10, cursor=0)`: a question in
   plain language ("where are sessions validated"). Each result has `file`, `symbol`,
   `lines`, `kind`, `language`, `score`, `source` and `body`. The response carries `next_cursor`;
-  pass it back as `cursor` for the next page, and stop when it is `null`.
+  pass it back as `cursor` for the next page, and stop when it is `null`. With
+  `detail="concise"` each result drops `body` and carries a one-line `signature` instead: scan
+  with that, then read the few symbols that matter with `get_symbol`.
 - `mcp__plugin_trelix_trelix__get_symbol(qualified_name, repo_path)`: the full source of a
-  symbol once you know its name from a search result.
+  symbol once you know its name from a search result. A body over 20,000 characters is cut
+  and `body_truncated` is `true`; `max_body_chars=0` returns the whole body.
 - `mcp__plugin_trelix_trelix__blast_radius(symbol_name, repo_path)`: the files that call or
   import a symbol, one entry per file (`file`, `symbol`, `kind`, `line_start`, `language`). Run
-  it before you change a function, class or constant.
+  it before you change a function, class or constant. It returns at most 100 entries; when it
+  cuts the list, a second text block says how many were left out and what cut it. `limit` (up
+  to 500) asks for more, but on its own it helps only when that block says the `limit` argument
+  alone cut the list, not the server's output size cap.
 - `mcp__plugin_trelix_trelix__graph_search_mcp(query, repo_path, k=10)`: call, import and
   type neighbours of a search hit. It rebuilds the whole graph (a full Louvain pass and
   PageRank) and rewrites graph metadata into the index on EVERY call: use it once per
