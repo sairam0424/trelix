@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { sign } from "@octokit/webhooks-methods";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // The real sweep deletes trelix-review-* directories under the temp dir.
@@ -102,11 +103,14 @@ describe("server entry point", () => {
             .spyOn(console, "error")
             .mockImplementation(() => {});
         try {
+            // Signed, so that it is the parser that rejects it, not the signature check.
+            const body = '{"canary-body": ';
             const res = await request(app)
                 .post("/webhooks/github")
                 .set("X-GitHub-Event", "pull_request")
                 .set("Content-Type", "application/json")
-                .send('{"canary-body": ');
+                .set("X-Hub-Signature-256", await sign(HOOK_CANARY, body))
+                .send(body);
 
             expect(res.status).toBe(400);
             expect(res.headers["content-type"]).toMatch(/^application\/json/);

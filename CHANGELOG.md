@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Security
+- **The GitHub App's webhook route verifies the signature before it parses the body.** The route
+  parsed the body first (up to 25 MB) and checked `X-Hub-Signature-256` afterwards, so a sender who
+  did not know the webhook secret could make the process buffer and `JSON.parse` a large body: 25 MB
+  of empty objects cost about 1.5 s of event loop and about 530 MB of heap (Node 26.9), against
+  about 20 ms for the HMAC over the same bytes. The route now reads the raw bytes, verifies the
+  signature over them, and only then parses. A request with a missing or wrong signature is
+  answered `401` (`missing signature or body`, `signature verification failed`) without being
+  parsed, malformed JSON included (that was a `400`); a correctly signed body that is malformed, or
+  is not a JSON object or array, is still `400`. The size read before the signature has verified is
+  capped at 5 MiB instead of 25 MB, and a larger body is still answered `413` (`payload too
+  large`); a `pull_request` payload is far smaller. A `charset` in the `Content-Type` is no longer
+  checked (a correctly signed delivery that declared one other than UTF-8 was answered `415` or
+  `400`): the body is read as UTF-8, which is what the signature is computed over.
+
 ### Changed
 - **The Claude Code plugin now runs `trelix-mcp` 3.5.0, started with `--tools core`, and its
   version is 3.5.0.** Update with `claude plugin marketplace update trelix` and
