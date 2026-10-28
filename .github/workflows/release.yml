@@ -38,7 +38,8 @@ jobs:
     steps:
       # fetch-tags is load-bearing here for the same reason ci.yml documents it: a bare
       # checkout is a shallow, tag-less fetch, and the CHANGELOG-date step below reads the
-      # tag OBJECT's creation date out of refs/tags/. Without the tag present that step
+      # `creatordate` of refs/tags/<tag> (that step says what the value is on the runner).
+      # Without the tag present that step
       # takes its refuse-to-certify branch and fails every release — a gate that cannot
       # read its input must not pass, so the input has to be guaranteed here instead.
       #
@@ -124,7 +125,7 @@ jobs:
             packages/trelix-llama-index/src/trelix_llama_index/__init__.py
 
           if [ "$fail" -ne 0 ]; then
-            echo "::error::Refusing to release. Bump every site above to $tag, or delete and re-cut the tag."
+            echo "::error::Refusing to release. Bump every site above to $tag on develop, promote, and release the next patch version: a v* tag cannot be deleted or moved (repository ruleset), so this tag stays."
             exit 1
           fi
 
@@ -148,6 +149,14 @@ jobs:
       # workflow_dispatch legitimately re-runs this for a release whose publish failed
       # without re-tagging (see docker-publish.yml) — a "today" check would fail that.
       #
+      # What "the tag's creation date" is on the runner: checkout first fetches every tag
+      # (the annotated tag object, which carries the tagger's date) and then, on a run
+      # triggered by a tag, fetches `+<sha>:refs/tags/<tag>`, which overwrites that ref with
+      # the tagged COMMIT (the v3.5.0 job log shows both fetches). For a commit, `creatordate`
+      # is the committer date. So the value compared below is the committer date of the
+      # tagged commit, which for a promotion is the merge commit, not the moment the tag was
+      # made. Date the heading to the UTC day of the commit that is tagged.
+      #
       # `%(creatordate:format-local:...)` with TZ=UTC, never `%(creatordate:short)`:
       # :short renders in the TAGGER's zone and returns the wrong day for any tag made
       # after 18:30 IST. Verified against the four existing tags — :short disagrees with
@@ -168,7 +177,7 @@ jobs:
           tag_date=$(TZ=UTC git for-each-ref \
             --format='%(creatordate:format-local:%Y-%m-%d)' "refs/tags/${GITHUB_REF_NAME}")
           if [ -z "$tag_date" ]; then
-            # Refuse rather than pass. An unreadable tag object means this gate checked
+            # Refuse rather than pass. An unreadable tag ref means this gate checked
             # nothing, and "checked nothing" must never look like "checked and agreed" —
             # the same failure shape the version comparison above guards against when a
             # reader yields an empty string.
