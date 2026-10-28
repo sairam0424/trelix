@@ -1,3 +1,5 @@
+import { trimTrailingSlashes } from "./url.js";
+
 export interface AskStreamOptions {
   fetch?: typeof fetch;
   /** Aborts the underlying request when triggered. */
@@ -22,7 +24,7 @@ export async function* askStream(
   options: AskStreamOptions = {},
 ): AsyncGenerator<string, void, void> {
   const fetchImpl = options.fetch ?? fetch;
-  const url = new URL(baseUrl.replace(/\/+$/, "") + "/ask");
+  const url = new URL(trimTrailingSlashes(baseUrl) + "/ask");
   url.searchParams.set("query", params.query);
   url.searchParams.set("repo", params.repo);
 

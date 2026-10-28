@@ -28,6 +28,10 @@ from tree_sitter import Node
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 from trelix.indexing.parser._grammar import load_language, make_parser
 from trelix.indexing.parser.base import BaseParser, ParseResult
+from trelix.indexing.parser.extractors._comment_text import (
+    strip_block_comment_end,
+    strip_star_line_prefixes,
+)
 
 MAX_STRUCT_FIELDS = 30
 MAX_INTERFACE_METHODS = 20
@@ -707,7 +711,7 @@ class GoParser(BaseParser):
     def _clean_comment(raw: str) -> str:
         """Strip comment delimiters: /* */, //, /// prefixes."""
         raw = re.sub(r"^/\*+\s*", "", raw.strip())
-        raw = re.sub(r"\s*\*+/$", "", raw)
-        raw = re.sub(r"^\s*\*\s?", "", raw, flags=re.MULTILINE)
+        raw = strip_block_comment_end(raw)
+        raw = strip_star_line_prefixes(raw)
         raw = re.sub(r"^///?\s?", "", raw, flags=re.MULTILINE)
         return raw.strip()

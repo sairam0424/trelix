@@ -56,6 +56,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     AZURE_API_KEY.`) is still streamed, then `[DONE]`. This changes error output only, but a
     consumer sees it: the TypeScript SDK now throws `TrelixAskError` for a model-call failure,
     where it used to deliver the banner as ordinary tokens. `trelix ask` is unchanged.
+- **Crafted source files with long runs of whitespace (or of `<`) in a comment can no longer
+  stall the indexer.** CodeQL `py/polynomial-redos` was right about the comment cleanup in the
+  Go, Java, JavaScript, TypeScript, Rust, JSON and C# parsers: the patterns that strip a block
+  comment's closing `*/` and its leading `*` columns, and the one that strips the XML tags of a
+  C# `///` comment, took time quadratic in the length of such a comment. Neither the indexer nor
+  `POST /parse` has a time limit, and the regular expression engine holds the interpreter lock,
+  so one file of at most 500,000 bytes could hold a worker, or the whole API process, for
+  minutes. The patterns are replaced by linear helpers in
+  `src/trelix/indexing/parser/extractors/_comment_text.py` that return exactly what the patterns
+  returned, so no parse result changes (the helpers were compared with the old patterns on
+  200,000 well-formed and 300,000 mixed or malformed strings per pattern, and on every string of
+  up to 7 characters over a small alphabet, with no difference). The `@trelix/sdk` base URL
+  (`new TrelixClient(baseUrl)` and `askStream(baseUrl, ...)`) had the same defect in the
+  `replace(/\/+$/, "")` that drops trailing slashes, on a base URL with a very long run of
+  slashes that does not end it (before a query string, say); it is now one backwards scan with
+  the same result for every URL.
 
 ### Changed
 - **The Claude Code plugin now runs `trelix-mcp` 3.5.0, started with `--tools core`, and its

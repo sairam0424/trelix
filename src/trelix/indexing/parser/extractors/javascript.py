@@ -28,6 +28,7 @@ from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdg
 
 from .._grammar import load_language, make_parser
 from ..base import BaseParser, ParseResult
+from ._comment_text import strip_block_comment_end, strip_star_line_prefixes
 
 
 class JavaScriptParser(BaseParser):
@@ -776,7 +777,7 @@ class JavaScriptParser(BaseParser):
     def _clean_comment(raw: str) -> str:
         """Strip comment delimiters: /** */, //, ///, * line prefixes."""
         raw = re.sub(r"^/\*+\s*", "", raw.strip())
-        raw = re.sub(r"\s*\*+/$", "", raw)
-        raw = re.sub(r"^\s*\*\s?", "", raw, flags=re.MULTILINE)
+        raw = strip_block_comment_end(raw)
+        raw = strip_star_line_prefixes(raw)
         raw = re.sub(r"^///?\s?", "", raw, flags=re.MULTILINE)
         return raw.strip()
