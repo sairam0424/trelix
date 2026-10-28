@@ -25,6 +25,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     `detail="concise"` on `search_code`, `limit` on `blast_radius` (100 entries unless you ask for
     more) and `max_body_chars` on `get_symbol` (a body over 20,000 characters is cut). The README
     says what the tools write, which tools are pre-approved and which are listed.
+- **The plugin documentation describes the 3.5.0 pin.** `SECURITY.md`, `docs/MCP_GUIDE.md` and
+  `docs/integrations/claude-code-plugin.md` now say that the plugin launches the pinned release
+  with `--tools core` (seven of the fifteen tools), that a read tool on a repository with no index
+  answers a `No index found` tool error and creates nothing, and that an empty `.trelix/index.db`
+  left by an older release still answers empty. The first-download figures are measured ones
+  (about 280 MiB in the uv cache, about 10 s on one fast connection). `CONTRIBUTING.md` lists
+  what the next plugin pin PR has to move.
 
 ## [3.5.0] — 2026-10-27
 

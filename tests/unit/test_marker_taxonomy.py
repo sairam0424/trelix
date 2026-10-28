@@ -136,8 +136,12 @@ _MODULE_SCOPE_IMPORTORSKIP = re.compile(
 )
 
 
-def _collect(paths: tuple[str, ...], marker_expr: str | None = None) -> frozenset[str]:
-    """Return the node ids a fresh pytest collects for ``paths`` under ``-m marker_expr``.
+def _run_collect(
+    paths: tuple[str, ...], marker_expr: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a fresh ``pytest --collect-only`` for ``paths`` under ``-m marker_expr``.
+
+    Returns the finished process, so a caller can read the exit code and both streams.
 
     A child process, not this session's ``request.session.items``: under any partial
     run (``-k``, ``-m``, a single file) ``session.items`` holds only what THIS
@@ -168,7 +172,12 @@ def _collect(paths: tuple[str, ...], marker_expr: str | None = None) -> frozense
     # measurement to a stale .pyc), and the PATH fix the comment above describes as
     # load-bearing worked only because the ambient PATH happened to contain the
     # venv's bin already.
-    proc = subprocess.run(argv, cwd=_ROOT, capture_output=True, text=True, timeout=120, env=env)
+    return subprocess.run(argv, cwd=_ROOT, capture_output=True, text=True, timeout=120, env=env)
+
+
+def _assert_probe_ran(
+    proc: subprocess.CompletedProcess[str], paths: tuple[str, ...], marker_expr: str | None
+) -> None:
     # 0 = collected something, 5 = collected nothing (a legitimate outcome for
     # `-m "not <marker>"`). Anything else -- 2 interrupted by a collection error,
     # 4 usage error -- means the probe itself is broken and its empty result must
@@ -178,11 +187,21 @@ def _collect(paths: tuple[str, ...], marker_expr: str | None = None) -> frozense
         f"this probe is broken, not measuring.\nstdout tail:\n{proc.stdout[-3000:]}\n"
         f"stderr tail:\n{proc.stderr[-2000:]}"
     )
+
+
+def _node_ids(proc: subprocess.CompletedProcess[str]) -> frozenset[str]:
     return frozenset(
         line.strip()
         for line in proc.stdout.splitlines()
         if "::" in line and line.startswith("tests/")
     )
+
+
+def _collect(paths: tuple[str, ...], marker_expr: str | None = None) -> frozenset[str]:
+    """Return the node ids a fresh pytest collects for ``paths`` under ``-m marker_expr``."""
+    proc = _run_collect(paths, marker_expr)
+    _assert_probe_ran(proc, paths, marker_expr)
+    return _node_ids(proc)
 
 
 def _collect_or_skip(path: str, gate_module: str | None, marker: str) -> frozenset[str]:
@@ -293,9 +312,12 @@ def test_a_misspelled_marker_expression_deselects_nothing() -> None:
     it would return the empty set here too and this test would fail, instead of
     the survivor-shaped green that a broken probe otherwise produces.
 
-    It also pins the hazard itself: pytest offers no strictness flag that catches
-    a misspelled `-m` name, so the taxonomy's correctness can only ever be
-    asserted, never delegated.
+    It also pins the hazard itself, in whichever form the installed pytest has it.
+    Up to pytest 9.1 nothing catches a misspelled `-m` name: it selects everything
+    (asserted below). From pytest 9.2, `--strict-markers` rejects the name with a
+    usage error (exit 4, "Unknown marker(s) in '-m' expression"), which is accepted
+    here because it is loud. Either way the taxonomy's correctness is asserted, not
+    delegated: on the older versions only these tests catch the typo.
 
     The carrier is gated on ``watchfiles`` through ``_collect_or_skip``, exactly as
     the parametrised test above is: tests/unit/test_multi_watcher.py carries a
@@ -307,12 +329,20 @@ def test_a_misspelled_marker_expression_deselects_nothing() -> None:
     path = "tests/unit/test_multi_watcher.py"
     total = _collect_or_skip(path, "watchfiles", "requires_extra")
 
-    typo = _collect((path,), "not integrationn")
-    assert typo == total, (
-        "pytest appears to have gained validation of -m expressions: "
-        f'-m "not integrationn" now deselects {len(total - typo)} tests. If so, that '
-        "is good news -- record the pytest version and relax this control."
-    )
+    proc = _run_collect((path,), "not integrationn")
+    if proc.returncode == 4 and "Unknown marker(s) in '-m' expression" in proc.stderr:
+        # pytest >= 9.2 with `--strict-markers` (see addopts) rejects the typo loudly, so
+        # nothing is silently deselected: the hazard this control pinned is closed by
+        # pytest itself. The correctly spelled name below still proves the probe measures.
+        pass
+    else:
+        _assert_probe_ran(proc, (path,), "not integrationn")
+        typo = _node_ids(proc)
+        assert typo == total, (
+            "pytest appears to have gained validation of -m expressions: "
+            f'-m "not integrationn" now deselects {len(total - typo)} tests. If so, that '
+            "is good news -- record the pytest version and relax this control."
+        )
 
     correct = _collect((path,), "not requires_extra")
     assert correct == frozenset(), (
