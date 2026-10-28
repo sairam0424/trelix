@@ -644,16 +644,33 @@ there means the publish did not land.
 
 #### Move the Claude Code plugin pin (its own PR, never the release PR)
 
-Once PyPI shows the new `trelix-mcp`, open `chore/claude-plugin-pin-X.Y.Z` into `develop`: set
-the pin in `plugins/trelix/.mcp.json`, `plugin.json`'s `version`, the pinned command and the
-release named in `plugins/trelix/README.md` and `SKILL.md`, the literals in
-`tests/unit/test_claude_plugin_manifest.py` (the expected `.mcp.json` object, the `version`
-literal, the README command row and pin, the tree hash), and in
-`tests/unit/test_claude_plugin_skill.py` the `DEVELOP_ONLY_PARAMETERS` and `DEVELOP_ONLY_FLAG`
-guards (that PR deletes both) and the release its messages name. Put the output of `uvx --from trelix-mcp==X.Y.Z trelix-mcp --version`
-in the PR body: the tests check that the version has a CHANGELOG section and is not newer than
-the stamp, not that PyPI has it. The plugin is fetched from the default branch, so the new pin
-is installable once `develop` is promoted to `main`.
+Once PyPI shows the new `trelix-mcp`, open `chore/claude-plugin-pin-X.Y.Z` into `develop` and
+move these together:
+
+- `plugins/trelix/.mcp.json`: the `==X.Y.Z` pin (the args keep `--tools core` unless the PR means
+  to change the profile), and `plugin.json`'s `version` (`X.Y.Z`, or `<pin>.N` for a plugin-only change).
+- `plugins/trelix/README.md` and `SKILL.md`: every pinned command, every "trelix-mcp X.Y.Z", and
+  every sentence that says what the pinned server does (what a read tool answers on an unindexed
+  repository, which tools `core` lists, what each tool writes, the size and time of the first
+  download). Check each of those against the new release on temporary directories before keeping
+  it. The plugin section of `SECURITY.md` and Prerequisites and First use in
+  `docs/integrations/claude-code-plugin.md` carry sentences of the same kind.
+- `tests/unit/test_claude_plugin_manifest.py`: the expected `.mcp.json` object (pin and
+  `--tools core`), the `version` literal, the README launch row, the pin set asserted in
+  `test_plugin_readme_shows_the_exact_launch_command`, and last the tree hash, which moves with
+  every byte under `plugins/trelix/`.
+- `tests/unit/test_claude_plugin_skill.py`: the release its docstring names, and the `CORE_TOOLS`
+  and `HIDDEN_TOOLS` literals when the new release's `tool_metadata.py` changes the `core` profile.
+  Run the file once in an environment with the published `trelix-mcp==X.Y.Z` installed (CI checks
+  the skill's tool names against the checkout's server, which is `develop`, not the pin).
+- `CHANGELOG.md`: a `### Changed` entry under `[Unreleased]` that says what changes for people who
+  installed the plugin (tools listed or hidden, what a call now answers).
+
+Put the output of `uvx --from trelix-mcp==X.Y.Z trelix-mcp --version` in the PR body, and the result
+of the smoke test described under "Working on the Claude Code plugin" or the reason it was not run:
+the tests check that the version has a CHANGELOG section and is not newer than the stamp, not that
+PyPI has it. The plugin is fetched from the default branch, so the new pin is installable once
+`develop` is promoted to `main`.
 
 ---
 
@@ -693,8 +710,11 @@ that lists every command the plugin runs) are read by Claude Code, not by this p
   a release PR. Tests fail when it is newer than the trelix-mcp stamp or names a version without a
   `## [X.Y.Z]` CHANGELOG section.
 - **The skill describes the pinned release, not `develop`.** A tool or parameter that only
-  `develop` has stays out of `SKILL.md` until the pin reaches a release that has it;
-  `tests/unit/test_claude_plugin_skill.py` pins the tool names and the develop-only parameters.
+  `develop` has stays out of `SKILL.md` until the pin reaches a release that has it.
+  `tests/unit/test_claude_plugin_skill.py` pins the tool names (core tools only, none of the eight
+  the `core` profile hides, all registered by the server in the environment) and not the
+  parameters, so check a parameter or flag you add against the pinned release itself
+  (`uvx --from trelix-mcp==X.Y.Z trelix-mcp --help`, or its `tools/list`).
 - **Validate before committing; CI validates too.** `.github/workflows/ci.yml`'s `TypeScript SDK`
   job runs the same two commands through a pinned `npx -y @anthropic-ai/claude-code@<version>`
   with `--strict`, so a manifest Claude Code would warn on fails CI; the version is a literal in
@@ -719,4 +739,4 @@ that lists every command the plugin runs) are read by Claude Code, not by this p
   Afterwards `claude plugin marketplace remove trelix` (it also uninstalls the plugin).
 - The server-registration test in `tests/unit/test_claude_plugin_skill.py` needs `trelix_mcp`
   and `fastmcp` (`pip install -e packages/trelix-mcp`); without them it skips. CI's unit job has
-  them.
+  them, installed from the checkout, so the names are checked against `develop`'s server.

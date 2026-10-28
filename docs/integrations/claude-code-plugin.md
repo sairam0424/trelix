@@ -8,7 +8,7 @@ authoritative list of every command it runs. This page is the user guide.
 
 | Component | What it is | How you see it |
 |---|---|---|
-| MCP server `trelix` | The published `trelix-mcp` release that `plugins/trelix/.mcp.json` pins, launched by `uvx` | Server `plugin:trelix:trelix`; tools `mcp__plugin_trelix_trelix__<tool>` |
+| MCP server `trelix` | The published `trelix-mcp` release that `plugins/trelix/.mcp.json` pins, launched by `uvx` with `--tools core` | Server `plugin:trelix:trelix`; tools `mcp__plugin_trelix_trelix__<tool>` |
 | Skill `use-trelix-index` | When to search with trelix, how to page, when to fall back to grep | `/trelix:use-trelix-index` |
 | SessionStart hook | One line of context at session start: whether the project has a trelix index, how old it is, which `repo_path` to pass | A line starting `trelix:` in the session context (`uv run --no-project --script` runs `plugins/trelix/scripts/session_start.py`) |
 
@@ -16,12 +16,21 @@ The server is the same `trelix-mcp` that `claude mcp add trelix -- trelix-mcp` r
 [MCP_GUIDE.md](../MCP_GUIDE.md)); the plugin adds the pinned launch, the skill and the
 SessionStart line.
 
+The plugin starts the server with `--tools core`, which lists seven of its fifteen tools:
+`index_codebase`, `search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`,
+`graph_search_mcp` and `ask_agent`, every tool the skill names. The other eight (the federation,
+agent-session and subscription tools) are hidden, not removed, and a call to one is answered as an
+unknown tool. To have all fifteen, register the server yourself without the flag, for example
+`claude mcp add --transport stdio trelix -- uvx --from trelix-mcp==<pin> trelix-mcp`, and toggle
+the plugin's server `plugin:trelix:trelix` off in `/mcp` (see [Embeddings](#embeddings)).
+
 ## Prerequisites
 
 - `uv` on your `PATH` (the server launch and the SessionStart hook both run through it). `uvx`
   fetches a Python >= 3.12 if none is available.
 - Network access on the first start, when `uvx` downloads the pinned `trelix-mcp` and its
-  dependencies (about a minute on one machine; a few seconds afterwards).
+  dependencies (about 280 MiB in the uv cache; about 10 s measured on one fast connection,
+  longer on a slow one, and about a second on later starts).
 - An embedding provider: the plugin's server does not install the `local` embedder (see
   [Embeddings](#embeddings)).
 
@@ -49,11 +58,14 @@ first (`index_codebase` with the absolute path); it embeds every symbol, so it t
 a large tree and costs money with an API embedder. The SessionStart line (next section) tells
 Claude which case applies, and the skill tells it to ask you before indexing.
 
-On the pinned release a search against a repository with no index does not fail: it answers
-`results: []` and leaves an empty `.trelix/index.db` behind. The skill therefore forbids
-concluding "not found" from an empty result alone. (Release 3.5.0 and later answer
-`No index found at <path>. Run trelix index <repo> first.` instead; the plugin picks that up
-with the pin bump to 3.5.0.)
+On the pinned release a search against a repository with no index fails with a tool error,
+`No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`, and creates nothing
+(`get_symbol` and `blast_radius` answer the same). Read it as "not indexed", never as "not found".
+An empty `.trelix/index.db` that an older release left behind (3.4.3 created one on such a
+search) still answers empty: `results: []` from `search_code` once an embedder is configured,
+`null` from `get_symbol`, `[]` from `blast_radius`. The skill therefore still forbids concluding
+"not found" from an empty result alone, and the SessionStart line reports such an index as
+`empty (0 files)`.
 
 ## What the SessionStart line looks like
 
@@ -145,8 +157,8 @@ pull request, so a manifest Claude Code would warn on does not merge.
 
 ## Troubleshooting
 
-- **The server is not listed, or shows as failed, in the first session.** The cold start can
-  take a minute while `uvx` downloads; run the warm-up command above and start a new session.
+- **The server is not listed, or shows as failed, in the first session.** The cold start waits
+  for the `uvx` download; run the warm-up command above and start a new session.
 - **A tool error names `sentence-transformers`.** No embedder is configured; see
   [Embeddings](#embeddings).
 - **Empty results on a repository you expected to be indexed.** Check for
