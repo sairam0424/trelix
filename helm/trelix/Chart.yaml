@@ -9,14 +9,19 @@ type: application
 # releases that bumped appVersion; bumped to 0.2.5 because the 3.3.7 commit changed the
 # image.tag default, and to 0.2.6 for 3.4.2 (image.tag default, extraEnv example,
 # README), and to 0.2.7 for the optional trelix-mcp container (mcp.* values, second
-# container, Service port, Secret key, shared env in named templates), and to 0.2.8 for the
-# checksum/secret pod-template annotation (a changed chart-owned Secret now rolls the pod).
+# container, Service port, Secret key, shared env in named templates), to 0.2.8 for the
+# checksum/secret pod-template annotation (a changed chart-owned Secret now rolls the pod),
+# and to 0.3.0 for the hardened defaults (a minor step on purpose: an unchanged values file now
+# renders a different pod, and kubeVersion rejects clusters older than 1.19).
 # Deliberately NOT lockstep with appVersion, and still 0.x: nothing in CI runs `helm package`
 # (helm-lint.yml only lints and templates), so the chart ships from the git tree and no
 # one has pinned 0.1.0 from an index. verify-version does not check this line —
 # appVersion is the site that has to match the tag.
-version: 0.2.8
+version: 0.3.0
 appVersion: "3.5.0"
+# seccompProfile (podSecurityContext) is GA in 1.19. The "-0" lets pre-release suffixes such as
+# v1.29.1-gke.100 or v1.29.1-eks-a5ec690 satisfy the range.
+kubeVersion: ">=1.19.0-0"
 home: https://github.com/sairam0424/trelix
 sources:
   - https://github.com/sairam0424/trelix

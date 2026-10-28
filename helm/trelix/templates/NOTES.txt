@@ -12,8 +12,8 @@ in the container's startup command is decorative only.
 Index and query repos as SUBDIRECTORIES of the shared PVC, mounted at
 {{ .Values.persistence.mountPath }}:
 
-  1. Get a shell with the PVC mounted (or `kubectl cp` a repo checkout in):
-       kubectl exec -it deploy/{{ include "trelix.fullname" . }} -- sh
+  1. Get a shell with the PVC mounted (or `kubectl -n {{ .Release.Namespace }} cp` a repo checkout in):
+       kubectl -n {{ .Release.Namespace }} exec -it deploy/{{ include "trelix.fullname" . }} -- sh
 
   2. Copy or index a repo under {{ .Values.persistence.mountPath }}, e.g.
      {{ .Values.persistence.mountPath }}/my-project
@@ -38,7 +38,7 @@ publicly, and rotate the token by updating the Secret and restarting.
 The token is read when the container starts, so the old one stays valid until
 the pod restarts. A new apiAuth.token restarts the pod on `helm upgrade`; after
 you change the Secret behind apiAuth.existingSecretName, run:
-  kubectl rollout restart deployment/{{ include "trelix.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "trelix.fullname" . }}
 
 {{- else }}
 
@@ -82,7 +82,7 @@ The trelix-mcp container serves only the repositories under
 except GET /health needs the mcp.auth token as `Authorization: Bearer <token>`;
 it is not the apiAuth token.
 
-  kubectl port-forward svc/{{ include "trelix.fullname" . }} {{ .Values.mcp.port }}:{{ .Values.mcp.port }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "trelix.fullname" . }} {{ .Values.mcp.port }}:{{ .Values.mcp.port }}
   claude mcp add --transport http trelix http://127.0.0.1:{{ .Values.mcp.port }}/mcp --header "Authorization: Bearer <token>"
 
 The Host check accepts {{ include "trelix.mcpAllowedHosts" . }} and the loopback names.
@@ -93,11 +93,11 @@ To rotate the token: it is read when the container starts, so the old one stays
 valid until the pod restarts. A new mcp.auth.token restarts the pod on
 `helm upgrade`. The chart cannot see a Secret it does not own, so after you
 change the Secret behind mcp.auth.existingSecretName, run:
-  kubectl rollout restart deployment/{{ include "trelix.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "trelix.fullname" . }}
 
 image.tag must be a release whose trelix-mcp has `--transport http`; if the
 container exits at once, read why:
-  kubectl logs deploy/{{ include "trelix.fullname" . }} -c trelix-mcp
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "trelix.fullname" . }} -c trelix-mcp
 {{- end }}
 
 Get the application URL by running:
@@ -106,8 +106,8 @@ Get the application URL by running:
   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ (first .paths).path }}
 {{- end }}
 {{- else if eq .Values.service.type "LoadBalancer" }}
-  kubectl get svc -w {{ include "trelix.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} get svc -w {{ include "trelix.fullname" . }}
 {{- else }}
-  kubectl port-forward svc/{{ include "trelix.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "trelix.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
   then open http://127.0.0.1:{{ .Values.service.port }}/docs
 {{- end }}

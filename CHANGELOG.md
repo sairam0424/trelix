@@ -73,6 +73,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   slashes that does not end it (before a query string, say); it is now one backwards scan with
   the same result for every URL.
 
+### Added
+- **Opt-in hardening in the Helm chart (chart 0.3.0).** Each opt-in below is off by default,
+  so none of them changes an existing install. Each setting is documented under "Hardening" in
+  `helm/trelix/README.md`.
+  - *`securityContext.readOnlyRootFilesystem=true`.* The chart now also mounts an `emptyDir` at
+    `/tmp` and at `/cache` in every container and sets `XDG_CACHE_HOME=/cache`. A read-only root
+    without them starts and passes its probes, then fails when indexing needs a temporary file or
+    the cache directory. Both directories are empty after a pod restart, so the tree-sitter
+    grammars (and the embedding cache, if on) are fetched or rebuilt; point
+    `TRELIX_EMBEDDING_CACHE_DIR` into the PVC to keep the cache. With `TRELIX_AUDIT_ENABLED`,
+    also set `TRELIX_AUDIT_DB_PATH` to a file on the PVC: its default path is on the read-only root.
+  - *`securityContext.runAsNonRoot`, `runAsUser`, `runAsGroup`.* Set all three: the image's
+    `USER` is a name, and the kubelet refuses `runAsNonRoot` without a numeric user. 999 is the
+    id of the published 3.5.0 images; OpenShift needs them unset.
+  - *`networkPolicy.enabled` and `networkPolicy.ingressFrom`.* An Ingress-only policy admitting
+    the release namespace plus the peers you list; egress stays open. The chart refuses to render
+    it with `ingress.enabled` or a `service.type` other than `ClusterIP` and no `ingressFrom`.
+  - *`serviceAccount.automount`* (default `false`, see Changed) is the new value behind the
+    service-account token.
+
 ### Changed
 - **The Claude Code plugin now runs `trelix-mcp` 3.5.0, started with `--tools core`, and its
   version is 3.5.0.** Update with `claude plugin marketplace update trelix` and
@@ -99,6 +119,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   left by an older release still answers empty. The first-download figures are measured ones
   (about 280 MiB in the uv cache, about 10 s on one fast connection). `CONTRIBUTING.md` lists
   what the next plugin pin PR has to move.
+- **The Helm chart's defaults are hardened (chart 0.2.8 to 0.3.0), and the chart needs Kubernetes
+  1.19.** After `helm upgrade` the pod is rolled and has: no service-account token mounted, a
+  `RuntimeDefault` seccomp profile, `allowPrivilegeEscalation: false`, all capabilities dropped
+  on every container, and CPU and memory requests (`250m`, `512Mi`). Nothing else is on by
+  default, and there is still no memory or CPU limit (a limit that is too low OOM-kills indexing
+  of a large repository). Chart.yaml gains `kubeVersion: ">=1.19.0-0"`.
+  - *Upgrade notes.* A sidecar or injector that logs in with the pod's token (a Vault Agent
+    injector, for example) stops working: set `serviceAccount.automount=true`. `helm upgrade
+    --reuse-values` fails to render, as it did for `mcp` in chart 0.2.7, because the old
+    release's values have no `networkPolicy`: use `--reset-then-reuse-values`. A
+    `resources.limits` below the new requests (under `250m` CPU or `512Mi` memory), with no
+    `resources.requests` of your own, is rejected by the API server, since a request may not
+    exceed its limit: set `resources.requests` at or below your limits. To restore the old
+    pod, set `serviceAccount.automount: true`, `securityContext: null`, `resources: null` and
+    `podSecurityContext.seccompProfile: null`. `null` deletes a default; `{}` does not, because
+    Helm merges maps and the defaults stay.
+  - *CI.* The chart's Checkov step sets `HELM_NAMESPACE`, which makes `CKV_K8S_21` pass without
+    a hard-coded namespace, and skips eight rules that stay open by design, with a reason and
+    the value that closes each one: `CKV_K8S_11`, `_13`, `_15`, `_22`, `_23`, `_40`, `_43` and
+    `CKV2_K8S_6`. The README quickstart installs into its own namespace
+    (`-n trelix --create-namespace`), so the `kubectl` commands in the notes `helm install`
+    prints (`NOTES.txt`) and in the README now carry `-n` with that namespace.
+    `helm-lint.yml` renders the opt-in settings.
 
 ## [3.5.0] — 2026-10-27
 
