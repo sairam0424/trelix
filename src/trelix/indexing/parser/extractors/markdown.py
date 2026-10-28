@@ -108,6 +108,10 @@ class MarkdownParser(BaseParser):
             )
 
         # ── 4. Build one symbol per heading ────────────────────────────────
+        # Parent chain as a stack of (level, name) with strictly rising levels. Popping the
+        # entries at or below the heading's level leaves the nearest earlier heading of each
+        # lower level, in one pass (walking back through all earlier headings is quadratic).
+        ancestors: list[tuple[int, str]] = []
         for idx, (line_0, level, name) in enumerate(headings):
             # Section ends at line before next same-or-higher heading
             line_end_0 = n_lines - 1
@@ -117,18 +121,11 @@ class MarkdownParser(BaseParser):
                     line_end_0 = next_line_0 - 1
                     break
 
-            # Qualified name: walk back to find parent headings
-            parts = [name]
-            current_level = level
-            for k in range(idx - 1, -1, -1):
-                _, prev_level, prev_name = headings[k]
-                if prev_level < current_level:
-                    parts.insert(0, prev_name)
-                    current_level = prev_level
-                    if current_level == 1:
-                        break
-
-            qualified_name = " > ".join(parts)
+            # Qualified name: the parent headings, then this one
+            while ancestors and ancestors[-1][0] >= level:
+                ancestors.pop()
+            qualified_name = " > ".join([parent for _, parent in ancestors] + [name])
+            ancestors.append((level, name))
             signature = "#" * level + " " + name
             body = "\n".join(lines[line_0 : line_end_0 + 1])
 
@@ -223,8 +220,40 @@ def _strip_inline_md(text: str) -> str:
     """Remove **bold**, *italic*, `code`, [text](url) from heading text."""
     text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text)
     text = re.sub(r"`([^`]+)`", r"\1", text)
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = _strip_md_links(text)
     return text.strip()
+
+
+def _strip_md_links(text: str) -> str:
+    """
+    Replace each inline link `[label](url)` with its label.
+
+    A `[` is a link when the first `]` after it holds at least one character, is followed by
+    `(`, and the first `)` after that has at least one character before it. A regex for this
+    retries from every `[` of a long run of them (quadratic). Here a `[` that is not a link is
+    skipped together with every `[` before the same `]`, because they fail the same way, and the
+    scan ends when the text has no `]` or no `)` left.
+    """
+    parts: list[str] = []
+    copied_to = 0
+    open_at = text.find("[")
+    while open_at != -1:
+        close_at = text.find("]", open_at + 1)
+        if close_at == -1:
+            break
+        if close_at > open_at + 1 and text.startswith("(", close_at + 1):
+            url_end = text.find(")", close_at + 2)
+            if url_end == -1:
+                break
+            if url_end > close_at + 2:
+                parts.append(text[copied_to:open_at])
+                parts.append(text[open_at + 1 : close_at])
+                copied_to = url_end + 1
+                open_at = text.find("[", copied_to)
+                continue
+        open_at = text.find("[", close_at + 1)
+    parts.append(text[copied_to:])
+    return "".join(parts)
 
 
 def _fm_field(fm_text: str, key: str) -> str | None:

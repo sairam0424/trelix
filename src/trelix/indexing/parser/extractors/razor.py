@@ -36,26 +36,35 @@ from trelix.indexing.parser.base import BaseParser, ParseResult
 # Directive regexes
 # ---------------------------------------------------------------------------
 
+# Every directive is on its own line, indented by any whitespace but a newline: `^[^\S\n]*`
+# and not `^\s*`. `\s*` would also cross newlines, so a long run of blank lines is re-scanned
+# from every one of its line starts (quadratic) before the match fails.
+#
 # @page "/route" or @page "/route/{id:int}"
-_PAGE_RE = re.compile(r'^\s*@page\s+"([^"]*)"', re.MULTILINE)
+_PAGE_RE = re.compile(r'^[^\S\n]*@page\s+"([^"]*)"', re.MULTILINE)
 # @using Namespace.Path
-_USING_RE = re.compile(r"^\s*@using\s+([\w.]+)", re.MULTILINE)
+_USING_RE = re.compile(r"^[^\S\n]*@using\s+([\w.]+)", re.MULTILINE)
 # @namespace MyApp.Components
-_NAMESPACE_RE = re.compile(r"^\s*@namespace\s+([\w.]+)", re.MULTILINE)
+_NAMESPACE_RE = re.compile(r"^[^\S\n]*@namespace\s+([\w.]+)", re.MULTILINE)
 # @inject ServiceType VarName  (ServiceType may be generic: ILogger<T>)
-_INJECT_RE = re.compile(r"^\s*@inject\s+([\w][\w.<>, \[\]?]*?)\s+(\w+)\s*$", re.MULTILINE)
+# One line only: the type and the name are split by spaces or tabs, never by a newline, and
+# the type words are split by plain spaces, so each line can be read in one pass.
+_INJECT_RE = re.compile(
+    r"^[^\S\n]*@inject[^\S\n]+(\w[\w.<>,\[\]?]*(?: +[\w.<>,\[\]?]+)*)[^\S\n]+(\w+)[^\S\n]*$",
+    re.MULTILINE,
+)
 # @inherits BaseComponent<T>
-_INHERITS_RE = re.compile(r"^\s*@inherits\s+([\w][\w.<>, \[\]?]*)", re.MULTILINE)
+_INHERITS_RE = re.compile(r"^[^\S\n]*@inherits\s+([\w][\w.<>, \[\]?]*)", re.MULTILINE)
 # @implements IDisposable / @implements IAsyncDisposable<T>
-_IMPLEMENTS_RE = re.compile(r"^\s*@implements\s+([\w][\w.<>, \[\]?]*)", re.MULTILINE)
+_IMPLEMENTS_RE = re.compile(r"^[^\S\n]*@implements\s+([\w][\w.<>, \[\]?]*)", re.MULTILINE)
 # @layout MainLayout
-_LAYOUT_RE = re.compile(r"^\s*@layout\s+([\w.]+)", re.MULTILINE)
+_LAYOUT_RE = re.compile(r"^[^\S\n]*@layout\s+([\w.]+)", re.MULTILINE)
 # @typeparam T  or  @typeparam T where T : IBase
-_TYPEPARAM_RE = re.compile(r"^\s*@typeparam\s+(.+)", re.MULTILINE)
+_TYPEPARAM_RE = re.compile(r"^[^\S\n]*@typeparam\s+(.+)", re.MULTILINE)
 # @rendermode InteractiveServer / InteractiveWebAssembly / InteractiveAuto
-_RENDERMODE_RE = re.compile(r"^\s*@rendermode\s+(\S+)", re.MULTILINE)
+_RENDERMODE_RE = re.compile(r"^[^\S\n]*@rendermode\s+(\S+)", re.MULTILINE)
 # @attribute [Authorize] or @attribute [Authorize(Roles="admin")]
-_ATTRIBUTE_RE = re.compile(r"^\s*@attribute\s+(\[.+?\])", re.MULTILINE)
+_ATTRIBUTE_RE = re.compile(r"^[^\S\n]*@attribute\s+(\[.+?\])", re.MULTILINE)
 # @code { or @functions {  (the opening brace may be on next line)
 _CODE_BLOCK_RE = re.compile(r"@(?:code|functions)\s*\{", re.MULTILINE)
 # Inline @{ statement block
@@ -106,6 +115,21 @@ def _count_lines_to(src: str, pos: int) -> int:
     return src[:pos].count("\n") + 1
 
 
+def _strip_generic_args(type_name: str) -> str:
+    """
+    Drop the generic arguments of a one-line type name: `Foo<Bar<T>>` -> `Foo`.
+
+    Removes everything from the first `<` to the last `>`, as the regex `<.*>` did, but with
+    find/rfind: that regex retries from every `<` of a long run of them (quadratic) when no
+    `>` follows. `type_name` is a directive capture, so it never holds a newline.
+    """
+    first_open = type_name.find("<")
+    last_close = type_name.rfind(">")
+    if first_open == -1 or last_close < first_open:
+        return type_name
+    return type_name[:first_open] + type_name[last_close + 1 :]
+
+
 # ---------------------------------------------------------------------------
 # Shared base
 # ---------------------------------------------------------------------------
@@ -151,7 +175,7 @@ class _RazorBase(BaseParser):
 
         for m in _INJECT_RE.finditer(source):
             service_type = m.group(1).strip()
-            base_type = re.sub(r"<.*>", "", service_type).strip()
+            base_type = _strip_generic_args(service_type).strip()
             import_edges.append(
                 ImportEdge(
                     file_id=file_id,
@@ -284,7 +308,7 @@ class _RazorBase(BaseParser):
 
         inh_match = _INHERITS_RE.search(source)
         if inh_match:
-            base = re.sub(r"<.*>", "", inh_match.group(1)).strip()
+            base = _strip_generic_args(inh_match.group(1)).strip()
             type_edges.append(
                 TypeEdge(
                     from_symbol_id=component_local_idx,
@@ -294,7 +318,7 @@ class _RazorBase(BaseParser):
             )
 
         for impl_match in _IMPLEMENTS_RE.finditer(source):
-            iface = re.sub(r"<.*>", "", impl_match.group(1)).strip()
+            iface = _strip_generic_args(impl_match.group(1)).strip()
             type_edges.append(
                 TypeEdge(
                     from_symbol_id=component_local_idx,
