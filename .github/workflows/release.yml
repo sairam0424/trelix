@@ -39,9 +39,9 @@ jobs:
       # fetch-tags is load-bearing here for the same reason ci.yml documents it: a bare
       # checkout is a shallow, tag-less fetch, and the CHANGELOG-date step below reads the
       # `creatordate` of refs/tags/<tag> (that step says what the value is on the runner).
-      # Without the tag present that step
-      # takes its refuse-to-certify branch and fails every release — a gate that cannot
-      # read its input must not pass, so the input has to be guaranteed here instead.
+      # Without the tag present that step takes its refuse-to-certify branch and fails
+      # every release — a gate that cannot read its input must not pass, so the input has
+      # to be guaranteed here instead.
       #
       # fetch-depth: 0 is NOT optional, and omitting it broke the v3.1.5 release outright.
       # When the triggering ref is itself a tag, actions/checkout@v4 builds the refspec
@@ -125,7 +125,7 @@ jobs:
             packages/trelix-llama-index/src/trelix_llama_index/__init__.py
 
           if [ "$fail" -ne 0 ]; then
-            echo "::error::Refusing to release. Bump every site above to $tag on develop, promote, and release the next patch version: a v* tag cannot be deleted or moved (repository ruleset), so this tag stays."
+            echo "::error::Refusing to release. This tag stays: a v* tag cannot be deleted or moved by design (repository ruleset). Bump every site to the NEXT patch version on develop, add its CHANGELOG section, promote, and tag that version."
             exit 1
           fi
 
@@ -151,17 +151,24 @@ jobs:
       #
       # What "the tag's creation date" is on the runner: checkout first fetches every tag
       # (the annotated tag object, which carries the tagger's date) and then, on a run
-      # triggered by a tag, fetches `+<sha>:refs/tags/<tag>`, which overwrites that ref with
-      # the tagged COMMIT (the v3.5.0 job log shows both fetches). For a commit, `creatordate`
-      # is the committer date. So the value compared below is the committer date of the
-      # tagged commit, which for a promotion is the merge commit, not the moment the tag was
-      # made. Date the heading to the UTC day of the commit that is tagged.
+      # triggered by a tag whose ref does not already point at the commit (every annotated
+      # tag), fetches `+<sha>:refs/tags/<tag>`, which overwrites that ref with the tagged
+      # COMMIT (run 40528785472, the v3.5.0 release, shows both fetches). For a commit,
+      # `creatordate` is the committer date. So the value compared below is the committer
+      # date of the tagged commit, which for a promotion is the merge commit, not the
+      # moment the tag was made.
+      #
+      # The heading is written on develop, before that merge commit exists, so it passes
+      # only if the promotion merges on the heading's UTC day. A promotion that merges on a
+      # later UTC day needs the heading re-dated first: a pushed tag cannot be moved, so
+      # compare the heading with the merge commit's committer date (UTC) before pushing it.
       #
       # `%(creatordate:format-local:...)` with TZ=UTC, never `%(creatordate:short)`:
-      # :short renders in the TAGGER's zone and returns the wrong day for any tag made
-      # after 18:30 IST. Verified against the four existing tags — :short disagrees with
-      # the published UTC date on v3.1.3 and v3.1.0, i.e. it would encode the very bug
-      # this gate exists to catch, while the form below matches all four.
+      # :short renders in the tagger's zone (on the runner, the committer's) and returns
+      # the wrong day for any tag made after 18:30 IST. Verified against the four existing
+      # tags — :short disagrees with the published UTC date on v3.1.3 and v3.1.0, i.e. it
+      # would encode the very bug this gate exists to catch, while the form below matches
+      # all four.
       - name: CHANGELOG section is dated to the tag's UTC day
         run: |
           set -euo pipefail

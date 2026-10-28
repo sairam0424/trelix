@@ -85,8 +85,9 @@ jobs:
 
     steps:
       # The CHANGELOG date gate below reads the `creatordate` of refs/tags/<tag> (release.yml's
-      # date step says what that value is on the runner), so a tag push needs the tags, and release.yml's verify-version checkout explains why fetch-tags only
-      # works together with fetch-depth: 0 (a shallow fetch of a tag ref aborts the job).
+      # date step says what that value is on the runner), so a tag push needs the tags, and
+      # release.yml's verify-version checkout explains why fetch-tags only works together
+      # with fetch-depth: 0 (a shallow fetch of a tag ref aborts the job).
       # A workflow_dispatch backfill does not run the gate, so it keeps the default shallow,
       # tag-less checkout it always had (depth 1, no tags). fetch-depth is written with the
       # condition inverted on purpose: `event_name == 'push' && 0 || 1` would give 1 on a
