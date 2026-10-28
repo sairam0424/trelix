@@ -125,7 +125,7 @@ jobs:
             packages/trelix-llama-index/src/trelix_llama_index/__init__.py
 
           if [ "$fail" -ne 0 ]; then
-            echo "::error::Refusing to release. This tag stays: a v* tag cannot be deleted or moved by design (repository ruleset). Bump every site to the NEXT patch version on develop, add its CHANGELOG section, promote, and tag that version."
+            echo "::error::Refusing to release. This tag stays: a v* tag cannot be deleted or moved by design (repository ruleset). Bump every site to the next patch version after $tag on develop, add its CHANGELOG section dated to the UTC day the promotion will merge, promote, and tag that version."
             exit 1
           fi
 
@@ -155,20 +155,22 @@ jobs:
       # tag), fetches `+<sha>:refs/tags/<tag>`, which overwrites that ref with the tagged
       # COMMIT (run 40528785472, the v3.5.0 release, shows both fetches). For a commit,
       # `creatordate` is the committer date. So the value compared below is the committer
-      # date of the tagged commit, which for a promotion is the merge commit, not the
+      # date of the tagged commit (for a merge-commit promotion, the merge commit), not the
       # moment the tag was made.
       #
-      # The heading is written on develop, before that merge commit exists, so it passes
-      # only if the promotion merges on the heading's UTC day. A promotion that merges on a
-      # later UTC day needs the heading re-dated first: a pushed tag cannot be moved, so
-      # compare the heading with the merge commit's committer date (UTC) before pushing it.
+      # The heading is written on develop, before the promotion commit exists, so it passes
+      # only if the promotion lands on the heading's UTC day. If it lands on a later UTC day
+      # the heading must be re-dated BEFORE tagging: that takes a new commit on main (a PR
+      # into develop and a second promotion), and the heading must then match the UTC day of
+      # that new commit. A pushed tag cannot be moved, so compare the heading with the
+      # committer date (UTC) of the exact commit you will tag before pushing the tag.
       #
       # `%(creatordate:format-local:...)` with TZ=UTC, never `%(creatordate:short)`:
       # :short renders in the tagger's zone (on the runner, the committer's) and returns
-      # the wrong day for any tag made after 18:30 IST. Verified against the four existing
-      # tags — :short disagrees with the published UTC date on v3.1.3 and v3.1.0, i.e. it
-      # would encode the very bug this gate exists to catch, while the form below matches
-      # all four.
+      # the wrong day for any tag made after 18:30 UTC (midnight in IST). Verified against
+      # the four existing tags — :short disagrees with the published UTC date on v3.1.3 and
+      # v3.1.0, i.e. it would encode the very bug this gate exists to catch, while the form
+      # below matches all four.
       - name: CHANGELOG section is dated to the tag's UTC day
         run: |
           set -euo pipefail
