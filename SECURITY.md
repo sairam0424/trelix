@@ -206,9 +206,12 @@ is validated server-side:
 The plugin (`.claude-plugin/marketplace.json`, `plugins/trelix/`) runs exactly two
 commands, both listed with their purpose in `plugins/trelix/README.md`:
 
-- `uvx --from trelix-mcp==<pin> trelix-mcp`: the MCP server, the same `trelix-mcp`
-  that `claude mcp add trelix -- trelix-mcp` registers, at the pinned published
-  release. Everything above about the server applies to it unchanged.
+- `uvx --from trelix-mcp==<pin> trelix-mcp --tools core`: the MCP server, the same
+  `trelix-mcp` that `claude mcp add trelix -- trelix-mcp` registers, at the pinned
+  published release and with the `core` tool profile: seven of the fifteen tools are
+  listed, and a call to one of the other eight (the federation, agent-session and
+  subscription tools) is answered as an unknown tool. Everything above about the
+  server applies, unchanged, to the seven tools it lists.
 - `uv run --no-project --script "${CLAUDE_PLUGIN_ROOT}/scripts/session_start.py"`,
   the SessionStart hook (`startup`, `resume`, `clear`; 15 s timeout). The script is
   standard-library Python (a test pins its import roots and that the name `urlopen`
@@ -240,17 +243,20 @@ The skill's `allowed-tools` pre-approves `search_code`, `get_symbol` and
 `blast_radius`: the three tools annotated `readOnlyHint` since 3.5.0
 (`packages/trelix-mcp/tests/test_tool_readonly.py`, which measures the
 index database, not every file). On the pinned
-3.4.3 a call to any of them against an unindexed repository creates an empty,
-gitignored `.trelix/index.db` and answers empty. `search_code` also writes one JSON trace
+3.5.0 a call to any of them against an unindexed repository answers a tool error
+(`No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`) and
+creates nothing; 3.4.3 created an empty, gitignored `.trelix/index.db` there and answered
+empty, and such a leftover file still answers empty (`search_code` needs an embedder configured to get that
+far; without one it fails with the embedder error). `search_code` also writes one JSON trace
 of the query per call (`Retriever._flush_trace`) into a `debug/` directory beside the
 index (`.trelix/debug/` for the default `db_path`; 3.4.3 always wrote to `<repo>/.trelix/debug/`), named `<timestamp>_<query>.json`;
-`get_symbol` and `blast_radius` write no such file. The trace holds the query text and
+`get_symbol` and `blast_radius` write no such file. A `search_code` call that fails first, for
+lack of an index or an embedder, writes none either. The trace holds the query text and
 the data of each pipeline stage, no setting turns it off, and nothing caps or rotates the
 directory, so it grows by at most one file per `search_code` call (the same query twice in
 one second shares a file name); delete it when that matters.
 The grant is kept because the SessionStart line and the skill forbid searching before
-indexing, and it lasts one turn (Claude Code clears it at the next message); the
-pin bump to 3.5.0 makes the statement exact.
+indexing, and it lasts one turn (Claude Code clears it at the next message).
 
 ## Out of Scope
 

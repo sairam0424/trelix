@@ -1,17 +1,17 @@
 """The plugin's SessionStart hook tells Claude whether the repository has a trelix index.
 
-WHY. The pinned `trelix-mcp==3.4.3` sends no server instructions and answers a search on an
-unindexed repository with `results: []` while leaving an empty index behind, so the one line
-`plugins/trelix/scripts/session_start.py` prints is the only place the model learns whether
-`search_code` can answer, how stale the index is, and which absolute `repo_path` to pass. The hook
-runs on every session start with the user's permissions, so these tests pin the whole surface: one
-hook event and command, standard-library-only imports and no network call, a read-only open that
-creates nothing under the project, the three line shapes, the 1,000 character cap, and exit 0 with
-an empty stdout on every bad input. Every expected value is a literal (the commit hashes are
-observations of a git repository the test builds). The script runs as a child process with a
-minimal environment, so it sees only what Claude Code would give it (the AST allow-list test is what
-forbids a `trelix` import; the venv interpreter could otherwise find it); `describe`,
-`cap` and `read_only_uri` are also loaded through `importlib` for the cases that need no process.
+WHY. The pinned `trelix-mcp` sends server instructions, but they do not say whether this
+repository is indexed, so the one line `plugins/trelix/scripts/session_start.py` prints is the
+only place the model learns whether `search_code` can answer, how stale the index is, and which
+absolute `repo_path` to pass. The hook runs on every session start with the user's permissions,
+so these tests pin the whole surface: one hook event and command, standard-library-only imports
+and no network call, a read-only open that creates nothing under the project, the three line
+shapes, the 1,000 character cap, and exit 0 with an empty stdout on every bad input. Every
+expected value is a literal (the commit hashes are observations of a git repository the test
+builds). The script runs as a child process with a minimal environment, so it sees only what
+Claude Code would give it (the AST allow-list test is what forbids a `trelix` import; the venv
+interpreter could otherwise find it); `describe`, `cap` and `read_only_uri` are also loaded
+through `importlib` for the cases that need no process.
 """
 
 from __future__ import annotations
@@ -258,8 +258,8 @@ def test_unindexed_repository_is_reported_and_nothing_is_created(
     tmp_path: Path, trelix_dir_exists: bool
 ) -> None:
     """The exact "no index" line, exit 0, and no `.trelix/` (or no `index.db` inside an existing
-    `.trelix/`, the state `trelix index --dry-run` or a deleted index leaves) afterwards: on the
-    pinned release a search creates an empty index; the hook must not. MUTATIONS that must fail:
+    `.trelix/`, the state `trelix index --dry-run` or a deleted index leaves) afterwards: a 3.4.3
+    search created an empty index, and the hook must not. MUTATIONS that must fail:
     remove the `is_file()` check in `main` (the read-only open of a missing file raises, so stdout
     is empty); build the path with `IndexConfig(...).db_path_absolute` (creates `.trelix/`); write
     the "is indexed" line for a missing index."""
@@ -286,7 +286,7 @@ def test_unindexed_repository_is_reported_and_nothing_is_created(
 
 def test_empty_index_is_reported_as_empty(tmp_path: Path) -> None:
     """An index with the schema and no rows (what a 3.4.3 `search_code` on an unindexed repository
-    leaves behind) is "empty (0 files)", not "indexed: 0 files, 0 symbols". MUTATION that must
+    left behind) is "empty (0 files)", not "indexed: 0 files, 0 symbols". MUTATION that must
     fail: drop the `files == 0` branch of `describe`."""
     repo = tmp_path / "repo"
     repo.mkdir()
