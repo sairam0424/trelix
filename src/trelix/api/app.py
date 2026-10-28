@@ -45,6 +45,15 @@ explicit ``TRELIX_ALLOWED_REPO_ROOTS`` list for the multi-repo and federation
 deployments. With no root configured, nothing is reachable: an unconfigured
 app that accepted any absolute path is the state this exists to remove.
 
+The same dependency refuses a repository whose index store is a symlink (a
+``.trelix`` directory, an ``index.db`` or any entry directly inside ``.trelix``): the
+repository is inside a root, but the link would send every store read and write
+elsewhere. It refuses too when it cannot examine the store (permission denied). A store
+path the operator set absolutely (``TRELIX_STORE_DB_PATH``) is not examined, so
+``GET /graph/visualize``, which writes ``<repo>/.trelix/graph.html`` whatever the store
+path is, checks that file itself. A leading ``~`` is expanded by the guard and by
+``IndexConfig`` alike, so both see one path.
+
 Tracing
 -------
 Each route wraps its work in a ``pipeline_stage_span`` (see
@@ -93,7 +102,7 @@ from trelix.api.request_guard import (
     RequestGuardSettings,
     resolve_allowed_hosts,
 )
-from trelix.core.config import OPERATOR_ENV_FILE, IndexConfig, RetrievalConfig
+from trelix.core.config import OPERATOR_ENV_FILE, IndexConfig, RetrievalConfig, StoreConfig
 
 # Confinement lives in trelix.core so trelix-mcp can share it; the old private
 # names stay bound here because every call site below (and any external patch
@@ -101,6 +110,7 @@ from trelix.core.config import OPERATOR_ENV_FILE, IndexConfig, RetrievalConfig
 from trelix.core.confinement import ALLOWED_ROOTS_ENV as _ALLOWED_ROOTS_ENV
 from trelix.core.confinement import is_within_allowed_roots as _is_within_allowed_roots
 from trelix.core.confinement import resolve_allowed_roots as _resolve_allowed_roots
+from trelix.core.confinement import symlinked_store_entry as _symlinked_store_entry
 from trelix.core.index_check import IndexNotFoundError, require_index
 from trelix.retrieval.otel_tracing import pipeline_stage_span
 from trelix.retrieval.retriever import Retriever
@@ -124,6 +134,10 @@ _REPO_ROOT_FIELDS = ("repo", "repo_path")
 # (now-confined) repo root by the route and re-checked there, so confining it
 # here against the allow-list would reject legitimate "src/foo.py" callers.
 _REPO_RELATIVE_PATH_FIELDS = ("file_path", "output")
+
+# Where GET /graph/visualize writes when the caller names no `output`, relative to the repository.
+# Checked by the route itself because the store path the guard examines can be set elsewhere.
+_GRAPH_HTML = ".trelix/graph.html"
 
 
 class _ApiAuthSettings(BaseSettings):
@@ -573,7 +587,16 @@ def create_app(
             candidates.append((field, value))
 
         for field, value in candidates:
-            if not _is_within_allowed_roots(value, allowed_roots):
+            try:
+                inside = _is_within_allowed_roots(value, allowed_roots)
+            except (ValueError, RuntimeError):
+                # A NUL byte (ValueError) or a "~user" with no such user (RuntimeError from
+                # expanduser): the path cannot be resolved at all. Malformed input is the
+                # caller's 400, not the 500 an escaping exception turned into.
+                raise HTTPException(
+                    status_code=400, detail=f"{field} is not a valid path"
+                ) from None
+            if not inside:
                 # The real path and the allow-list go to the log, never to the
                 # response: this 403 is unauthenticated on the shipped default,
                 # and echoing either would turn it into a path-disclosure
@@ -588,6 +611,46 @@ def create_app(
                     status_code=403,
                     detail=f"{field} is not inside an allowed repository root",
                 )
+            if field in _REPO_ROOT_FIELDS:
+                _refuse_symlinked_store(field, value, StoreConfig().db_path)
+
+    def _refuse_symlinked_store(field: str, value: str, db_path: str) -> None:
+        """403 for a repository whose store at ``db_path`` is a symlink, holds one or hides one.
+
+        The allow-list checks the path the caller named, and a repository inside a root
+        can still carry a ``.trelix`` (or ``index.db``) symlink that sends every store
+        read and write somewhere else. ``confine_repo`` runs this, with the configured
+        store path, in the one dependency every gated route shares, so ``POST /index``
+        (which needs no index) is covered along with the read routes, and before any route
+        builds a config or opens a file. A route that writes elsewhere in ``.trelix`` calls
+        it with that file.
+        """
+        try:
+            link = _symlinked_store_entry(value, db_path)
+        except OSError as exc:
+            # Unreadable store (EACCES): the check could not look, so it refuses. A
+            # directory that can be entered but not listed could still hold a link that is
+            # opened by name. The error text names the entry; it stays in the log.
+            logger.warning(
+                "Refused request: %s=%r has an index store that cannot be examined: %s",
+                field,
+                value,
+                exc,
+            )
+            raise HTTPException(
+                status_code=403, detail=f"{field} has an index store that cannot be examined"
+            ) from None
+        if link is None:
+            return
+        # The link goes to the log, never to the response (see the 403 above), and quoted: an
+        # entry name is chosen by the repository and may hold a newline.
+        logger.warning(
+            "Refused request: %s=%r has a symlinked index store entry at %r",
+            field,
+            value,
+            str(link),
+        )
+        raise HTTPException(status_code=403, detail=f"{field} has a symlinked index store")
 
     async def _json_object(request: Request) -> dict[str, Any]:
         """The request's JSON body as a dict, or ``{}`` when it is not one.
@@ -718,11 +781,16 @@ def create_app(
                 with pipeline_stage_span(config.retrieval, "http_ask"):
                     ctx = Retriever(config).retrieve(query)
                     synth = Synthesizer(config.embedder)
-                    for token in synth.stream(ctx, config.retrieval):
+                    # raise_on_error: the model-call failure is raised into the handler below
+                    # instead of being streamed as a "synthesis unavailable" token.
+                    for token in synth.stream(ctx, config.retrieval, raise_on_error=True):
                         yield f"data: {token}\n\n"
                     yield "data: [DONE]\n\n"
-            except Exception as exc:  # noqa: BLE001
-                yield f"data: [ERROR: {exc}]\n\n"
+            except Exception:  # noqa: BLE001
+                # Fixed on purpose: the exception text can name a provider, a host, a path or
+                # a request id, and this stream reaches any caller. The detail is in the log.
+                logger.exception("GET /ask failed")
+                yield "data: [ERROR: synthesis failed]\n\n"
 
         return StreamingResponse(_generate(), media_type="text/event-stream")
 
@@ -751,17 +819,23 @@ def create_app(
         from trelix.indexing.parser.registry import get_parser
         from trelix.indexing.walker import detect_language
 
-        # Validates repo_path exists; deliberately not otherwise used below —
-        # this endpoint never touches the index DB or an embedder.
-        IndexConfig(repo_path=body.repo_path)
+        # Validates repo_path and returns it resolved (a leading "~" expanded), which is the
+        # path confine_repo approved. Nothing else of it is used: this endpoint never
+        # touches the index DB or an embedder.
+        config = IndexConfig(repo_path=body.repo_path)
 
         with pipeline_stage_span(RetrievalConfig(), "http_parse"):
             if body.file_path is not None:
-                repo_root = Path(body.repo_path).resolve()
+                repo_root = Path(config.repo_path)
                 path = Path(body.file_path)
                 if not path.is_absolute():
                     path = repo_root / path
-                path = path.resolve()
+                try:
+                    path = path.resolve()
+                except ValueError:  # a NUL byte
+                    raise HTTPException(
+                        status_code=400, detail="file_path is not a valid path"
+                    ) from None
                 # Containment check — same intent as /graph/visualize's, but
                 # using is_relative_to() instead of a raw string prefix match
                 # (a prefix match would wrongly accept a sibling directory
@@ -776,6 +850,8 @@ def create_app(
                     )
                 if not path.exists():
                     raise HTTPException(status_code=400, detail=f"file_path not found: {path}")
+                if not path.is_file():  # "" and a directory name both land here
+                    raise HTTPException(status_code=400, detail=f"file_path is not a file: {path}")
                 file_name = path.name
                 source = path.read_text(encoding="utf-8", errors="replace")
             else:
@@ -890,12 +966,22 @@ def create_app(
         from trelix.graph.builder import GraphBuilder
         from trelix.graph.visualizer import GraphVisualizer
 
+        # confine_repo examines the configured store path. An operator who put the store
+        # elsewhere leaves `.trelix` unexamined there, and this route writes into it anyway.
+        _refuse_symlinked_store("repo", repo, _GRAPH_HTML)
         config = IndexConfig(repo_path=repo)
         with pipeline_stage_span(config.retrieval, "http_graph_visualize"):
             result = GraphBuilder(config).build(extract_concepts=False)
-            repo_root = _Path(repo).resolve()
+            repo_root = _Path(config.repo_path)
             if output:
-                requested = _Path(output).resolve()
+                try:
+                    requested = _Path(output).resolve()
+                except ValueError:
+                    # A NUL byte. confine_repo answers the absolute case; a relative
+                    # `output` skips its per-field check, so this is the route's to answer.
+                    raise HTTPException(
+                        status_code=400, detail="output is not a valid path"
+                    ) from None
                 allowed = repo_root / ".trelix"
                 # is_relative_to(), not a raw string prefix match — same fix
                 # as /parse's containment check above. A prefix match would
@@ -906,9 +992,13 @@ def create_app(
                         status_code=400,
                         detail="output path must be inside <repo>/.trelix/",
                     )
+                # Stated here, not left to pyvis: its check is an `assert`, which
+                # `python -O` removes, and the default store is a file in this directory.
+                if requested.suffix != ".html":
+                    raise HTTPException(status_code=400, detail="output must be an .html file")
                 out = str(requested)
             else:
-                out = str(repo_root / ".trelix" / "graph.html")
+                out = str(repo_root / _GRAPH_HTML)
             viz = GraphVisualizer()
             path = viz.export_html(result.code_graph, out)
             return GraphVisualizeResponse(path=path, node_count=result.node_count)

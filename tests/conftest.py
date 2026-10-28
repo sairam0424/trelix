@@ -196,7 +196,9 @@ REQUIRES_WEIGHTS_NODES = frozenset(
 SECURITY_FILES = frozenset(
     {
         "unit/test_api_audit.py",
+        "unit/test_api_confinement_hardening.py",
         "unit/test_api_containment.py",
+        "unit/test_api_symlinked_store.py",
         "unit/test_audit_hash_chain_columns.py",
         "unit/test_audit_read_hardening.py",
         "unit/test_audit_undetectable.py",

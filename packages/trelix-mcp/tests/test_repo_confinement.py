@@ -4,6 +4,9 @@
   the tool runs when the value is blank or resolves outside every root: `isError: true` with the
   text `repo_path is not inside an allowed repository root` (`path ...` for federation_add_repo).
 * The trelix://repo/... resources are refused the same way, where FastMCP has parsed the URI.
+* So is a repository inside a root whose index store is a symlink (`.trelix`, `index.db` or any
+  entry directly inside `.trelix`), or cannot be examined: the path the caller names is inside the
+  root, the store the tools would open is not.
 * federation_search_all searches only the registry entries inside the roots and says how many it
   left out (`repos_outside_roots`) in every shape it returns.
 * Stdio with no --root and no variable installs nothing, so every other test runs unconfined.
@@ -17,6 +20,8 @@ markers below supply both.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +39,10 @@ pytestmark = [pytest.mark.disable_socket, pytest.mark.timeout(60)]
 
 REFUSAL = "repo_path is not inside an allowed repository root"
 PATH_REFUSAL = "path is not inside an allowed repository root"
+
+# Root, and Windows, ignore directory permission bits: the denial the unreadable-store test needs
+# cannot be made there.
+_CANNOT_DENY_ACCESS = sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0
 
 # Every tool whose input schema has repo_path, in the server's listing order.
 CONFINED_TOOLS = [
@@ -68,6 +77,8 @@ def roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     points at it. The NUL byte is not a path at all: `Path.resolve()` raises on it under every
     Python, and it must be refused rather than answered with an internal error. `loop` is a symlink
     to itself, which only Python 3.12's `resolve()` raises on (see the gated test below).
+    `hostile` is a repository INSIDE the root whose `.trelix` is a symlink to `outside`: the path
+    the caller names is inside, the index store the tools would open is not.
     """
     root = tmp_path / "root"
     (root / "sub").mkdir(parents=True)
@@ -77,12 +88,16 @@ def roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     link.symlink_to(outside, target_is_directory=True)
     loop = root / "loop"
     loop.symlink_to(loop)
+    hostile = root / "hostile"
+    hostile.mkdir()
+    (hostile / ".trelix").symlink_to(outside, target_is_directory=True)
     monkeypatch.chdir(root)
     srv._install_confinement((root.resolve(),))
     return SimpleNamespace(
         root=root,
         outside=outside,
         loop=loop,
+        hostile=hostile,
         refused=[
             str(outside),
             str(tmp_path / "root-evil"),
@@ -91,6 +106,7 @@ def roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
             "",
             "   ",
             "\x00",
+            str(hostile),
         ],
     )
 
@@ -230,6 +246,119 @@ async def test_symlink_loop_is_refused_where_resolve_raises(
         assert str(exc_info.value) == REFUSAL
 
     assert entries_inside_roots([RepoEntry("loop", loop)], (roots.root.resolve(),)) == ([], 1)
+
+
+async def test_a_symlinked_store_is_refused_by_federation_add_repo(
+    roots: SimpleNamespace,
+) -> None:
+    """`roots.refused` sends `hostile` through every `repo_path`; `path` is the other argument."""
+    async with Client(srv.mcp) as client:
+        # config_path points into tmp_path so that, should the refusal ever regress, the tool body
+        # writes the alias there and not into the developer's real ~/.config/trelix/repos.json.
+        result = await client.call_tool(
+            "federation_add_repo",
+            {
+                "alias": "x",
+                "path": str(roots.hostile),
+                "config_path": str(roots.root / ".trelix" / "repos.json"),
+            },
+            raise_on_error=False,
+        )
+
+    assert result.is_error is True
+    assert result.content[0].text == PATH_REFUSAL
+
+
+async def test_a_symlinked_store_is_refused_as_a_resource(roots: SimpleNamespace) -> None:
+    """cwd is the root, so the one-segment `hostile` of the URI names root/hostile."""
+    async with Client(srv.mcp) as client:
+        with pytest.raises(MCPError) as exc_info:
+            await client.read_resource("trelix://repo/hostile/stats")
+
+    assert str(exc_info.value) == REFUSAL
+
+
+def test_federation_entries_with_a_symlinked_store_are_left_out(roots: SimpleNamespace) -> None:
+    plain = roots.root / "plain"
+    plain.mkdir()
+    kept = RepoEntry("plain", str(plain))
+    entries = [RepoEntry("hostile", str(roots.hostile)), kept]
+
+    assert entries_inside_roots(entries, (roots.root.resolve(),)) == ([kept], 1)
+
+
+async def test_a_real_trelix_directory_is_served(roots: SimpleNamespace) -> None:
+    """The positive control: the same shape as `hostile` with a real `.trelix` reaches the tool
+    body, which answers that this (never indexed) repository has no index."""
+    plain = roots.root / "plain"
+    (plain / ".trelix").mkdir(parents=True)
+    async with Client(srv.mcp) as client:
+        result = await client.call_tool(
+            "search_code", {"query": "q", "repo_path": str(plain)}, raise_on_error=False
+        )
+
+    assert result.is_error is True
+    assert result.content[0].text.startswith("No index found at ")
+
+
+async def test_the_log_says_a_store_was_the_reason(
+    roots: SimpleNamespace, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The operator's log must not blame a repository that is inside a root for being outside."""
+    caplog.set_level(logging.WARNING, logger="trelix_mcp.confinement")
+    async with Client(srv.mcp) as client:
+        await client.call_tool(
+            "search_code", {"query": "q", "repo_path": str(roots.hostile)}, raise_on_error=False
+        )
+
+    refusals = [r.getMessage() for r in caplog.records if r.name == "trelix_mcp.confinement"]
+    assert len(refusals) == 1
+    assert refusals[0].endswith("or its index store is a symlink or cannot be examined")
+
+
+async def test_the_operators_store_path_decides_what_is_examined(
+    roots: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`TRELIX_STORE_DB_PATH` is where the tools open the store, so it is what the check walks:
+    an absolute path leaves the repository's own `.trelix` alone, a relative one is walked."""
+    moved = roots.root / "moved"
+    moved.mkdir()
+    (moved / "data").symlink_to(roots.outside, target_is_directory=True)
+    async with Client(srv.mcp) as client:
+        monkeypatch.setenv("TRELIX_STORE_DB_PATH", str(tmp_path / "operator" / "index.db"))
+        served = await client.call_tool(
+            "search_code", {"query": "q", "repo_path": str(roots.hostile)}, raise_on_error=False
+        )
+        monkeypatch.setenv("TRELIX_STORE_DB_PATH", "data/index.db")
+        refused = await client.call_tool(
+            "search_code",
+            {"query": "q", "repo_path": str(moved)},
+            raise_on_error=False,
+        )
+
+    assert served.is_error is True
+    assert served.content[0].text.startswith("No index found at ")
+    assert refused.is_error is True
+    assert refused.content[0].text == REFUSAL
+
+
+@pytest.mark.skipif(_CANNOT_DENY_ACCESS, reason="root and Windows ignore directory permissions")
+async def test_a_store_that_cannot_be_examined_is_refused(roots: SimpleNamespace) -> None:
+    """The check is a security check: when it cannot look, it refuses, it does not crash or pass."""
+    locked = roots.root / "locked"
+    store = locked / ".trelix"
+    store.mkdir(parents=True)
+    store.chmod(0o000)
+    try:
+        async with Client(srv.mcp) as client:
+            result = await client.call_tool(
+                "search_code", {"query": "q", "repo_path": str(locked)}, raise_on_error=False
+            )
+    finally:
+        store.chmod(0o700)  # tmp_path cleanup must be able to remove it
+
+    assert result.is_error is True
+    assert result.content[0].text == REFUSAL
 
 
 def test_federation_entries_outside_roots_are_not_searched(

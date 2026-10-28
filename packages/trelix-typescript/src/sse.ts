@@ -13,7 +13,8 @@ export class TrelixAskError extends Error {}
  * Frames are exactly one of:
  *   - `data: {token}\n\n`         — yielded as a token string
  *   - `data: [DONE]\n\n`          — stream ends normally
- *   - `data: [ERROR: {exc}]\n\n`  — stream ends by throwing TrelixAskError
+ *   - `data: [ERROR: synthesis failed]\n\n`  — stream ends by throwing TrelixAskError (the
+ *     server sends this fixed text and logs the cause; an older server sent the exception message)
  */
 export async function* askStream(
   baseUrl: string,

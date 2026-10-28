@@ -173,7 +173,7 @@ def test_a_repo_that_does_not_exist_is_still_the_routes_own_error(
     stats = client.get("/stats", params={"repo": str(ghost)})
 
     assert ask.status_code == 200, ask.text
-    assert "[ERROR: 1 validation error for IndexConfig" in ask.text
+    assert ask.text == "data: [ERROR: synthesis failed]\n\n"
     assert stats.status_code == 500, stats.text
     assert not ghost.exists()
 

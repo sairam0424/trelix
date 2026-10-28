@@ -20,6 +20,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   large`); a `pull_request` payload is far smaller. A `charset` in the `Content-Type` is no longer
   checked (a correctly signed delivery that declared one other than UTF-8 was answered `415` or
   `400`): the body is read as UTF-8, which is what the signature is computed over.
+- **The REST API closes path-confinement gaps and no longer streams exception text from
+  `/ask`.**
+  - *A repository whose index store is a symlink is refused with HTTP 403.* A `.trelix`
+    directory, an `index.db`, or another entry directly inside `.trelix` that is a symlink
+    (git tracks symlinks, so a cloned repository can carry one) moved the index store, and what
+    the API writes beside it, outside the allowed roots. Every gated route is covered, `POST
+    /index` included, and so is `POST /parse`, which opens no store. `GET /graph/visualize` also
+    examines `.trelix` and `.trelix/graph.html`, which it writes whatever the store path is. So
+    is a repository whose store cannot be examined (a `.trelix` the server may not enter or
+    list): the check refuses when it cannot look. A symlink elsewhere in the repository and an
+    absolute `TRELIX_STORE_DB_PATH` are unaffected; to keep the index of a server that serves one
+    repository on another disk, set that variable (every repository the server serves would
+    share it). `trelix-mcp` started with `--root` or `TRELIX_ALLOWED_REPO_ROOTS` applies the same
+    check to `repo_path`, `federation_add_repo`'s `path`, `trelix://repo/...` URIs and the
+    federation registry; the CLI does not.
+  - *`~` names one directory.* The allow-list expanded a leading `~` but `IndexConfig` did not, so
+    with HOME inside an allowed root a literal directory named `~` in the server's working
+    directory could be read and written. `IndexConfig` now expands it too, and `POST /parse` and
+    `GET /graph/visualize` take the repository root from the validated config. A repository
+    directory whose own name starts with `~` must now be given by absolute path: `./~backup` is
+    read as the home directory of a user named `backup`.
+  - *A NUL byte, an unknown `~user` and an unusable `file_path` answer 400, not 500.* A NUL byte
+    in a repository or path (`GET /graph/visualize?output=` included), `~user` for a user that
+    does not exist in a repository, and `POST /parse` with an empty or directory `file_path`.
+  - *`GET /graph/visualize?output=` must end in `.html`* (HTTP 400 otherwise). The route now
+    checks it; before, only pyvis's `assert` did, and `python -O` removes asserts.
+  - *`GET /ask` streams `data: [ERROR: synthesis failed]`* instead of the exception message,
+    which can name a provider, a host, a path or a request id. That covers a failure anywhere:
+    validating the repository, retrieval, building the synthesizer and the model call itself,
+    which used to arrive as a `[trelix: synthesis unavailable — ...]` data frame. After any
+    tokens already sent the stream ends with that frame and no `[DONE]`; the exception is logged
+    on the server. A missing API key is not an exception for the OpenAI and Azure backend that `/ask`
+    builds: its fixed placeholder (`[trelix] LLM not configured — set OPENAI_API_KEY or
+    AZURE_API_KEY.`) is still streamed, then `[DONE]`. This changes error output only, but a
+    consumer sees it: the TypeScript SDK now throws `TrelixAskError` for a model-call failure,
+    where it used to deliver the banner as ordinary tokens. `trelix ask` is unchanged.
 
 ### Changed
 - **The Claude Code plugin now runs `trelix-mcp` 3.5.0, started with `--tools core`, and its

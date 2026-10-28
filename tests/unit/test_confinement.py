@@ -6,8 +6,10 @@ keeps proving the REST routes refuse an out-of-root path end to end; this file p
 pure functions themselves, from the attacker's position: every shape a caller could use to
 step outside a root (a sibling that shares the prefix, ``..``, a symlink that leaves the
 root, an empty string, no roots at all) is written down as a literal case and asserted
-refused. The health-probe exemption of ``request_guard`` is pinned here too because it is
-now public for the same consumer.
+refused. ``symlinked_store_entry``, the rule that a repository's own index store must not be a
+symlink, is pinned here as a function; ``tests/unit/test_api_symlinked_store.py`` proves the REST
+routes apply it. The health-probe exemption of ``request_guard`` is pinned here too because it
+is now public for the same consumer.
 
 Every expected value is a literal (or a path derived from ``tmp_path``, which the module
 under test never sees); nothing is imported from the module under test to supply one.
@@ -20,11 +22,13 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.indexed import mark_indexed
 from trelix.api.request_guard import _is_health_probe, is_health_probe
 from trelix.core.confinement import (
     ALLOWED_ROOTS_ENV,
     is_within_allowed_roots,
     resolve_allowed_roots,
+    symlinked_store_entry,
 )
 
 # ---------------------------------------------------------------------------
@@ -197,6 +201,99 @@ def test_the_second_root_counts_too(root: Path) -> None:
 
     assert is_within_allowed_roots(str(second), (root, second)) is True
     assert is_within_allowed_roots(str(second), (root,)) is False
+
+
+# ---------------------------------------------------------------------------
+# symlinked_store_entry
+# ---------------------------------------------------------------------------
+
+
+class TestSymlinkedStoreEntry:
+    """``trelix.core.confinement.symlinked_store_entry``, the one rule the route applies."""
+
+    def test_a_plain_store_has_no_symlink(self, tmp_path: Path) -> None:
+        mark_indexed(tmp_path / "repo")
+
+        assert symlinked_store_entry(tmp_path / "repo", ".trelix/index.db") is None
+
+    def test_a_repository_with_no_store_yet_has_no_symlink(self, tmp_path: Path) -> None:
+        (tmp_path / "repo").mkdir()
+
+        assert symlinked_store_entry(tmp_path / "repo", ".trelix/index.db") is None
+
+    def test_a_trelix_that_is_a_plain_file_has_no_symlink(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".trelix").write_text("not a directory\n", encoding="utf-8")
+
+        assert symlinked_store_entry(repo, ".trelix/index.db") is None
+
+    @pytest.mark.parametrize("name", [".trelix", ".trelix/index.db", ".trelix/lance"])
+    def test_the_first_symlink_is_returned(self, tmp_path: Path, name: str) -> None:
+        repo = tmp_path / "repo"
+        (repo / ".trelix").mkdir(parents=True)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        link = repo / name
+        if name == ".trelix":
+            link.rmdir()
+        link.symlink_to(elsewhere)
+
+        found = symlinked_store_entry(repo, ".trelix/index.db")
+
+        assert found == repo.resolve() / name
+
+    def test_a_custom_relative_path_is_walked_component_by_component(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "data").symlink_to(tmp_path, target_is_directory=True)
+
+        found = symlinked_store_entry(repo, "data/sub/index.db")
+
+        assert found == repo.resolve() / "data"
+
+    def test_a_store_in_the_repository_root_ignores_the_repositorys_own_links(
+        self, tmp_path: Path
+    ) -> None:
+        """With ``db_path="index.db"`` the store directory is the repository itself, whose
+        symlinks are the project's business (``node_modules`` and the like)."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "shared").symlink_to(tmp_path, target_is_directory=True)
+
+        assert symlinked_store_entry(repo, "index.db") is None
+
+    def test_a_store_file_in_the_repository_root_is_checked_itself(self, tmp_path: Path) -> None:
+        """With ``db_path="index.db"`` only the file is looked at, but it is looked at."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "index.db").symlink_to(tmp_path / "elsewhere.db")
+
+        found = symlinked_store_entry(repo, "index.db")
+
+        assert found == repo.resolve() / "index.db"
+
+    def test_an_absolute_store_path_is_the_operators_choice(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".trelix").symlink_to(tmp_path, target_is_directory=True)
+        (tmp_path / "real").mkdir()
+        (tmp_path / "operator").symlink_to(tmp_path / "real", target_is_directory=True)
+
+        assert symlinked_store_entry(repo, str(tmp_path / "x" / "index.db")) is None
+        assert symlinked_store_entry(repo, str(tmp_path / "operator" / "index.db")) is None
+
+    def test_a_leading_tilde_in_the_repository_is_expanded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        (home / ".trelix").mkdir(parents=True)
+        (home / ".trelix" / "index.db").symlink_to(tmp_path / "elsewhere.db")
+        monkeypatch.setenv("HOME", str(home))
+
+        found = symlinked_store_entry("~", ".trelix/index.db")
+
+        assert found == home.resolve() / ".trelix" / "index.db"
 
 
 # ---------------------------------------------------------------------------

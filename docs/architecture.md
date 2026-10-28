@@ -1821,7 +1821,14 @@ Design note: `IndexConfig` and `Retriever` imported at module scope (not inside 
 ```python
 # Yields: "data: {token}\n\n"
 # Terminates: "data: [DONE]\n\n"
-# Error: "data: [ERROR: {exc}]\n\n"
+# Error: "data: [ERROR: synthesis failed]\n\n" (fixed text; the exception is logged server-side;
+#        no [DONE] after it). It covers a failure anywhere: repository validation, retrieval,
+#        building the Synthesizer and the model call. The route calls
+#        Synthesizer.stream(..., raise_on_error=True), so a model-call failure is raised into the
+#        same handler and no "[trelix: synthesis unavailable — ...]" token is streamed (the
+#        default of stream(), which `trelix ask` uses, is unchanged).
+# No API key: not an exception for the OpenAI/Azure backend that /ask builds; its fixed
+#        placeholder is streamed as a token, then [DONE].
 # Empty retrieval: one "data: [trelix] No relevant code found — cannot synthesize an answer.\n\n"
 #                  frame, then [DONE]; the LLM is not called (Synthesizer.stream() guard)
 ```
@@ -1834,7 +1841,19 @@ The shared check is `trelix.core.index_check.require_index`, which the CLI read 
 LangChain/LlamaIndex retrievers, `search-all` and `review` use too.
 
 **Security guards:**
+- `confine_repo` (every gated route): a `repo` / `repo_path` must resolve inside an allowed root, and
+  its index store must not be a symlink (`trelix.core.confinement.symlinked_store_entry`: a
+  `.trelix` directory, an `index.db`, or any entry directly inside `.trelix`) — a repository is
+  untrusted content, and a link would move the store outside the root. Answers 403, as it does when
+  an entry cannot be examined (permission denied); an absolute `TRELIX_STORE_DB_PATH` set by the
+  operator is not examined, so `/graph/visualize`, which writes `<repo>/.trelix/graph.html` whatever
+  the store path is, examines `.trelix` and that file itself. `trelix-mcp` applies the same rule in
+  `inside_roots`, which its middleware, its resources and its federation registry filter share. A
+  value with a NUL byte, or a repository that names an unknown `~user`, answers 400.
+  `IndexConfig` expands a leading `~` as the guard does, and `/parse` and `/graph/visualize` take
+  their repository root from the validated config, so the guard and the route see one path
 - `/graph/visualize`: output path must start with `<repo_root>/.trelix/` — directory traversal protection
+  — and end in `.html` (400 otherwise), checked in the route and not left to pyvis's `assert`
 - `/graph/search`: depth clamped to `max(1, min(depth, 10))`
 
 ---

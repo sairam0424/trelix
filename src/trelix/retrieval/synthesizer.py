@@ -16,9 +16,10 @@ Design principles:
 - Adapts to provider: openai, azure, or local (no-op with a clear message).
 - Falls back gracefully when no API key is present.
 - Uses per-intent system prompts to guide the response shape.
-- Never raises — all errors are caught and printed as messages. The failure is also
-  recorded in ``last_error`` so a caller (``trelix ask``) can exit non-zero without
-  parsing the message text; the token stream itself is unchanged.
+- Never raises (unless ``stream()`` gets ``raise_on_error=True``) — all errors are caught
+  and printed as messages. The failure is also recorded in ``last_error`` so a caller
+  (``trelix ask``) can exit non-zero without parsing the message text; the token stream
+  itself is unchanged.
 """
 
 from __future__ import annotations
@@ -286,13 +287,19 @@ class Synthesizer:
         self,
         context: RetrievedContext,
         config: RetrievalConfig,
+        *,
+        raise_on_error: bool = False,
     ) -> Iterator[str]:
         """
         Stream synthesis tokens to the caller.
 
         Yields str tokens as they arrive from the LLM.
-        Yields a single error message string on failure (never raises); the same
-        failure is recorded in ``last_error`` *before* that token is yielded.
+        Yields a single error message string on failure (never raises unless
+        ``raise_on_error=True``); the same failure is recorded in ``last_error`` *before*
+        that token is yielded.
+        ``raise_on_error=True`` is for a caller whose audience must not read that message
+        (the REST ``/ask`` stream): an exception from the model call is logged and recorded
+        in ``last_error`` as before, then re-raised, and no message token is yielded.
         A stream that ends with no non-whitespace text is a failure too: it is recorded
         in ``last_error`` when the stream ends, with no banner token after it.
         An empty retrieval yields ``NO_RESULTS_MESSAGE`` alone, without calling the model,
@@ -347,6 +354,8 @@ class Synthesizer:
         except Exception as exc:
             logger.warning("Streaming synthesis failed: %s", exc)
             self.last_error = str(exc)
+            if raise_on_error:
+                raise
             yield f"\n[trelix: synthesis unavailable — {exc}]"
         else:
             if not has_answer and self.last_error is None:
