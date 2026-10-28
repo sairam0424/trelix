@@ -11,10 +11,12 @@ mechanism generalised: one hook, one table per marker, and a new file in a
 covered path is tagged on arrival instead of the day someone remembers to
 decorate it.
 
-``--strict-markers`` (see ``addopts``) only validates ``@pytest.mark.<name>``.
-It does NOT validate ``-m`` expressions: on this tree
+``--strict-markers`` (see ``addopts``) only validates ``@pytest.mark.<name>``
+up to pytest 9.1. It does NOT validate ``-m`` expressions there: on this tree
 ``pytest tests/unit/test_multi_watcher.py -m "not integrationn"`` collected all
-8 tests and exited 0. Nothing pytest ships can catch that typo, so the guard is
+8 tests and exited 0. (pytest 9.2 rejects the unknown name with exit 4.) The
+supported range includes the older versions, where nothing pytest ships can
+catch that typo, so the guard is
 ``tests/unit/test_marker_taxonomy.py``, which pins that every marker below both
 selects everything in a known carrier and deselects it -- and pins the typo
 behaviour as its own control, so the assertions cannot pass vacuously.
