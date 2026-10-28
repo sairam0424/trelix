@@ -1,0 +1,10 @@
+# CodeQL configuration for .github/workflows/codeql.yml.
+#
+# tests/fixtures/mini_repo is sample source that the retrieval, indexing, evaluation and
+# e2e tests copy and index as DATA: nothing imports or runs it. Its auth.py hashes a salted
+# password with plain SHA-256, which CodeQL reports as py/weak-sensitive-data-hashing; the
+# tests rank the chunks of those very lines, so they are not edited. Nothing else under
+# tests/fixtures is excluded: the rest are helpers that tests really import.
+name: trelix CodeQL configuration
+paths-ignore:
+  - tests/fixtures/mini_repo/**
