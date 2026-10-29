@@ -13,7 +13,7 @@
 #   pip             /packages/trelix-langchain       (trelix-langchain, published)
 #   pip             /packages/trelix-llama-index     (trelix-llama-index, published)
 #   npm             /workspace-vscode                (trelix-vscode extension)
-#   npm             /packages/trelix-typescript      (@trelix/sdk, published)
+#   npm             /packages/trelix-typescript      (@trelix/sdk, not published to npm)
 #   npm             /infra/github-app                (@trelix/github-app)
 #   docker          /                                (ghcr.io/sairam0424/trelix[-local])
 #   docker          /infra/github-app                (the App image)
@@ -141,7 +141,7 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
 
-  # @trelix/sdk — published to npm, and it has zero runtime dependencies, so every
+  # @trelix/sdk — not published to npm. It has zero runtime dependencies, so every
   # update here is build/test tooling.
   - package-ecosystem: "npm"
     directory: "/packages/trelix-typescript"

@@ -3,6 +3,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { sweepStaleWorkspaces } from "./repo-checkout.js";
 import { createReviewQueue } from "./review-intake.js";
+import { applyServerLimits } from "./server-limits.js";
 import { installShutdownHandlers } from "./shutdown.js";
 
 const config = loadConfig();
@@ -19,5 +20,7 @@ void sweepStaleWorkspaces();
 const server = app.listen(config.port, () => {
     console.log(`trelix GitHub App listening on port ${config.port}`);
 });
+// Right after listen(): the checking interval is read when the server emits "listening".
+applyServerLimits(server);
 
 installShutdownHandlers({ server, queue, process });
