@@ -88,7 +88,46 @@ follows a symlink.
 The `output` query parameter on `GET /graph/visualize` is validated server-side:
 - The resolved output path must be inside `<repo>/.trelix/`
 - Paths outside this directory are rejected with HTTP 400
+- The name must end in `.html` (HTTP 400 otherwise). The check is in the route; pyvis's own
+  `assert` is removed under `python -O`, so the route does not rely on it
 - This prevents arbitrary file writes to sensitive locations
+
+### REST API — symlinked index store
+
+A repository is untrusted content and git tracks symlinks, so a repository inside an allowed root
+can carry a `.trelix` directory, an `index.db`, or another entry directly inside `.trelix` (for
+example `debug` or `graph.html`) that is a symlink. Followed, it moves the index store, and
+everything the API writes beside it, outside the allowed roots. `confine_repo`, the dependency
+every gated route shares (`POST /index` included, and `POST /parse`, which opens no store), refuses
+such a repository with HTTP 403 before anything is opened, and logs the link. It refuses with 403
+too when it cannot look (a `.trelix` the server may not enter or list), and logs that. The scan is
+one level deep: a link further down, such as inside `lance/`, is not examined. A store path set
+absolutely by the operator (`TRELIX_STORE_DB_PATH`) is not examined, and a symlink elsewhere in
+the repository is not affected. `GET /graph/visualize` writes `<repo>/.trelix/graph.html` whatever
+the store path is, so the route examines that file and `.trelix` itself too. To keep the index of a
+server that serves one repository on another disk, set `TRELIX_STORE_DB_PATH` to an absolute path
+(every repository the server serves would share it).
+
+`trelix-mcp` applies the same rule when it is confined (`--root` or `TRELIX_ALLOWED_REPO_ROOTS`):
+its root check refuses, with the usual `... is not inside an allowed repository root`, a
+`repo_path`, a `federation_add_repo` `path` or a `trelix://repo/...` URI whose repository has such
+a store, and leaves such a registry entry out of `federation_list_repos` and
+`federation_search_all`. The CLI and an unconfined `trelix-mcp` do not check.
+
+The same dependency answers HTTP 400 for a repository or path containing a NUL byte, and for a
+repository that names an unknown `~user`. `IndexConfig` expands a leading `~` the way the root
+check does, so the check and the route see the same directory.
+
+### REST API — /ask error frame
+
+When anything fails while `GET /ask` answers (validating the repository, retrieval, building the
+synthesizer or the model call itself), it streams the fixed line `data: [ERROR: synthesis failed]`
+after any tokens already sent, with no `[DONE]` after it, and logs the exception server-side. It
+used to stream the exception message, which can name a provider, a host, a path or a request id,
+to any caller; a failure inside the model call arrived as a `[trelix: synthesis unavailable — ...]`
+data frame. Read the server log for the cause. A missing API key is not an exception for the
+OpenAI and Azure backend that `GET /ask` builds: its fixed placeholder (it never contains a
+secret) is still streamed as a token, then `[DONE]`.
 
 ### REST API — Host and Origin check (DNS rebinding, drive-by requests)
 
@@ -158,12 +197,13 @@ HTTP on `127.0.0.1:8766/mcp` and is guarded from its first release:
 - **What the roots confine.** Every `repo_path` argument, `federation_add_repo`'s `path` and the
   `trelix://repo/...` resources are checked before the tool runs
   (`repo_path is not inside an allowed repository root`, `path ...` for `federation_add_repo`).
-  The federation registry is a file the server reads, so its entries are filtered instead:
-  `federation_list_repos` and `federation_search_all` leave out a repository outside the roots and
-  report how many in `repos_outside_roots`, and `federation_remove_repo` answers an alias whose
-  repository is outside as it answers an unregistered one (`removed: false`, no error) and writes
-  nothing. `config_path` is confined to registry files in two directories (next section). A
-  registry entry is hidden, not deleted: the file keeps it.
+  A repository inside a root whose `.trelix` store is a symlink, or cannot be examined, is refused
+  with the same text. The federation registry is a file the server reads, so its entries are
+  filtered instead: `federation_list_repos` and `federation_search_all` leave out a repository
+  outside the roots and report how many in `repos_outside_roots`, and `federation_remove_repo`
+  answers an alias whose repository is outside as it answers an unregistered one
+  (`removed: false`, no error) and writes nothing. `config_path` is confined to registry files in
+  two directories (next section). A registry entry is hidden, not deleted: the file keeps it.
 - **Unexpected errors are masked.** An exception a tool did not expect answers
   `Error calling tool '<name>'` with no path or traceback; the deliberate `ToolError` texts are
   unchanged. Over stdio the texts stay unmasked, as before.

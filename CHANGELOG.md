@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.5.1] — 2026-10-29
+
+A patch release. The Python changes below (the REST API and `trelix-mcp` confinement, the
+linear-time parsers, `Synthesizer.stream(raise_on_error=)` and the new `trelix>=3.5.1` floor of
+`trelix-mcp`) ship in the PyPI packages and the container images of this tag; the standalone
+binaries are built from the same tag. Four entries are not in the wheels or the images, and each says
+how it reaches you: the Helm chart (0.3.0) is used from a checkout of this repository, the Claude
+Code plugin is read from its default branch, the hosted GitHub App is deployed from it, and
+`@trelix/sdk` is not published to npm.
+
+Four changes alter what a working setup sees. They ship as fixes, not as breaking changes (the
+precedent is "Behaviour changes shipped as fixes" in `docs/BACKWARDS_COMPATIBILITY.md`, which has
+the table and the escape hatches): a repository whose index store is a symlink is refused, a
+leading `~` in a repository path now means the home directory wherever an `IndexConfig` is built
+from a path nobody resolved first, `GET /graph/visualize?output=` must end in `.html`, and `GET
+/ask` streams a fixed error frame.
+
 ### Security
 - **The GitHub App's webhook route verifies the signature before it parses the body.** The route
   parsed the body first (up to 25 MB) and checked `X-Hub-Signature-256` afterwards, so a sender who
@@ -19,12 +36,151 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   capped at 5 MiB instead of 25 MB, and a larger body is still answered `413` (`payload too
   large`); a `pull_request` payload is far smaller. A `charset` in the `Content-Type` is no longer
   checked (a correctly signed delivery that declared one other than UTF-8 was answered `415` or
-  `400`): the body is read as UTF-8, which is what the signature is computed over.
+  `400`): the body is read as UTF-8, which is what the signature is computed over. This is the
+  GitHub App in `infra/github-app`, which is in neither the wheels nor the images: it is
+  deployed from `main` (see its README), where this fix has been since 2026-10-29.
+- **The REST API closes path-confinement gaps and no longer streams exception text from
+  `/ask`.**
+  - *A repository whose index store is a symlink is refused with HTTP 403, whatever the link
+    points at.* A `.trelix` directory, an `index.db`, or another entry directly inside `.trelix`
+    that is a symlink is refused even when the link stays inside the allowed root: the check
+    looks for a link, not at where it points. Git tracks symlinks, so a cloned repository can
+    carry one, and such a link moves the index store, and what the API writes beside it, outside
+    the allowed roots. Every gated route is covered, `POST /index` included, and so is `POST
+    /parse`, which opens no store. `GET /graph/visualize` also examines `.trelix` and
+    `.trelix/graph.html`, which it writes whatever the store path is. So is a repository whose
+    store cannot be examined (a `.trelix` the server may not enter or list, or a path too long
+    for the filesystem to look up): the check refuses when it cannot look. A symlink elsewhere in
+    the repository is not examined.
+    - *Who is affected.* Anyone who keeps `.trelix`, `index.db` or an entry inside `.trelix`
+      behind a link: operators of `trelix serve` (the Helm chart's pod included), every
+      `trelix-mcp --transport http` deployment (it requires a root), and CI that calls `POST
+      /index`. The CLI, and a `trelix-mcp` started with neither `--root` nor
+      `TRELIX_ALLOWED_REPO_ROOTS`, do not check.
+    - *The way out.* An absolute `TRELIX_STORE_DB_PATH` is not examined. Set it for the server
+      and for the CLI that builds the index: every route works again except `GET
+      /graph/visualize`, which writes `.trelix/graph.html` and keeps refusing while `.trelix`, or
+      an entry directly inside it, is a symlink. One path is one index, shared by every repository
+      the server serves, so this fits a server that serves one repository. There is no other
+      opt-out.
+    - *`trelix-mcp`.* Started with `--root` or `TRELIX_ALLOWED_REPO_ROOTS` it applies the same
+      check to `repo_path`, `federation_add_repo`'s `path`, `trelix://repo/...` URIs and the
+      federation registry. It refuses with its usual `repo_path is not inside an allowed
+      repository root`, although the repository is inside the root (the operator log lists the
+      possible causes: outside the roots, a symlinked store, a store that cannot be examined),
+      and counts a registered repository like that in `repos_outside_roots`.
+  - *`~` names one directory.* The allow-list expanded a leading `~` but `IndexConfig` did not, so
+    with HOME inside an allowed root a literal directory named `~` in the server's working
+    directory could be read and written. `IndexConfig` now expands it too, and `POST /parse` and
+    `GET /graph/visualize` take the repository root from the validated config. That reaches every
+    place that builds an `IndexConfig` from a path nobody resolved first: `trelix-mcp`, the
+    LangChain and LlamaIndex adapters, `FederatedRetriever`, `trelix eval`, `trelix
+    eval-synthesis` and library code (most CLI commands resolve the path before they build the
+    config). A repository directory whose own name starts with `~` must now be given by absolute
+    path: `./~backup` is read as the home directory of a user named `backup` (an error when
+    there is none; the REST API answered it with a 500 before and answers 400 now), and `~` and
+    `./~` now mean the home directory where they named a directory called `~`.
+  - *A NUL byte, an unknown `~user` and an unusable `file_path` answer 400, not 500.* A NUL byte
+    in a repository or path (`GET /graph/visualize?output=` included), `~user` for a user that
+    does not exist in a repository, and `POST /parse` with an empty or directory `file_path`.
+  - *`GET /graph/visualize?output=` must end in `.html`* (HTTP 400 otherwise). The route now
+    checks it; before, only pyvis's `assert` did, and `python -O` removes asserts.
+  - *`GET /ask` streams `data: [ERROR: synthesis failed]`* instead of the exception message,
+    which can name a provider, a host, a path or a request id. That covers a failure anywhere:
+    validating the repository, retrieval, building the synthesizer and the model call itself,
+    which used to arrive as a `[trelix: synthesis unavailable — ...]` data frame. After any
+    tokens already sent the stream ends with that frame and no `[DONE]`; the exception is logged
+    on the server. A missing API key is not an exception for the OpenAI and Azure backend that `/ask`
+    builds: its fixed placeholder (`[trelix] LLM not configured — set OPENAI_API_KEY or
+    AZURE_API_KEY.`) is still streamed, then `[DONE]`. This changes error output only, but a
+    consumer sees it: a client that parsed the old banner, or showed `[ERROR: <detail>]`, now gets
+    the fixed frame. Against a 3.5.1 server, `askStream` in `@trelix/sdk` throws `TrelixAskError`
+    for a model-call failure, where a 3.5.0 server delivered the banner as ordinary tokens; the
+    SDK's frame parser did not change, and `@trelix/sdk` is not published to npm. `trelix ask` is
+    unchanged.
+- **Crafted source files with long runs of whitespace (or of `<`) in a comment can no longer
+  stall the indexer.** CodeQL `py/polynomial-redos` was right about the comment cleanup in the
+  Go, Java, JavaScript, TypeScript, Rust, JSON and C# parsers: the patterns that strip a block
+  comment's closing `*/` and its leading `*` columns, and the one that strips the XML tags of a
+  C# `///` comment, took time quadratic in the length of such a comment. Neither the indexer nor
+  `POST /parse` has a time limit, and the regular expression engine holds the interpreter lock,
+  so one file of at most 500,000 bytes could hold a worker, or the whole API process, for
+  minutes. The patterns are replaced by linear helpers in
+  `src/trelix/indexing/parser/extractors/_comment_text.py` that return exactly what the patterns
+  returned, so no parse result changes (the helpers were compared with the old patterns on
+  200,000 well-formed and 300,000 mixed or malformed strings per pattern, and on every string of
+  up to 7 characters over a small alphabet, with no difference). The `@trelix/sdk` base URL
+  (`new TrelixClient(baseUrl)` and `askStream(baseUrl, ...)`) had the same defect in the
+  `replace(/\/+$/, "")` that drops trailing slashes, on a base URL with a very long run of
+  slashes that does not end it (before a query string, say); it is now one backwards scan with
+  the same result for every URL. That part is in the source tree only, because `@trelix/sdk` is
+  not published to npm.
+- **The regexes CodeQL reports as `py/polynomial-redos` in the Razor, CSHTML, `.csproj`, CSS, HTML
+  and Markdown extractors now run in linear time.** A crafted file within the 500,000 byte size
+  cap that held a long run of whitespace, `<` or `[` could keep an indexing worker busy for
+  minutes through them: each retried from every character of the run (four times the time for
+  every doubling of the run) and the indexer has no per-file timeout. They now read each run
+  once, and the parent-heading chain of a Markdown file is built in one pass instead of a walk
+  back through every earlier heading.
+  Output is unchanged for well-formed files. On malformed or unusual input: an `@inject`
+  directive split across lines is no longer a directive; an empty `@media` prelude is named
+  `@media ` (it was `@media query` or text from the rule inside); a `url(` whose unquoted path
+  contains `(` is no longer an import; and in a `.csproj` an `xmlns:` name that contains
+  whitespace is no longer stripped, and only one whitespace character goes with an `xmlns`
+  attribute, so an invalid file can fall back to the parse-error symbol, or parse, differently
+  than before. This fixes the reported regexes and adds no time limit: the size cap, any
+  per-file timeout and the size of `POST /parse` content are unchanged, and other slow inputs
+  in these extractors may remain.
+
+### Added
+- **`Synthesizer.stream()` takes a keyword-only `raise_on_error`.** With `raise_on_error=True` an
+  exception from the model call is logged and recorded in `last_error` as before and then
+  raised, and no `[trelix: synthesis unavailable — ...]` token is yielded. The default is
+  `False`, which keeps the old behaviour, so `trelix ask` and every existing caller are
+  unchanged. `GET /ask` is the caller that sets it.
+- **`trelix.core.confinement.symlinked_store_entry(repo_path, db_path)`** returns the first
+  symlink in a repository's own index store, or `None`, and raises `OSError` when an entry
+  cannot be examined. The REST API and `trelix-mcp` use it for the refusal described under
+  Security.
+- **Opt-in hardening in the Helm chart (chart 0.3.0).** The first three settings below are off
+  by default, so none of them changes an existing install; the fourth is the value behind a
+  default that does (see Changed). Each setting is documented under "Hardening" in
+  `helm/trelix/README.md`. The chart is not published to a chart repository and is not in the
+  wheels or the images: you use it from a checkout of this repository. `helm-lint.yml`
+  renders the three opt-ins. The read-only root and the non-root settings were also run once,
+  together, on a single-node kind cluster with Helm 4.3.0 and the 3.5.0 slim image: the pod
+  rolled out, `GET /health` and `POST /parse` answered 200, and `POST /index` answered 500 (the
+  slim image has no local embedder) after it had written the SQLite index store on the volume.
+  `networkPolicy` enforcement, multi-node clusters (ReadWriteOnce Multi-Attach during the
+  rolling update), OpenShift, a deploy with Helm 3, the `-local` image, `mcp.enabled` and an
+  index run through to vectors were not tried: try the opt-ins in a staging namespace first.
+  - *`securityContext.readOnlyRootFilesystem=true`.* With it on, the chart also mounts an `emptyDir`
+    at `/tmp` and at `/cache` in every container and sets `XDG_CACHE_HOME=/cache`. A read-only root
+    without them starts and passes its probes, then fails when indexing needs a temporary file or
+    the cache directory. Both directories are empty after a pod restart, so the tree-sitter
+    grammars (and the embedding cache, if on) are fetched or rebuilt; point
+    `TRELIX_EMBEDDING_CACHE_DIR` into the PVC to keep the cache. With `TRELIX_AUDIT_ENABLED`,
+    also set `TRELIX_AUDIT_DB_PATH` to a file on the PVC: its default path is on the read-only root.
+  - *`securityContext.runAsNonRoot`, `runAsUser`, `runAsGroup`.* Set all three: the image's
+    `USER` is a name, and the kubelet refuses `runAsNonRoot` without a numeric user. 999 is the
+    id of the published 3.5.0 images (the Dockerfile does not pin it: check the image you run);
+    OpenShift needs them unset.
+  - *`networkPolicy.enabled` and `networkPolicy.ingressFrom`.* An Ingress-only policy admitting
+    the release namespace plus the peers you list; egress stays open. The chart refuses to render
+    it with `ingress.enabled` or a `service.type` other than `ClusterIP` and no `ingressFrom`.
+  - *`serviceAccount.automount`* (default `false`, see Changed) is the new value behind the
+    service-account token.
 
 ### Changed
+- **`trelix-mcp` 3.5.1 requires `trelix>=3.5.1`** (3.5.0 read `trelix>=3.5.0`). It imports
+  `trelix.core.confinement.symlinked_store_entry`, which core 3.5.0 does not have, so it cannot
+  start on core 3.5.0; `pip install -U trelix-mcp` now brings the core up with it. The two
+  adapters keep `trelix>=3.5.0`: nothing they import changed.
 - **The Claude Code plugin now runs `trelix-mcp` 3.5.0, started with `--tools core`, and its
   version is 3.5.0.** Update with `claude plugin marketplace update trelix` and
-  `claude plugin update trelix@trelix`.
+  `claude plugin update trelix@trelix`. This has been on `main` since 2026-10-28, and the plugin
+  is read from the repository's default branch, so this tag neither delivers nor changes it:
+  its pin stays `trelix-mcp==3.5.0`.
   - *Seven tools instead of fifteen.* `index_codebase`, `search_code`, `get_symbol`,
     `blast_radius`, `build_knowledge_graph`, `graph_search_mcp` and `ask_agent` are every tool the
     skill names. The federation, agent-session and subscription tools are hidden, and a call to
@@ -47,6 +203,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   left by an older release still answers empty. The first-download figures are measured ones
   (about 280 MiB in the uv cache, about 10 s on one fast connection). `CONTRIBUTING.md` lists
   what the next plugin pin PR has to move.
+- **The Helm chart's defaults are hardened (chart 0.2.8 to 0.3.0), and the chart needs Kubernetes
+  1.19.** After `helm upgrade` the pod is rolled and has: no service-account token mounted, a
+  `RuntimeDefault` seccomp profile, `allowPrivilegeEscalation: false`, all capabilities dropped
+  on every container, and CPU and memory requests (`250m`, `512Mi`). Nothing else is on by
+  default, and there is still no memory or CPU limit (a limit that is too low OOM-kills indexing
+  of a large repository). Chart.yaml gains `kubeVersion: ">=1.19.0-0"`.
+  - *Upgrade notes.* A sidecar or injector that logs in with the pod's token (a Vault Agent
+    injector, for example) stops working: set `serviceAccount.automount=true`. `helm upgrade
+    --reuse-values` fails to render, as it did for `mcp` in chart 0.2.7, because the old
+    release's values have no `networkPolicy`: use `--reset-then-reuse-values`, which needs Helm
+    3.14 or newer. With an older Helm, run `helm get values RELEASE -o yaml > values.yaml`, then
+    `helm upgrade RELEASE helm/trelix --reset-values -f values.yaml`. A `resources.limits` below
+    the new requests (under `250m` CPU or `512Mi` memory), with no `resources.requests` of your
+    own, is rejected by the API server, since a request may not exceed its limit: set
+    `resources.requests` at or below your limits. To restore the old pod, set
+    `serviceAccount.automount: true`, `securityContext: null`, `resources: null` and
+    `podSecurityContext.seccompProfile: null`. `null` deletes a default; `{}` does not, because
+    Helm merges maps and the defaults stay.
+  - *CI.* The chart's Checkov step sets `HELM_NAMESPACE`, which makes `CKV_K8S_21` pass without
+    a hard-coded namespace, and skips eight rules that stay open by design, with a reason and
+    the value that closes each one: `CKV_K8S_11`, `_13`, `_15`, `_22`, `_23`, `_40`, `_43` and
+    `CKV2_K8S_6`. The README quickstart installs into its own namespace
+    (`-n trelix --create-namespace`), so the `kubectl` commands in the notes `helm install`
+    prints (`NOTES.txt`) and in the README now carry `-n` with that namespace.
+    `helm-lint.yml` renders the opt-in settings.
 
 ## [3.5.0] — 2026-10-27
 
@@ -6700,7 +6881,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v3.5.1...HEAD
+[3.5.1]: https://github.com/sairam0424/trelix/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/sairam0424/trelix/compare/v3.4.3...v3.5.0
 [3.0.1]: https://github.com/sairam0424/trelix/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/sairam0424/trelix/compare/v2.12.0...v3.0.0

@@ -81,6 +81,30 @@ jobs:
             echo "::error::mcp.enabled is false but the render mentions mcp"; exit 1
           fi
 
+      # The opt-in hardening is off by default, so the renders above never reach it: render each
+      # knob on, with trelix-mcp off (nothing of it may leak into the output) and then on, and
+      # check the NetworkPolicy refusal, which `helm lint` does not exit non-zero on.
+      - name: Helm template (hardening opt-ins)
+        if: matrix.backend == 'sqlite'
+        run: |
+          OPTIN=(--set securityContext.readOnlyRootFilesystem=true
+                 --set securityContext.runAsNonRoot=true --set securityContext.runAsUser=999
+                 --set securityContext.runAsGroup=999 --set networkPolicy.enabled=true)
+          OUT=$(helm template test helm/trelix "${OPTIN[@]}")
+          grep -qF 'readOnlyRootFilesystem: true' <<< "$OUT"
+          grep -qF 'mountPath: /tmp' <<< "$OUT"
+          grep -qF 'kind: NetworkPolicy' <<< "$OUT"
+          if grep -qiF mcp <<< "$OUT"; then
+            echo "::error::mcp.enabled is false but the render mentions mcp"; exit 1
+          fi
+          OUT=$(helm template test helm/trelix "${OPTIN[@]}" --set mcp.enabled=true --set mcp.auth.token=ci-test-placeholder)
+          [[ $(grep -cF 'mountPath: /tmp' <<< "$OUT") == 2 ]]
+          grep -qF -- '- port: 8766' <<< "$OUT"
+          if ERR=$(helm template test helm/trelix --set networkPolicy.enabled=true --set ingress.enabled=true 2>&1); then
+            echo "::error::networkPolicy.enabled rendered with an Ingress and no ingressFrom"; exit 1
+          fi
+          grep -qF 'needs networkPolicy.ingressFrom' <<< "$ERR"
+
       - name: Helm template refuses mcp.enabled without a token or a volume
         if: matrix.backend == 'sqlite'
         run: |
@@ -114,9 +138,43 @@ jobs:
 
       - name: Checkov
         uses: bridgecrewio/checkov-action@5798bad4f6dd9c1fb67ae3ec10d42d8fb67037c4 # v12.3126.0
+        env:
+          # CKV_K8S_21 (default namespace): the chart sets no metadata.namespace on purpose, so that
+          # `helm install -n <ns>` decides it. Checkov's check passes when HELM_NAMESPACE names a
+          # namespace other than "default" (checkov 3.3.20, the image this action runs). Not set
+          # on the `lint` job: its allow-list test expects `.default` in the render.
+          HELM_NAMESPACE: trelix
         with:
           directory: helm/trelix
           framework: helm
+          # Skipped on purpose, one reason per rule. Everything else Checkov reports on this
+          # chart is fixed in the chart, not skipped. skip_check is a comma-separated scalar,
+          # which cannot carry per-rule comments, hence the reasons up here.
+          #   CKV_K8S_11 (CPU limits): no default limit; a CPU limit throttles the bursty parse
+          #     and embed phases. Set resources.limits.cpu to get one.
+          #   CKV_K8S_13 (memory limits): no default limit; one that is too low OOM-kills the
+          #     pod while it indexes a large repository. Set resources.limits.memory once you
+          #     have measured your largest repository.
+          #   CKV_K8S_15 (pull policy Always): IfNotPresent, because the image is a versioned
+          #     tag; operators who need immutability pin a digest. Set image.tag to
+          #     X.Y.Z@sha256:<digest> to pin one.
+          #   CKV_K8S_22 (read-only root filesystem): opt-in, off by default, because a bare
+          #     read-only root breaks indexing while the probes stay green. Set
+          #     securityContext.readOnlyRootFilesystem=true; the chart then mounts the writable
+          #     /tmp and /cache it needs.
+          #   CKV_K8S_23 (root containers): opt-in, off by default. runAsNonRoot needs a numeric
+          #     user because the image's USER is a name. Set securityContext.runAsNonRoot=true,
+          #     runAsUser=999 and runAsGroup=999 (the published images' ids).
+          #   CKV_K8S_40 (UID of 10000 or more): the image runs as UID 999, and another UID
+          #     means migrating the ownership of existing data. Set securityContext.runAsUser
+          #     to 10000 or more, in an image built with a user of that UID.
+          #   CKV_K8S_43 (image digest): a digest cannot be committed to values.yaml, since
+          #     docker-publish.yml builds the image after the tag push that release.yml
+          #     verify-version checks. Set image.tag to X.Y.Z@sha256:<digest> to pin one.
+          #   CKV2_K8S_6 (NetworkPolicy): opt-in, off by default, because a default-on policy
+          #     cuts off an Ingress controller and cross-namespace clients. Set
+          #     networkPolicy.enabled=true (and networkPolicy.ingressFrom for them).
+          skip_check: CKV_K8S_11,CKV_K8S_13,CKV_K8S_15,CKV_K8S_22,CKV_K8S_23,CKV_K8S_40,CKV_K8S_43,CKV2_K8S_6
           output_format: sarif
           output_file_path: results.sarif,
           soft_fail: true

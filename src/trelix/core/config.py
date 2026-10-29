@@ -1947,9 +1947,16 @@ class IndexConfig(BaseSettings):
     @field_validator("repo_path")
     @classmethod
     def repo_must_exist(cls, v: str) -> str:
-        if not Path(v).exists():
+        # expanduser(): the REST and MCP allow-lists (core/confinement.py) expand a leading "~"
+        # before they compare a path with their roots. A config that did not would go on to
+        # use a literal directory named "~" in the working directory, which nobody approved.
+        try:
+            path = Path(v).expanduser()
+        except RuntimeError:  # "~user" for a user that does not exist: bad input, not a crash
+            raise ValueError(f"repo_path does not exist: {v}") from None
+        if not path.exists():
             raise ValueError(f"repo_path does not exist: {v}")
-        return str(Path(v).resolve())
+        return str(path.resolve())
 
     @property
     def db_path_resolved(self) -> Path:

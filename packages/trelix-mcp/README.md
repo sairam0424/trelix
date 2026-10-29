@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v3.5.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v3.5.1 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## ⚠️ Breaking Change in v2.4.0
 
@@ -71,10 +71,12 @@ To confine the server to one or more repository roots, add `--root PATH` (repeat
 more; a blank `--root` value is a startup error). Every `repo_path`, `federation_add_repo` `path`
 and `trelix://repo/...` URI must then lie inside a root, or the call answers an error:
 `repo_path is not inside an allowed repository root`, or
-`path is not inside an allowed repository root` for `federation_add_repo`. `federation_list_repos`
-and `federation_search_all` then list and search only the registered repos inside the roots and
-report the others as `repos_outside_roots`, and `federation_remove_repo` answers an alias whose repo
-is outside them as an unregistered one. Without the flag and the variable, nothing is confined.
+`path is not inside an allowed repository root` for `federation_add_repo`. A repository inside a
+root whose `.trelix` store is a symlink, or cannot be examined, is refused with the same error.
+`federation_list_repos` and `federation_search_all` then list and search only the registered repos
+inside the roots and report the others as `repos_outside_roots`, and `federation_remove_repo`
+answers an alias whose repo is outside them as an unregistered one. Without the flag and the
+variable, nothing is confined.
 
 ```bash
 claude mcp add trelix -- trelix-mcp --root /Users/you/myrepo

@@ -1,3 +1,5 @@
+import { trimTrailingSlashes } from "./url.js";
+
 export interface AskStreamOptions {
   fetch?: typeof fetch;
   /** Aborts the underlying request when triggered. */
@@ -13,7 +15,8 @@ export class TrelixAskError extends Error {}
  * Frames are exactly one of:
  *   - `data: {token}\n\n`         — yielded as a token string
  *   - `data: [DONE]\n\n`          — stream ends normally
- *   - `data: [ERROR: {exc}]\n\n`  — stream ends by throwing TrelixAskError
+ *   - `data: [ERROR: synthesis failed]\n\n`  — stream ends by throwing TrelixAskError (the
+ *     server sends this fixed text and logs the cause; an older server sent the exception message)
  */
 export async function* askStream(
   baseUrl: string,
@@ -21,7 +24,7 @@ export async function* askStream(
   options: AskStreamOptions = {},
 ): AsyncGenerator<string, void, void> {
   const fetchImpl = options.fetch ?? fetch;
-  const url = new URL(baseUrl.replace(/\/+$/, "") + "/ask");
+  const url = new URL(trimTrailingSlashes(baseUrl) + "/ask");
   url.searchParams.set("query", params.query);
   url.searchParams.set("repo", params.repo);
 

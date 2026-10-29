@@ -29,6 +29,8 @@ spec:
         {{- include "trelix.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "trelix.serviceAccountName" . }}
+      {{- /* No `with`/`if` around this: false is falsy and the line would vanish. */}}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -81,11 +83,15 @@ spec:
                   name: {{ include "trelix.fullname" . }}
                   key: TRELIX_API_AUTH_TOKEN
             {{- end }}
+            {{- include "trelix.scratchEnv" . }}
             {{- include "trelix.extraEnv" . }}
-          {{- if .Values.persistence.enabled }}
+          {{- if or .Values.persistence.enabled (include "trelix.readOnlyRoot" .) }}
           volumeMounts:
+            {{- if .Values.persistence.enabled }}
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+            {{- include "trelix.scratchMounts" . }}
           {{- end }}
           {{- with .Values.resources }}
           resources:
@@ -138,20 +144,25 @@ spec:
             {{- end }}
             - name: TRELIX_MCP_ALLOWED_HOSTS
               value: {{ include "trelix.mcpAllowedHosts" . | quote }}
+            {{- include "trelix.scratchEnv" . }}
             {{- include "trelix.extraEnv" . }}
           volumeMounts:
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- include "trelix.scratchMounts" . }}
           {{- with .Values.mcp.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
         {{- end }}
-      {{- if .Values.persistence.enabled }}
+      {{- if or .Values.persistence.enabled (include "trelix.readOnlyRoot" .) }}
       volumes:
+        {{- if .Values.persistence.enabled }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "trelix.pvcName" . }}
+        {{- end }}
+        {{- include "trelix.scratchVolumes" . }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

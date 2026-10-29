@@ -8,6 +8,10 @@ configured out-of-band (the path ``trelix serve`` was pointed at, or the
 Moved verbatim from ``trelix.api.app`` so that ``trelix-mcp`` can apply the same rule to its
 ``repo_path`` arguments without importing the REST module; ``trelix.api.app`` re-exports
 them under its old private names.
+
+``symlinked_store_entry`` is the third rule: a repository inside a root may still carry a
+``.trelix`` symlink that moves its index store outside it. The REST API applies it in
+``confine_repo`` and trelix-mcp in its ``inside_roots``.
 """
 
 from __future__ import annotations
@@ -66,3 +70,43 @@ def is_within_allowed_roots(candidate: str | Path, allowed_roots: Sequence[Path]
     """
     resolved = Path(candidate).expanduser().resolve()
     return any(resolved.is_relative_to(root) for root in allowed_roots)
+
+
+def symlinked_store_entry(repo_path: str | Path, db_path: str | Path) -> Path | None:
+    """The first symlink in a repository's own index store, or ``None``.
+
+    A repository is untrusted content and git tracks symlinks, so a ``.trelix`` directory (or
+    an ``index.db`` inside one) committed as a link moves the store, and everything trelix
+    writes beside it, to wherever the link points. ``is_within_allowed_roots`` cannot see that:
+    it compares the path the caller NAMED, and the repository itself is inside the root.
+
+    ``db_path`` is ``StoreConfig.db_path``. An absolute one is the operator's choice, made out
+    of band, and is not examined. A relative one is walked component by component from the
+    repository root, then everything directly inside the store directory is looked at
+    (``debug/``, ``graph.html``, ``.gitignore``, the SQLite sidecars, ``lance/``): each is a place
+    trelix writes and none is ever a link it made. That is one level: a link inside ``lance/`` is
+    not looked at. The test is ``is_symlink`` and not ``exists``, because a dangling link is
+    exactly the case where the write creates the link's target. When the store sits in the
+    repository root (``db_path="index.db"``) only the file is checked: the root's other entries
+    are the project's own.
+
+    Raises ``OSError`` (``PermissionError``, or ENAMETOOLONG for a name too long to look up) when
+    an entry cannot be examined, for example a ``.trelix`` the process may not enter or list.
+    That is not "no link": the caller must treat it as a refusal.
+    """
+    relative = Path(db_path)
+    if relative.is_absolute():
+        return None
+    root = Path(repo_path).expanduser().resolve()
+    walked = root
+    for part in relative.parts:
+        walked = walked / part
+        if walked.is_symlink():
+            return walked
+    store_dir = (root / relative).parent
+    if store_dir == root:
+        return None
+    try:
+        return next((entry for entry in store_dir.iterdir() if entry.is_symlink()), None)
+    except (FileNotFoundError, NotADirectoryError):
+        return None

@@ -1,0 +1,40 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{- /*
+Ingress only, off by default. The pod accepts connections on its container port(s) from pods in
+the release namespace (a `from` entry with an empty podSelector and no namespaceSelector means
+the policy's own namespace) and from networkPolicy.ingressFrom. Egress is not restricted.
+
+Refuse the combinations that would cut off what the chart exposes on purpose: an Ingress, or a
+Service of type LoadBalancer or NodePort, carries traffic from outside the namespace, and with
+no ingressFrom entry for it every request to the pod would be dropped on a CNI that enforces
+NetworkPolicy. `helm template` and `helm install` fail on it; `helm lint` only logs the message.
+*/}}
+{{- if and (not .Values.networkPolicy.ingressFrom) (or .Values.ingress.enabled (ne .Values.service.type "ClusterIP")) }}
+{{- fail "networkPolicy.enabled with ingress.enabled or a service.type other than ClusterIP needs networkPolicy.ingressFrom: the policy admits only pods in the release namespace, so the traffic the Ingress or the Service carries would be dropped" }}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "trelix.fullname" . }}
+  labels:
+    {{- include "trelix.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "trelix.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+        {{- with .Values.networkPolicy.ingressFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+        {{- if .Values.mcp.enabled }}
+        - port: {{ .Values.mcp.port }}
+          protocol: TCP
+        {{- end }}
+{{- end }}

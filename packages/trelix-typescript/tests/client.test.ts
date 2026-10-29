@@ -291,4 +291,40 @@ describe("TrelixClient", () => {
     const url = fetchMock.mock.calls[0][0] as URL;
     expect(url.toString()).toBe("http://127.0.0.1:8765/health");
   });
+
+  it.each([
+    ["http://127.0.0.1:8765//", "http://127.0.0.1:8765/health"],
+    ["http://127.0.0.1:8765", "http://127.0.0.1:8765/health"],
+    ["http://127.0.0.1:8765/api/", "http://127.0.0.1:8765/api/health"],
+    ["http://127.0.0.1:8765/api//", "http://127.0.0.1:8765/api/health"],
+  ])("normalises the base URL %j for requests", async (baseUrl, expected) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "ok", version: "x" }));
+    const client = new TrelixClient(baseUrl, { fetch: fetchMock });
+
+    await client.health();
+
+    const url = fetchMock.mock.calls[0][0] as URL;
+    expect(url.toString()).toBe(expected);
+  });
+
+  it("normalises a base URL ending in a very long run of slashes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "ok", version: "x" }));
+    const client = new TrelixClient("http://127.0.0.1:8765" + "/".repeat(160_000), {
+      fetch: fetchMock,
+    });
+
+    await client.health();
+
+    const url = fetchMock.mock.calls[0][0] as URL;
+    expect(url.toString()).toBe("http://127.0.0.1:8765/health");
+  });
+
+  it("constructs in linear time when a long run of slashes is not at the end", () => {
+    const started = performance.now();
+    const client = new TrelixClient("http://h" + "/".repeat(160_000) + "?q");
+    const elapsedMs = performance.now() - started;
+
+    expect(client).toBeInstanceOf(TrelixClient);
+    expect(elapsedMs).toBeLessThan(2000);
+  });
 });

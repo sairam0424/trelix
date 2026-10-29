@@ -35,6 +35,11 @@ from trelix.indexing.parser.base import BaseParser, ParseResult
 MAX_SELECTORS = 300  # total class/id selector symbols per file
 MAX_CSS_VARS = 100  # total CSS custom property symbols per file
 
+# A comment line's leading `*`: whitespace (blank lines too), `*`, one optional space. The second
+# alternative takes a whitespace run that no `*` follows whole, so the scan resumes after the
+# run instead of failing again from each of its line starts (quadratic on blank lines).
+_LEADING_STAR_RE = re.compile(r"^(?:\s*\*\s?|\s+)", re.MULTILINE)
+
 
 class CssParser(BaseParser):
     """Tree-sitter based CSS parser. Also handles SCSS/SASS/LESS (best-effort)."""
@@ -189,6 +194,8 @@ class CssParser(BaseParser):
             self._collect_selectors(selectors_node, src, selector_names)
 
         body_text = self._txt(node, src)
+        # The comment above the rule is the same for every selector of it: clean it once.
+        docstring = self._get_preceding_comment(node, src)
 
         # Emit one symbol per unique class/id selector found in this rule
         for sel_name, sel_kind in selector_names:
@@ -198,7 +205,6 @@ class CssParser(BaseParser):
                 continue
             seen_selectors.add(sel_name)
 
-            docstring = self._get_preceding_comment(node, src)
             symbols.append(
                 Symbol(
                     file_id=file_id,
@@ -319,8 +325,11 @@ class CssParser(BaseParser):
         # Build query description: everything between @media and the opening {
         full_text = self._txt(node, src)
         # Extract the query part: @media <query> {
-        query_match = re.match(r"@media\s+(.+?)\s*\{", full_text, re.DOTALL)
-        query_str = query_match.group(1).strip() if query_match else "query"
+        # The query may not start with whitespace or `{`, so `\s+` and the group never overlap.
+        # Anchored with \A as well as by re.match, so the pattern itself is linear: tried from
+        # more than one start (re.search), `[^{]*` would rescan the text from every `@media`.
+        query_match = re.match(r"\A@media\s+([^\s{][^{]*)?\{", full_text)
+        query_str = (query_match.group(1) or "").strip() if query_match else "query"
         # Collapse whitespace
         query_str = re.sub(r"\s+", " ", query_str)[:120]
 
@@ -392,7 +401,8 @@ class CssParser(BaseParser):
         # Extract path from quoted strings or url()
         path_match = re.search(r'["\']([^"\']+)["\']', full)
         if not path_match:
-            path_match = re.search(r'url\(["\']?([^)"\']+)["\']?\)', full)
+            # `(` is excluded from the url so a run of `url(` starts cannot be re-scanned.
+            path_match = re.search(r'url\(["\']?([^()"\']+)["\']?\)', full)
         if not path_match:
             return None
         path = path_match.group(1).strip()
@@ -490,8 +500,9 @@ class CssParser(BaseParser):
     def _clean_comment(raw: str) -> str:
         """Strip /* ... */ delimiters and leading * from CSS comments."""
         raw = re.sub(r"^/\*+\s*", "", raw.strip())
-        raw = re.sub(r"\s*\*+/$", "", raw)
-        raw = re.sub(r"^\s*\*\s?", "", raw, flags=re.MULTILINE)
+        if raw.endswith("*/"):  # drop the closing stars; blanks before them go in the strip below
+            raw = raw[:-1].rstrip("*")
+        raw = _LEADING_STAR_RE.sub(lambda m: "" if "*" in m[0] else m[0], raw)
         return raw.strip()
 
     def _count_errors(self, node: Node) -> int:

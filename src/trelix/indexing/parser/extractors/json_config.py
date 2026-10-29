@@ -29,6 +29,10 @@ from typing import Any
 
 from trelix.core.models import ImportEdge, Symbol, SymbolKind
 from trelix.indexing.parser.base import BaseParser, ParseResult
+from trelix.indexing.parser.extractors._comment_text import (
+    strip_block_comment_end,
+    strip_star_line_prefixes,
+)
 
 # Top-level keys whose string values are treated as npm package ImportEdges
 _DEP_KEYS = frozenset(
@@ -358,8 +362,8 @@ class JsonParser(BaseParser):
             return raw[2:].strip()
         # Block comment: /* ... */
         raw = re.sub(r"^/\*+\s*", "", raw)
-        raw = re.sub(r"\s*\*+/$", "", raw)
-        raw = re.sub(r"^\s*\*\s?", "", raw, flags=re.MULTILINE)
+        raw = strip_block_comment_end(raw)
+        raw = strip_star_line_prefixes(raw)
         return raw.strip()
 
     def _render_node(self, node: Any, src_bytes: bytes) -> str:

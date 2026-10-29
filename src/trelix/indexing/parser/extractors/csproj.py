@@ -33,8 +33,12 @@ import defusedxml.ElementTree as ET  # XXE / billion-laughs safe replacement
 from trelix.core.models import ImportEdge, Symbol, SymbolKind
 from trelix.indexing.parser.base import BaseParser, ParseResult
 
-# Strip MSBuild XML namespace so we can match tag names without prefixes
-_NS_RE = re.compile(r'\s+xmlns(?::[^=]*)?\s*=\s*"[^"]*"')
+# Strip MSBuild XML namespace so we can match tag names without prefixes. It takes ONE
+# whitespace character before `xmlns`, not the whole run (`\s+`): a run would be re-scanned from
+# every character in it (quadratic) when no `xmlns` follows. The rest of the run stays, also
+# when the `xmlns="..."` is in element text (it is stripped there too); that is insignificant
+# to the parse of tags and attributes. The prefix excludes whitespace so it cannot overlap `\s*`.
+_NS_RE = re.compile(r'\sxmlns(?::[^=\s]*)?\s*=\s*"[^"]*"')
 
 
 class CsprojParser(BaseParser):

@@ -251,7 +251,7 @@ def test_chart_docs_say_to_restart_after_changing_a_secret_the_chart_does_not_ow
     that token exists."""
     readme = " ".join(_chart("README.md").split())
     notes = " ".join(_chart("templates/NOTES.txt").split())
-    restart = "`kubectl rollout restart deployment/<fullname>`"
+    restart = "`kubectl -n <namespace> rollout restart deployment/<fullname>`"
     for needle in (
         "With `mcp.auth.existingSecretName` the chart cannot see the Secret, so after you "
         f"change it run {restart}.",
@@ -261,7 +261,10 @@ def test_chart_docs_say_to_restart_after_changing_a_secret_the_chart_does_not_ow
         "so changing it never rolls the pod by itself.",
     ):
         assert needle in readme, needle
-    rollout = 'kubectl rollout restart deployment/{{ include "trelix.fullname" . }}'
+    rollout = (
+        "kubectl -n {{ .Release.Namespace }} rollout restart "
+        'deployment/{{ include "trelix.fullname" . }}'
+    )
     api_start = notes.index("{{- if or .Values.apiAuth.token .Values.apiAuth.existingSecretName }}")
     api_block = notes[api_start : notes.index("{{- else }}", api_start)]
     mcp_start = notes.index("{{- if .Values.mcp.enabled }}")
@@ -274,6 +277,20 @@ def test_chart_docs_say_to_restart_after_changing_a_secret_the_chart_does_not_ow
         "after you change the Secret behind mcp.auth.existingSecretName, run: " + rollout
         in mcp_block
     )
+
+
+def test_every_kubectl_command_in_the_chart_docs_names_the_namespace() -> None:
+    """The README installs with `-n trelix` and the chart sets no `metadata.namespace`, so a
+    `kubectl` command without `-n` looks in the user's default namespace and answers `not found`.
+    NOTES.txt takes the namespace from the release; the README names `trelix` in its worked
+    examples and a `<namespace>` placeholder where the command also has a `<fullname>`. The
+    lower bounds keep the scans from passing on a file that lost its commands."""
+    notes = _chart("templates/NOTES.txt")
+    readme = _chart("README.md")
+    assert len(re.findall(r"kubectl\b", notes)) >= 8
+    assert len(re.findall(r"kubectl\b", readme)) >= 6
+    assert re.findall(r"kubectl\b(?! -n \{\{ \.Release\.Namespace \}\} )", notes) == []
+    assert re.findall(r"kubectl\b(?! -n (?:trelix|<namespace>) )", readme) == []
 
 
 def test_chart_readme_documents_the_mcp_values_and_the_ingress_note() -> None:

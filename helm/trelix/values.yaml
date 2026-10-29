@@ -16,7 +16,7 @@ image:
   # version, which never matches a site stranded on 2.x. release.yml's
   # verify-version job now compares this line against the release tag.
   repository: ghcr.io/sairam0424/trelix
-  tag: "3.5.0"
+  tag: "3.5.1"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -27,6 +27,12 @@ serviceAccount:
   create: true
   annotations: {}
   name: ""
+  # Whether the pod gets a Kubernetes API token mounted. Off: trelix never calls the Kubernetes
+  # API (neither src/ nor packages/*/src has a client), so a token in the pod is only something
+  # a compromised process could use. A sidecar or injector that authenticates with the pod's
+  # token (a Vault agent injector, say) needs true. Written onto the pod spec, where it wins
+  # over the ServiceAccount's own setting.
+  automount: false
 
 # trelix serve's REST API has zero auth middleware. Only enable ingress once
 # you've fronted it with an authenticating proxy (see README.md's Security section).
@@ -61,19 +67,58 @@ persistence:
 # mounted PVC without needing to know its exact UID (the Dockerfile's `trelix`
 # user has no pinned UID — see Dockerfile). Kubernetes adds this GID as a
 # supplemental group and chowns the volume at mount time.
+# seccompProfile RuntimeDefault is the container runtime's default syscall filter; it needs
+# Kubernetes 1.19 (Chart.yaml's kubeVersion). To drop only that: `--set podSecurityContext.seccompProfile=null`.
 podSecurityContext:
   fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
 
-securityContext: {}
+# Applied to every container in the pod (trelix, and trelix-mcp when it is on). To remove all of
+# it, set `securityContext: null` (an empty map `{}` is MERGED with these defaults by Helm and
+# removes nothing). Three more settings are off by default and documented in README.md ("Opt-in
+# hardening"); each is one key here, and the chart reacts to the first:
+#   readOnlyRootFilesystem: true   # the chart then mounts writable emptyDirs at /tmp and /cache
+#   runAsNonRoot: true             # needs runAsUser: the image's USER is a name, not a number,
+#   runAsUser: 999                 # and the kubelet refuses runAsNonRoot without a numeric one.
+#   runAsGroup: 999                # 999 is what the published images use; check yours.
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
 
-resources: {}
-# Uncomment and tune for production:
-# resources:
-#   requests:
-#     cpu: 500m
-#     memory: 1Gi
-#   limits:
-#     memory: 4Gi
+# Requests only. They are the scheduler's floor and give the pod a QoS class above BestEffort;
+# they are not a measurement of any workload. There is deliberately NO default limit: a memory
+# limit that is too low OOM-kills the pod in the middle of indexing a large repository (the
+# "-local" image also loads torch and an embedding model), and a CPU limit throttles the bursty
+# parse and embed phases. Add limits once you have measured your largest repository. To size up:
+#   resources:
+#     requests:
+#       cpu: 500m
+#       memory: 1Gi
+#     limits:
+#       memory: 4Gi   # example only
+# To drop the requests: `resources: null` (as with securityContext, `{}` removes nothing).
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+# NetworkPolicy — opt-in, Ingress only (egress stays open: tree-sitter grammars are downloaded
+# from github.com on first use, and the embedder and Qdrant endpoints are outbound too). When
+# enabled, the pod accepts connections on the REST port (and the trelix-mcp port when that is on)
+# only from pods in the release namespace plus the peers in ingressFrom. ingressFrom takes
+# NetworkPolicyPeer entries (podSelector / namespaceSelector / ipBlock), e.g. the ingress
+# controller's namespace. The chart refuses to render the policy with ingress.enabled or a
+# service.type other than ClusterIP and no ingressFrom, since that would cut off the traffic
+# the Ingress or the Service exists to carry. Needs a CNI that enforces NetworkPolicy.
+networkPolicy:
+  enabled: false
+  ingressFrom: []
+# - namespaceSelector:
+#     matchLabels:
+#       kubernetes.io/metadata.name: ingress-nginx
 
 nodeSelector: {}
 tolerations: []

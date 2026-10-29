@@ -640,7 +640,8 @@ class HtmlParser(BaseParser):
             raw = self._txt(prev, src).strip()
             # Strip <!-- ... --> delimiters
             raw = re.sub(r"^<!--\s*", "", raw)
-            raw = re.sub(r"\s*-->$", "", raw)
+            if raw.endswith("-->"):
+                raw = raw[:-3]
             return raw.strip() or None
         return None
 

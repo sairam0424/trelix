@@ -3,8 +3,11 @@
 Deploys `trelix serve`'s REST API to Kubernetes.
 
 ```bash
-helm install my-trelix helm/trelix
+helm install my-trelix helm/trelix -n trelix --create-namespace
 ```
+
+The chart sets no `metadata.namespace`, so `-n` decides where it lands; the `default` namespace
+is the one Kubernetes security baselines (CIS 5.7.4, Checkov's `CKV_K8S_21`) tell you not to use.
 
 ## Repo model — read this before deploying
 
@@ -41,12 +44,13 @@ fronting auth exposes:
 Before setting `ingress.enabled: true`, put an authenticating layer in front
 (an ingress-controller auth annotation, e.g. NGINX
 `nginx.ingress.kubernetes.io/auth-*`, or an OAuth2-proxy sidecar/gateway).
-This chart does not automate that setup — only documents the requirement.
+This chart does not automate that setup — only documents the requirement. The opt-in
+NetworkPolicy under "Hardening" below narrows who can reach the port at all.
 
 The container reads the token once, when it starts, so after a rotation the old
 token stays valid until the pod restarts. A new `apiAuth.token` restarts the pod
 on `helm upgrade`; after you change the Secret behind `apiAuth.existingSecretName`
-run `kubectl rollout restart deployment/<fullname>`.
+run `kubectl -n <namespace> rollout restart deployment/<fullname>`.
 
 ## Qdrant is external, not managed by this chart
 
@@ -68,35 +72,35 @@ Streamable HTTP transport, on Service port `mcp` (`mcp.port`). It is off by defa
 with it off the render is unchanged.
 
 ```bash
-helm install my-trelix helm/trelix --set mcp.enabled=true --set mcp.auth.existingSecretName=my-mcp-token
-kubectl port-forward svc/my-trelix 8766:8766
+helm install my-trelix helm/trelix -n trelix --create-namespace --set mcp.enabled=true --set mcp.auth.existingSecretName=my-mcp-token
+kubectl -n trelix port-forward svc/my-trelix 8766:8766
 export TRELIX_MCP_AUTH_TOKEN=<the value stored in the my-mcp-token Secret>
 claude mcp add --transport http trelix http://127.0.0.1:8766/mcp --header "Authorization: Bearer $TRELIX_MCP_AUTH_TOKEN"
 ```
 
 - **Token (required).** Set `mcp.auth.token` or `mcp.auth.existingSecretName`. It is not
   `apiAuth`'s: the REST and MCP tokens are separate. Create the Secret with
-  `kubectl create secret generic my-mcp-token --from-literal=TRELIX_MCP_AUTH_TOKEN=<token>`:
+  `kubectl -n trelix create secret generic my-mcp-token --from-literal=TRELIX_MCP_AUTH_TOKEN=<token>`:
   a trailing newline makes the token non-printable and the container exits 2. Every request
   except `GET /health` must carry it.
 - **Rotating the token.** The container reads the token once, when it starts, so the old
   token stays valid until the pod restarts. With `mcp.auth.token`, `helm upgrade` restarts
   the pod by itself: the chart hashes the Secret it owns into the pod template
   (`checksum/secret`). With `mcp.auth.existingSecretName` the chart cannot see the Secret,
-  so after you change it run `kubectl rollout restart deployment/<fullname>`.
+  so after you change it run `kubectl -n <namespace> rollout restart deployment/<fullname>`.
 - **Refusals.** `helm template` and `helm install` fail when `mcp.enabled` has no token, or
   when `persistence.enabled` is false (there is nothing to serve). `helm lint` reports it
   but exits 0.
 - **Host check.** The container accepts the `Host` names `<fullname>`,
   `<fullname>.<namespace>` and `<fullname>.<namespace>.svc` (the release's Service names),
-  plus `mcp.allowedHosts` and the loopback names (so a `kubectl port-forward` works); any other
+  plus `mcp.allowedHosts` and the loopback names (so a port-forward works); any other
   name answers 403. An Ingress host or the
   `.svc.cluster.local` form goes in `mcp.allowedHosts`, which is a list:
   `--set 'mcp.allowedHosts={trelix.example.com}'`. A plain string fails with
   `Cannot concat type string as list`. A `*` entry is dropped, so the chart
   cannot turn the check off, and so is any entry that is not one hostname or IP address (a
-  URL, a wildcard): the container logs a warning (`kubectl logs deploy/<fullname> -c
-  trelix-mcp`) and requests under that name answer 403. The probes use `GET /health`, which
+  URL, a wildcard): the container logs a warning (`kubectl -n <namespace> logs
+  deploy/<fullname> -c trelix-mcp`) and requests under that name answer 403. The probes use `GET /health`, which
   is exempt. The Host/Origin 403 text names `TRELIX_MCP_ALLOWED_HOSTS`, which the chart sets from
   `mcp.allowedHosts`; trelix-mcp reads the REST API's allow-list variable only when that one is
   unset or blank, so edit `mcp.allowedHosts`, not `extraEnv`.
@@ -114,13 +118,125 @@ claude mcp add --transport http trelix http://127.0.0.1:8766/mcp --header "Autho
   proxy's job. `service.type: LoadBalancer` or `NodePort` exposes the `mcp` port too. See
   [MCP_GUIDE section 19](../../docs/MCP_GUIDE.md#19-streamable-http-transport).
 
+## Hardening
+
+Chart 0.3.0 turns on the settings that cannot break a working install, and leaves the ones that
+can break one off, each behind a single value. The chart needs Kubernetes 1.19 or newer
+(`kubeVersion` in `Chart.yaml`).
+
+### On by default
+
+| Value | Default | Effect |
+|---|---|---|
+| `podSecurityContext.seccompProfile.type` | `RuntimeDefault` | The container runtime's default syscall filter (`fsGroup: 1000` is unchanged) |
+| `securityContext` | `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]` | On every container of the pod, `trelix-mcp` included |
+| `serviceAccount.automount` | `false` | No Kubernetes API token is mounted in the pod. trelix never calls the Kubernetes API, so the token is only something a compromised process could use |
+| `resources` | requests `cpu: 250m`, `memory: 512Mi` | See "Sizing" below. No limits |
+
+**Upgrading from chart 0.2.x.** The next `helm upgrade` changes the pod, and rolls it. It now has no
+service-account token, a `RuntimeDefault` seccomp profile, no privilege escalation, no
+capabilities and CPU and memory requests. A sidecar or injector that authenticates with the pod's
+token (a Vault Agent injector, for example) stops working until you set
+`serviceAccount.automount=true`. `helm upgrade --reuse-values` fails to render, as it did for
+`mcp` in 0.2.7, because the old release's values have no `networkPolicy`: use
+`--reset-then-reuse-values`, which needs Helm 3.14 or newer. With an older Helm, run
+`helm get values RELEASE -o yaml > values.yaml`, then
+`helm upgrade RELEASE helm/trelix --reset-values -f values.yaml`. If you already set
+`resources.limits` below the new requests (under `250m` CPU or `512Mi` memory) and no
+`resources.requests`, the API server rejects the Deployment, since a request may not exceed its
+limit: set `resources.requests` at or below your limits.
+
+**Going back.** In a values file, set `serviceAccount.automount: true`, `securityContext: null`,
+`resources: null` and `podSecurityContext.seccompProfile: null` (on the command line,
+`--set securityContext=null`). `null` deletes a default; an empty map (`securityContext: {}`)
+does not, because Helm merges maps and the defaults stay.
+
+### Sizing
+
+`resources` asks for `250m` CPU and `512Mi` memory and sets no limit. The requests are a
+scheduling floor, not a measurement. There is no default limit on purpose: a memory limit that
+is too low kills the pod in the middle of indexing a large repository (see "Large repos may hit
+memory limits" in [MCP_GUIDE](../../docs/MCP_GUIDE.md)), and the `-local` image also loads torch
+and an embedding model; a CPU limit throttles the bursty parse and embed phases. Raise the
+requests for the `-local` image or a big repository, and add `resources.limits` only after you
+have measured the largest repository you index. `mcp.resources` sizes the `trelix-mcp` container
+and has no default.
+
+### Opt-in hardening
+
+These are off by default because each one can break an install that works today. `helm-lint.yml`
+renders each of them. The read-only root and the non-root settings were also run once, together,
+on a single-node kind cluster with Helm 4.3.0 and the 3.5.0 slim image: the pod rolled out,
+`GET /health` and `POST /parse` answered 200, and `POST /index` answered 500 (the slim image has no
+local embedder) after it had written the SQLite index store on the PVC. NetworkPolicy enforcement,
+multi-node clusters (ReadWriteOnce Multi-Attach during the rolling update), OpenShift, a deploy
+with Helm 3, the `-local` image, `mcp.enabled` and an index run through to vectors were not tried:
+try the opt-ins in a staging namespace first.
+
+**Read-only root filesystem.** `--set securityContext.readOnlyRootFilesystem=true`. A read-only
+root alone starts the server and passes its probes, and then fails as soon as indexing needs a
+temporary file or the cache directory, so the chart does the rest when it sees the flag: it
+mounts an `emptyDir` at `/tmp` and another at `/cache` in every container, and sets
+`XDG_CACHE_HOME=/cache`. The index itself lives under `.trelix/` inside each repository on the
+PVC, which stays writable. That needs the PVC: with `persistence.enabled=false` only `/tmp` and
+`/cache` are mounted, so a read-only root leaves nowhere writable for the index.
+Both `emptyDir`s are empty after a pod restart, so the tree-sitter grammars (downloaded from
+github.com on first use) are fetched again, and so is the embedding cache if you switched it on
+(`TRELIX_EMBEDDING_CACHE_ENABLED`). Point `TRELIX_EMBEDDING_CACHE_DIR` at a directory on the PVC
+through `extraEnv` to keep it. With the `-local` image the Hugging Face model cache follows
+`XDG_CACHE_HOME` too, so the model weights are downloaded again after every restart; set `HF_HOME`
+to a directory on the PVC through `extraEnv` to keep them. Do not set `XDG_CACHE_HOME` in
+`extraEnv` as well: the name would appear twice. Anything else that writes under the image's home directory or its working
+directory, `/repo`, fails. Two are known, and the list may not be complete. The MCP tools
+`federation_add_repo` and `federation_remove_repo` save `~/.config/trelix/repos.json`. The audit
+trail (`TRELIX_AUDIT_ENABLED`) keeps `.trelix/audit.db` in the working directory by default, which
+is on the read-only root: the file cannot be created, the server logs `AuditStore init failed ...
+auditing disabled`, keeps serving and records nothing. Set `TRELIX_AUDIT_DB_PATH` to a file on the
+PVC, for example `/data/audit.db`, through `extraEnv`. The SSO principal store
+(`TRELIX_OIDC_ENABLED`) uses the same file.
+
+**Non-root.** `--set securityContext.runAsNonRoot=true --set securityContext.runAsUser=999 --set
+securityContext.runAsGroup=999`. Set all three: the image's `USER` is the name `trelix`, and the
+kubelet refuses `runAsNonRoot` without a numeric user ("image has non-numeric user (trelix),
+cannot verify user is non-root"). 999 is the id the published images use, for both variants;
+the Dockerfile creates the user with `useradd --system` and does not pin the id, so check
+the image you run with `docker run --rm --entrypoint id <image>` before you rely on it. On
+OpenShift the restricted SCC assigns the UID itself: leave `runAsUser` and `runAsGroup` unset,
+and expect to unset the fixed `podSecurityContext.fsGroup` as well
+(`--set podSecurityContext.fsGroup=null`). This chart has not been tried on OpenShift, so the
+default `RuntimeDefault` seccomp profile is untested there too: if the SCC refuses the pod over
+it, `--set podSecurityContext.seccompProfile=null` removes it.
+
+**NetworkPolicy.** `--set networkPolicy.enabled=true` adds a policy of type `Ingress` only. The
+pod then accepts connections on the REST port (and the `trelix-mcp` port when that is on) from
+pods in the release namespace and from the peers you list in `networkPolicy.ingressFrom`, a list
+of standard `NetworkPolicyPeer` entries (`namespaceSelector`, `podSelector`, `ipBlock`):
+
+```yaml
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+```
+
+Egress is not restricted: tree-sitter grammars come from github.com and the embedder and Qdrant
+endpoints are outbound. With `ingress.enabled`, or a `service.type` other than `ClusterIP`, the
+chart refuses to render the policy without `ingressFrom`, since the policy would drop the traffic
+that Ingress or Service exists to carry; for a `LoadBalancer` or `NodePort`, the peer is
+whatever source address your cloud presents. Anything else outside the namespace (Prometheus in
+another namespace, a Gateway you run yourself in front of the `mcp` port) needs an entry too.
+The policy is only enforced by a CNI that implements NetworkPolicy, and the kubelet's probes
+reach the pod from its own node, which most CNIs let through; check yours.
+
 ## Values
 
 See `values.yaml` for the full list with defaults and comments. Highlights:
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `3.5.0` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
+| `image.tag` | `3.5.1` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
 | `mcp.enabled` | `false` | Add the `trelix-mcp` container (MCP over Streamable HTTP) to the pod — see "trelix-mcp over Streamable HTTP" above. Needs a token and `persistence.enabled` |
 | `mcp.port` | `8766` | Container and Service port (`mcp`) of `trelix-mcp` |
 | `mcp.allowedHosts` | `[]` | `Host` names `trelix-mcp` accepts besides the release's Service names (an Ingress host, the `.svc.cluster.local` form) |
@@ -130,6 +246,12 @@ See `values.yaml` for the full list with defaults and comments. Highlights:
 | `persistence.enabled` | `true` | Shared multi-repo PVC — see "Repo model" above |
 | `persistence.mountPath` | `/data` | |
 | `ingress.enabled` | `false` | See "Security" above before enabling |
+| `serviceAccount.automount` | `false` | Mount a Kubernetes API token in the pod. Needed by a Vault-agent style injector — see "Hardening" |
+| `podSecurityContext` | `fsGroup: 1000`, `seccompProfile: RuntimeDefault` | See "Hardening" |
+| `securityContext` | `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]` | Applies to every container. Also the switch for `readOnlyRootFilesystem` and `runAsNonRoot` / `runAsUser` / `runAsGroup` — see "Hardening" |
+| `resources` | requests `cpu: 250m`, `memory: 512Mi` | No limits by default — see "Sizing" |
+| `networkPolicy.enabled` | `false` | Ingress-only NetworkPolicy — see "Hardening" |
+| `networkPolicy.ingressFrom` | `[]` | `NetworkPolicyPeer` entries admitted besides the release namespace; required with `ingress.enabled` or a non-`ClusterIP` Service |
 | `store.qdrant.existingSecretName` | `""` | Prefer this over `store.qdrant.apiKey` in any shared cluster |
 | `embedder.openai.existingSecretName` | `""` | Prefer this over `embedder.openai.apiKey` in any shared cluster |
 
@@ -141,7 +263,7 @@ yourself. Set at most one of the two per credential. Containers read these
 once, when they start: changing a plaintext `apiKey` restarts the pod on
 `helm upgrade` (the chart hashes the Secret it owns into the pod template as
 `checksum/secret`), while a Secret you manage needs
-`kubectl rollout restart deployment/<fullname>` after you change it. The same
+`kubectl -n <namespace> rollout restart deployment/<fullname>` after you change it. The same
 goes for a Secret named in `extraSecretEnv`: the chart cannot see it either, so
 changing it never rolls the pod by itself.
 
@@ -152,8 +274,8 @@ tag — `release.yml`'s `verify-version` job fails the release if it does not.
 `version` is the *chart's* version and moves independently, on its own SemVer
 track, whenever the chart's templates or defaults change; nothing checks it,
 because there is no chart to check against: the chart is installed from this
-tree (`helm install my-trelix helm/trelix`, as above) and CI only lints and
-templates it — `helm-lint.yml` never `helm package`s or pushes it to a repo.
+tree (`helm install my-trelix helm/trelix -n trelix --create-namespace`, as above) and CI
+only lints and templates it — `helm-lint.yml` never `helm package`s or pushes it to a repo.
 
 The two are not, and should not become, lockstep. Bumping `version` in step
 with `appVersion` would announce a chart change on every trelix release,
@@ -168,4 +290,5 @@ helm template test helm/trelix --set store.backend=qdrant --set store.qdrant.api
 helm template test helm/trelix --set store.backend=lance
 helm template test helm/trelix --set ingress.enabled=true
 helm template test helm/trelix --set mcp.enabled=true --set mcp.auth.token=ci-test-placeholder
+helm template test helm/trelix --set securityContext.readOnlyRootFilesystem=true --set networkPolicy.enabled=true
 ```

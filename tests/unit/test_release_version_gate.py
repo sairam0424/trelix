@@ -280,8 +280,11 @@ class TestSatelliteCoreFloorsFollowTheCore:
     #                   (cli.py, confinement.py), trelix.api.request_guard.is_health_probe
     #                   (http.py) and FederatedRetriever.unindexed_repos (server.py)
     #   both adapters   trelix.core.index_check.require_index (retriever.py)
+    # trelix-mcp also imports trelix.core.confinement.symlinked_store_entry, which v3.5.0 does not
+    # have (read in `git show v3.5.0:src/trelix/core/confinement.py`), so its entry is the release
+    # after 3.5.0.
     SATELLITE_MIN_CORE: dict[str, str] = {
-        "trelix-mcp": "3.5.0",
+        "trelix-mcp": "3.5.1",
         "trelix-langchain": "3.5.0",
         "trelix-llama-index": "3.5.0",
     }

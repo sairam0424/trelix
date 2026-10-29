@@ -35,14 +35,15 @@ from trelix.indexing.parser.extractors.razor import (
     _count_lines_to,
     _extract_brace_block,
     _RazorBase,
+    _strip_generic_args,
 )
 
 # @model TypeName (MVC / Razor Pages)
-_MODEL_RE = re.compile(r"^\s*@model\s+([\w][\w.<>, \[\]?]*)", re.MULTILINE)
+_MODEL_RE = re.compile(r"^[^\S\n]*@model\s+([\w][\w.<>, \[\]?]*)", re.MULTILINE)
 # @section SectionName {
 _SECTION_RE = re.compile(r"@section\s+(\w+)\s*\{", re.MULTILINE)
 # @page (Razor Pages — no route required)
-_PAGE_RE = re.compile(r'^\s*@page(?:\s+"([^"]*)")?', re.MULTILINE)
+_PAGE_RE = re.compile(r'^[^\S\n]*@page(?:\s+"([^"]*)")?', re.MULTILINE)
 
 
 class CshtmlParser(_RazorBase):
@@ -82,7 +83,7 @@ class CshtmlParser(_RazorBase):
 
         model_match = _MODEL_RE.search(source)
         if model_match:
-            model_type = re.sub(r"<.*>", "", model_match.group(1)).strip()
+            model_type = _strip_generic_args(model_match.group(1)).strip()
             import_edges.append(
                 ImportEdge(
                     file_id=file_id,
@@ -92,7 +93,7 @@ class CshtmlParser(_RazorBase):
             )
 
         for m in _INJECT_RE.finditer(source):
-            service_type = re.sub(r"<.*>", "", m.group(1)).strip()
+            service_type = _strip_generic_args(m.group(1)).strip()
             import_edges.append(
                 ImportEdge(
                     file_id=file_id,
@@ -226,7 +227,7 @@ class CshtmlParser(_RazorBase):
 
         inh_match = _INHERITS_RE.search(source)
         if inh_match:
-            base = re.sub(r"<.*>", "", inh_match.group(1)).strip()
+            base = _strip_generic_args(inh_match.group(1)).strip()
             type_edges.append(
                 TypeEdge(
                     from_symbol_id=component_local_idx,
