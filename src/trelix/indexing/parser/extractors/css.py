@@ -326,7 +326,9 @@ class CssParser(BaseParser):
         full_text = self._txt(node, src)
         # Extract the query part: @media <query> {
         # The query may not start with whitespace or `{`, so `\s+` and the group never overlap.
-        query_match = re.match(r"@media\s+([^\s{][^{]*)?\{", full_text)
+        # Anchored with \A as well as by re.match, so the pattern itself is linear: tried from
+        # more than one start (re.search), `[^{]*` would rescan the text from every `@media`.
+        query_match = re.match(r"\A@media\s+([^\s{][^{]*)?\{", full_text)
         query_str = (query_match.group(1) or "").strip() if query_match else "query"
         # Collapse whitespace
         query_str = re.sub(r"\s+", " ", query_str)[:120]
