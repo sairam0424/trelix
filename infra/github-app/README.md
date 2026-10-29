@@ -145,8 +145,9 @@ GitHub -- pull_request webhook -->  this service (Express)
   the webhook secret) via `@octokit/webhooks-methods`'s `verify()`, which
   compares using `crypto.timingSafeEqual` — not a naive string compare.
   Requests with a missing, wrong-secret, or body-tampered-after-signing
-  signature are rejected with `401` before the route handler ever sees
-  the payload.
+  signature are rejected with `401` before the body is parsed: the route
+  reads the raw bytes, verifies them, and only then runs `JSON.parse`, so
+  the route handler only ever sees a verified payload.
 - ✅ **Installation-token minting, one token per purpose.** `src/auth.ts`'s
   `getInstallationToken` uses `@octokit/auth-app` (App-ID + private-key JWT
   signing -> installation-token exchange), with one `AuthInterface` reused
@@ -197,13 +198,17 @@ GitHub -- pull_request webhook -->  this service (Express)
   in this codebase, which uses an installation token) redelivers failed,
   sufficiently-aged deliveries. Runs on both a 6-hour schedule and
   `workflow_dispatch` — see "Deploying on Render" below.
-- ✅ **Payload size limit.** The webhook route caps request bodies at 25MB
-  — GitHub's own documented webhook payload cap — rejecting oversized
-  bodies with `413` (`{"error":"payload too large"}`) during parsing rather
-  than buffering an arbitrarily large request into memory. This matters
-  because signature verification happens *after* body parsing, so the size
-  limit is the only defense against a sender who doesn't know the webhook
-  secret sending a deliberately huge payload.
+- ✅ **Payload size limit.** The webhook route reads at most 5 MiB of a
+  request body before its signature has verified, and answers a larger body
+  `413` (`{"error":"payload too large"}`) while it is read, without buffering
+  the rest. Nothing is parsed before the signature has verified, so a sender
+  who doesn't know the webhook secret can make the process buffer and hash
+  that many bytes, never `JSON.parse` them. GitHub delivers payloads of up to
+  25MB, but the only event the App subscribes to, `pull_request`, is mostly
+  its PR body (GitHub caps that at 65,536 characters), under 1 MiB. A
+  delivery over the cap is a failed delivery like any other: the redelivery
+  backstop above sends it again on each run while it is among the 100 newest,
+  and it is refused again.
 - ✅ **Subprocess timeout.** `runReviewCli` passes a 5-minute `timeout` to
   the `trelix review` shell-out; Node kills the child process (`SIGTERM`)
   and the call rejects if it hangs past that — a slow/stuck review no
@@ -437,9 +442,10 @@ policy, reviews on.
   `NODE_ENV=production` yourself. The code does not depend on it for this:
   `src/error-handler.ts` is the last middleware of `createApp` and answers
   every error with a fixed JSON body, never the error's message or stack:
-  `{"error":"internal server error"}` with `500`, or, for a body the parser
-  rejects, `400` (`bad request`, e.g. malformed JSON), `413` (`payload too
-  large`) or `415` (`unsupported media type`). A `status` on any other error is
+  `{"error":"internal server error"}` with `500`, or, for a body the route
+  cannot read, `400` (`bad request`: a correctly signed body that is malformed
+  JSON or not a JSON object or array), `413` (`payload too large`) or `415`
+  (`unsupported media type`). A `status` on any other error is
   ignored, so a failed call to the GitHub API is never reported to the sender
   as a client error. The detail goes to the log once, as a single
   `[app] request failed {...}` line with the configured webhook secret and
@@ -685,9 +691,10 @@ policy, reviews on.
 - `src/error-handler.ts` — the final error middleware (`createErrorHandler`):
   a fixed response body for any error, one redacted log line; see
   "`NODE_ENV` and error responses" above.
-- `src/webhook.ts` — verifies `X-Hub-Signature-256`, then routes
-  `pull_request` `opened`/`synchronize`/`reopened` deliveries (mirrors the
-  Actions workflow's trigger) to the intake and sends its answer.
+- `src/webhook.ts` — reads the raw body, verifies `X-Hub-Signature-256` over
+  it, parses it only then, and routes `pull_request`
+  `opened`/`synchronize`/`reopened` deliveries (mirrors the Actions
+  workflow's trigger) to the intake and sends its answer.
 - `src/review-intake.ts` — what happens to a routed delivery: kill switch,
   payload checks (repository id, head sha via `src/commit-id.ts`, owner,
   installation id), installation policy, then the dedupe claim and the queue;

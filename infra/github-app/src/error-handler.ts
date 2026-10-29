@@ -5,9 +5,10 @@ const INTERNAL_ERROR_BODY = { error: "internal server error" } as const;
 
 /**
  * The only client errors the handler reports with their own status: the ones
- * `express.json()` raises for a webhook body it cannot read (malformed JSON,
- * a body over the size cap, an unsupported charset or encoding). The text
- * for each is fixed here, so nothing the sender wrote can come back in it.
+ * the webhook route raises for a body it cannot read (malformed JSON after
+ * the signature has verified, a body over the size cap, an unsupported content
+ * encoding). The text for each is fixed here, so nothing the sender wrote can
+ * come back in it.
  */
 const CLIENT_ERROR_MESSAGES: ReadonlyMap<number, string> = new Map([
     [400, "bad request"],
