@@ -23,13 +23,12 @@ Parent linkage:
 
 from __future__ import annotations
 
-import re
-
 from tree_sitter import Node
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 from trelix.indexing.parser._grammar import load_language, make_parser
 from trelix.indexing.parser.base import BaseParser, ParseResult
+from trelix.indexing.parser.extractors._comment_text import strip_xml_tags
 
 
 class CSharpParser(BaseParser):
@@ -1063,7 +1062,7 @@ class CSharpParser(BaseParser):
             return None
         lines.reverse()
         combined = " ".join(lines)
-        combined = re.sub(r"<[^>]+>", "", combined).strip()
+        combined = strip_xml_tags(combined).strip()
         return combined if combined else None
 
     def _get_file_doc(self, root: Node, src: bytes) -> str | None:
@@ -1091,7 +1090,7 @@ class CSharpParser(BaseParser):
         if not lines:
             return None
         combined = " ".join(lines)
-        combined = re.sub(r"<[^>]+>", "", combined).strip()
+        combined = strip_xml_tags(combined).strip()
         return combined if combined else None
 
     # ------------------------------------------------------------------

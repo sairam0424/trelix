@@ -1,4 +1,5 @@
 import type { components } from "./generated/schema.js";
+import { trimTrailingSlashes } from "./url.js";
 
 export type HealthResponse = components["schemas"]["HealthResponse"];
 export type SearchResponse = components["schemas"]["SearchResponse"];
@@ -70,7 +71,7 @@ export class TrelixClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(baseUrl: string, options: TrelixClientOptions = {}) {
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.baseUrl = trimTrailingSlashes(baseUrl);
     this.fetchImpl = options.fetch ?? fetch;
   }
 
