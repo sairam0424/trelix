@@ -7,7 +7,7 @@ packages = ["src/trelix_mcp"]
 
 [project]
 name = "trelix-mcp"
-version = "3.5.0"
+version = "3.5.1"
 description = "MCP server for trelix — semantic code search for Claude Code, Cursor, Windsurf, Continue.dev"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -59,14 +59,17 @@ classifiers = [
 # fastmcp-slim[server]==4.0.10 already requires starlette>=1.0.1, so this declares a direct
 # import that was already resolved; it raises nothing and changes no install.
 #
-# trelix>=3.5.0 (v3.5.0): the server imports core names that the last core before it (3.4.3)
-# does not have: trelix.core.index_check (server.py, resources.py), trelix.core.confinement
-# (cli.py, confinement.py), trelix.api.request_guard.is_health_probe (http.py; 3.4.3 has only
-# the private _is_health_probe) and FederatedRetriever.unindexed_repos (server.py). A machine that
-# already held core 3.4.3 satisfied the old floor, so `pip install -U trelix-mcp` kept it and
-# trelix-mcp exited 1 on start (the first import fails). tests/unit/test_release_version_gate.py
-# (TestSatelliteCoreFloorsFollowTheCore) fails a release that bumps the version without this.
-dependencies = ["trelix>=3.5.0", "mcp>=2.0.0,<3.0", "fastmcp>=4.0.10,<5", "starlette>=1.0.1"]
+# trelix>=3.5.1 (v3.5.1): the server imports a core name that the last core before it (3.5.0)
+# does not have: trelix.core.confinement.symlinked_store_entry (confinement.py). The names that 3.5.0
+# introduced are still imported, so the floor covers them too: trelix.core.index_check (server.py,
+# resources.py), the rest of trelix.core.confinement (cli.py, confinement.py),
+# trelix.api.request_guard.is_health_probe (http.py; 3.4.3 has only the private _is_health_probe)
+# and FederatedRetriever.unindexed_repos (server.py). A machine that already held core 3.5.0
+# satisfied the old floor, so `pip install -U trelix-mcp` would keep it and trelix-mcp would exit 1
+# on start (confinement.py, which server.py imports, fails first).
+# tests/unit/test_release_version_gate.py (TestSatelliteCoreFloorsFollowTheCore) fails a release
+# that bumps the version without this.
+dependencies = ["trelix>=3.5.1", "mcp>=2.0.0,<3.0", "fastmcp>=4.0.10,<5", "starlette>=1.0.1"]
 
 [project.scripts]
 trelix-mcp = "trelix_mcp.server:main"

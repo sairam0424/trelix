@@ -163,6 +163,8 @@ repository with no index, from the diff alone, and only stops creating the empty
 which the core ships from 3.5.0, the release that contains this change. An older core under a newer
 package fails (`trelix-mcp` at start-up; the two adapters at their first query, because they import
 `require_index` inside the retrieval method), so 3.5.0 raised their `trelix>=` floors to
+`trelix>=3.5.0`. `trelix-mcp` 3.5.1 also imports `trelix.core.confinement.symlinked_store_entry`, which
+core 3.5.0 does not have, so 3.5.1 raised its floor alone to `trelix>=3.5.1`; the two adapters stay at
 `trelix>=3.5.0`.
 
 ### Behaviour change shipped as a fix: `Synthesizer.stream()` on an empty retrieval
@@ -202,6 +204,39 @@ when `TRELIX_RETRIEVAL_CITATIONS=true` tagged the context and the model answered
 (the default) stdout is unchanged. `Synthesizer(stream_to_stdout=False)` keeps every stdout write
 in, `Synthesizer.last_context` is the context the last call answered from, and
 `trelix.retrieval.citations` gains `footer_lines()` and `citation_as_json()`.
+
+### Behaviour changes shipped as fixes: REST API confinement and the `/ask` error frame
+
+These changes in 3.5.1 alter what a working setup sees, and they ship in a patch release as
+security and correctness fixes, like the `trelix review` exit codes above: each replaces a state
+the API should not have been in (an index store outside the allowed roots, a path nobody approved,
+a malformed request answered `500`, an exception message sent to any caller). They apply to the
+REST API (`trelix serve`); the symlink refusal also applies to a confined `trelix-mcp`, and the
+`~` rule to every `IndexConfig` built from an unresolved string, as the table says.
+
+| Surface | Before (3.5.0) | Now (3.5.1) | Escape hatch |
+|---------|----------------|-------------|--------------|
+| A repository whose `.trelix`, `index.db` or an entry directly inside `.trelix` is a symlink: every gated REST route (`POST /index` and `POST /parse` included), and `trelix-mcp` started with `--root` or `TRELIX_ALLOWED_REPO_ROOTS` | served, whatever the link pointed at | HTTP `403` `<field> has a symlinked index store`, **whatever the link points at, even inside the allowed root**; also `403` `<field> has an index store that cannot be examined` when the store cannot be looked at (a `.trelix` the server may not enter or list, a path too long for the filesystem). `trelix-mcp` answers with its usual `repo_path is not inside an allowed repository root` (the operator log lists the possible causes: outside the roots, a symlinked store, a store that cannot be examined), and counts a registered repository like that in `repos_outside_roots` | an absolute `TRELIX_STORE_DB_PATH`, set for the server and for the CLI that builds the index: every route works again except `GET /graph/visualize`, which writes `.trelix/graph.html` and keeps refusing while `.trelix`, or an entry directly inside it, is a symlink. One path is one index shared by every repository the server serves. There is no other opt-out |
+| A NUL byte in a repository or path (`output` included), an unknown `~user` in a repository, `POST /parse` with an empty or directory `file_path` | `500` | `400` | none: the request was malformed |
+| A leading `~` in the `repo_path` of an `IndexConfig` built from an unresolved string (the REST API, `trelix-mcp`, the LangChain and LlamaIndex adapters, `FederatedRetriever`, `trelix eval`, `trelix eval-synthesis`, library code) | not expanded: `~` and `./~` named a directory called `~` in the working directory (an error when there was none), although the allow-list expanded them to the home directory | expanded as the allow-list does: `~` and `./~` are the home directory and `./~name` is the home directory of user `name` (an error when there is none; the REST API answered `500`, now `400`) | give a directory whose own name starts with `~` by absolute path |
+| `GET /graph/visualize?output=` that does not end in `.html` | checked only by an `assert` inside pyvis, which `python -O` removes | `400` `output must be an .html file` | name the file `<something>.html` |
+| `GET /ask` when anything fails | `data: [ERROR: <exception message>]`; for a model-call failure `data: ` plus a `[trelix: synthesis unavailable — <message>]` line, then `data: [DONE]` | `data: [ERROR: synthesis failed]` after any tokens already sent, and no `[DONE]`; the cause is in the server log. Against a 3.5.1 server `askStream` in `@trelix/sdk` throws `TrelixAskError` for a model-call failure; the SDK's frame parser did not change, and it is not published to npm | none: the exception text is withheld on purpose. `trelix ask` is unchanged |
+
+A client that parsed the old `/ask` banner or showed the old `[ERROR: <detail>]` text sees the
+fixed frame instead. The `403` breaks setups that keep an index store behind a symlink, including a
+link that stays inside the allowed root, because the check looks for a link and not at its target.
+This is a judgement call, not a settled one, as for the exit codes above: shipping the refusal
+opt-in first and flipping the default in a flagged MINOR release would follow this policy more
+strictly. The escape hatch above is set by the operator, out of band, which is what keeps a
+repository from using it.
+
+Additive: `Synthesizer.stream(..., raise_on_error=False)` (a keyword-only argument; `True` raises
+an exception from the model call after logging it and recording it in `last_error`, instead of
+yielding the `[trelix: synthesis unavailable — ...]` message as a token) and
+`trelix.core.confinement.symlinked_store_entry(repo_path, db_path)`. The default of
+`raise_on_error` keeps `trelix ask` and every existing caller as they were. `trelix-mcp` 3.5.1
+imports `symlinked_store_entry`, so its `trelix>=` floor is 3.5.1 (see "Integration Package
+Policy").
 
 ### Behaviour change: MCP list results are bounded
 

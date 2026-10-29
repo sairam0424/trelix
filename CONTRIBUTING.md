@@ -484,7 +484,8 @@ Two things that are **not** version sites, and must not be bumped with them:
   trelix; the comment in that file says when it moves) and `appVersion:` (which tracks
   trelix). Only `appVersion` is a version stamp.
 - The `trelix>=` floor in the `dependencies` of the three satellites (`trelix-mcp`,
-  `trelix-langchain`, `trelix-llama-index`; `trelix>=3.5.0` since 3.5.0). Lockstep governs the
+  `trelix-langchain`, `trelix-llama-index`; `trelix>=3.5.0` since 3.5.0, except `trelix-mcp`,
+  which reads `trelix>=3.5.1` since 3.5.1). Lockstep governs the
   version *stamp* — identity — not the dependency *floor*, which is a compatibility contract
   that moves only when an import demands it. Each `pyproject.toml` records why it reads what
   it reads: through 3.4.3 both adapters read `trelix>=3.0.0`, "the lowest published core
@@ -504,7 +505,12 @@ Two things that are **not** version sites, and must not be bumped with them:
   `trelix.core.confinement` (`resolve_allowed_roots`, `is_within_allowed_roots`), and its HTTP
   transport imports `trelix.api.request_guard.is_health_probe` and `bounded_repr`, and
   passes `rejection_detail` and `cross_site_detail` to `RequestGuardMiddleware`; none of these
-  is in core 3.4.3 or earlier, so the same `trelix>=3.5.0` floor covers them. `trelix-mcp` also passes
+  is in core 3.4.3 or earlier, so the `trelix>=3.5.0` floor covered them. Since 3.5.1 `trelix-mcp` also
+  imports `trelix.core.confinement.symlinked_store_entry`, which core 3.5.0 does not have (a 3.5.0 core
+  under it fails with `ImportError` as the server starts), so the 3.5.1 release PR raised `trelix-mcp` alone
+  to `trelix>=3.5.1` and left both adapters at `trelix>=3.5.0`: nothing they import changed.
+  `SATELLITE_MIN_CORE` in `tests/unit/test_release_version_gate.py` records, per satellite, the release
+  its floor has to reach. `trelix-mcp` also passes
   `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
   `server.disable(names=, components=)`, so its `fastmcp` floor is `>=4.0.10`, the release
   those were run against (4.0.0 to 4.0.9 were not tested);

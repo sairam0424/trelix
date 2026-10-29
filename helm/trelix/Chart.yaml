@@ -18,7 +18,7 @@ type: application
 # one has pinned 0.1.0 from an index. verify-version does not check this line —
 # appVersion is the site that has to match the tag.
 version: 0.3.0
-appVersion: "3.5.0"
+appVersion: "3.5.1"
 # seccompProfile (podSecurityContext) is GA in 1.19. The "-0" lets pre-release suffixes such as
 # v1.29.1-gke.100 or v1.29.1-eks-a5ec690 satisfy the range.
 kubeVersion: ">=1.19.0-0"

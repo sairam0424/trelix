@@ -139,9 +139,12 @@ capabilities and CPU and memory requests. A sidecar or injector that authenticat
 token (a Vault Agent injector, for example) stops working until you set
 `serviceAccount.automount=true`. `helm upgrade --reuse-values` fails to render, as it did for
 `mcp` in 0.2.7, because the old release's values have no `networkPolicy`: use
-`--reset-then-reuse-values`. If you already set `resources.limits` below the new requests (under
-`250m` CPU or `512Mi` memory) and no `resources.requests`, the API server rejects the Deployment,
-since a request may not exceed its limit: set `resources.requests` at or below your limits.
+`--reset-then-reuse-values`, which needs Helm 3.14 or newer. With an older Helm, run
+`helm get values RELEASE -o yaml > values.yaml`, then
+`helm upgrade RELEASE helm/trelix --reset-values -f values.yaml`. If you already set
+`resources.limits` below the new requests (under `250m` CPU or `512Mi` memory) and no
+`resources.requests`, the API server rejects the Deployment, since a request may not exceed its
+limit: set `resources.requests` at or below your limits.
 
 **Going back.** In a values file, set `serviceAccount.automount: true`, `securityContext: null`,
 `resources: null` and `podSecurityContext.seccompProfile: null` (on the command line,
@@ -162,8 +165,13 @@ and has no default.
 ### Opt-in hardening
 
 These are off by default because each one can break an install that works today. `helm-lint.yml`
-renders each of them, but this chart has not been run against a live cluster with them on; try
-them in a staging namespace first.
+renders each of them. The read-only root and the non-root settings were also run once, together,
+on a single-node kind cluster with Helm 4.3.0 and the 3.5.0 slim image: the pod rolled out,
+`GET /health` and `POST /parse` answered 200, and `POST /index` answered 500 (the slim image has no
+local embedder) after it had written the SQLite index store on the PVC. NetworkPolicy enforcement,
+multi-node clusters (ReadWriteOnce Multi-Attach during the rolling update), OpenShift, a deploy
+with Helm 3, the `-local` image, `mcp.enabled` and an index run through to vectors were not tried:
+try the opt-ins in a staging namespace first.
 
 **Read-only root filesystem.** `--set securityContext.readOnlyRootFilesystem=true`. A read-only
 root alone starts the server and passes its probes, and then fails as soon as indexing needs a
@@ -228,7 +236,7 @@ See `values.yaml` for the full list with defaults and comments. Highlights:
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `3.5.0` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
+| `image.tag` | `3.5.1` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
 | `mcp.enabled` | `false` | Add the `trelix-mcp` container (MCP over Streamable HTTP) to the pod — see "trelix-mcp over Streamable HTTP" above. Needs a token and `persistence.enabled` |
 | `mcp.port` | `8766` | Container and Service port (`mcp`) of `trelix-mcp` |
 | `mcp.allowedHosts` | `[]` | `Host` names `trelix-mcp` accepts besides the release's Service names (an Ingress host, the `.svc.cluster.local` form) |
