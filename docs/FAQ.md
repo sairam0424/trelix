@@ -1,6 +1,6 @@
-# trelix v3.5.0 — Frequently Asked Questions
+# trelix v3.5.1 — Frequently Asked Questions
 
-> Last updated: 2026-10-27 — covers trelix 3.5.0, trelix-mcp 3.5.0, trelix-langchain 3.5.0, and trelix-llama-index 3.5.0.
+> Last updated: 2026-10-29 — covers trelix 3.5.1, trelix-mcp 3.5.1, trelix-langchain 3.5.1, and trelix-llama-index 3.5.1.
 
 ---
 
@@ -237,7 +237,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol, 
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v3.5.0 exposes **15 tools**:
+trelix-mcp v3.5.1 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -538,13 +538,13 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 So pin all four to the same version in your `requirements.txt`:
 
 ```
-trelix==3.5.0
-trelix-mcp==3.5.0
-trelix-langchain==3.5.0
-trelix-llama-index==3.5.0
+trelix==3.5.1
+trelix-mcp==3.5.1
+trelix-langchain==3.5.1
+trelix-llama-index==3.5.1
 ```
 
-The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. `trelix-mcp`, `trelix-langchain` and `trelix-llama-index` 3.5.0 each declare `trelix>=3.5.0`, because each imports core names that first shipped in 3.5.0 (`trelix.core.index_check`, and for `trelix-mcp` also `trelix.core.confinement` and `trelix.api.request_guard.is_health_probe`). Against an older core they fail: `trelix-mcp` at start-up, the two adapters at their first query. A floor is an API compatibility contract rather than a statement about release cadence, so it moves only when an import demands it: before 3.5.0 the adapters declared `trelix>=3.0.0` (the lowest published core verified to expose every name `retriever.py` reads) and `trelix-mcp` declared `trelix>=3.1.5`. The four-way 3.5.0 pin above is the combination CI installs and tests; for the three satellites it is also the oldest core that works.
+The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. `trelix-langchain` and `trelix-llama-index` 3.5.1 each declare `trelix>=3.5.0`, because each imports a core name that first shipped in 3.5.0 (`trelix.core.index_check`). `trelix-mcp` 3.5.1 declares `trelix>=3.5.1`: it imports `trelix.core.confinement.symlinked_store_entry`, which first shipped in 3.5.1, and its other core imports (`trelix.core.index_check`, the rest of `trelix.core.confinement` and `trelix.api.request_guard.is_health_probe`) first shipped in 3.5.0. Against an older core they fail: `trelix-mcp` at start-up, the two adapters at their first query. A floor is an API compatibility contract rather than a statement about release cadence, so it moves only when an import demands it: before 3.5.0 the adapters declared `trelix>=3.0.0` (the lowest published core verified to expose every name `retriever.py` reads) and `trelix-mcp` declared `trelix>=3.1.5`, and the adapters stay at `trelix>=3.5.0` in 3.5.1 because none of their imports changed. The four-way 3.5.1 pin above is the combination CI installs and tests; for `trelix-mcp` it is also the oldest core that works, while the two adapters work from core 3.5.0.
 
 ---
 

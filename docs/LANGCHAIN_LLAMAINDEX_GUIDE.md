@@ -19,7 +19,8 @@ the core version stamp and are published only by a core `v*` tag —
 `.github/workflows/release.yml` fires on `push: tags: v*`, its `build-distributions` job
 builds all four distributions and its `publish` job uploads them in the same run, so the
 newest adapter is always the one built alongside the newest core. Each declares
-`trelix>=3.5.0` (`packages/trelix-*/pyproject.toml`), the first core that has every name the
+`trelix>=3.5.0` (`packages/trelix-langchain/pyproject.toml` and
+`packages/trelix-llama-index/pyproject.toml`), the first core that has every name the
 adapters use (`trelix.core.index_check`, imported inside the retriever), so pip resolves a
 working pair without a pin. Through 3.4.3 the floor was `trelix>=3.0.0`, the lowest published
 core verified to expose every name then used. This
