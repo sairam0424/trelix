@@ -72,6 +72,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `replace(/\/+$/, "")` that drops trailing slashes, on a base URL with a very long run of
   slashes that does not end it (before a query string, say); it is now one backwards scan with
   the same result for every URL.
+- **The regexes CodeQL reports as `py/polynomial-redos` in the Razor, CSHTML, `.csproj`, CSS, HTML
+  and Markdown extractors now run in linear time.** A crafted file within the 500,000 byte size
+  cap that held a long run of whitespace, `<` or `[` could keep an indexing worker busy for
+  minutes through them: each retried from every character of the run (four times the time for
+  every doubling of the run) and the indexer has no per-file timeout. They now read each run
+  once, and the parent-heading chain of a Markdown file is built in one pass instead of a walk
+  back through every earlier heading.
+  Output is unchanged for well-formed files. On invalid input: an `@inject` directive split
+  across lines is no longer a directive; an empty `@media` prelude is named `@media ` (it was
+  `@media query` or text from the rule inside); a `url(` whose unquoted path contains `(` is no
+  longer an import; and in a `.csproj` an `xmlns:` name that contains whitespace is no longer
+  stripped, and only one whitespace character goes with an `xmlns` attribute, so an invalid file
+  can fall back to the parse-error symbol, or parse, differently than before. This fixes the
+  reported regexes and adds no time limit: the size cap, any per-file timeout and the size of
+  `POST /parse` content are unchanged, and other slow inputs in these extractors may remain.
 
 ### Added
 - **Opt-in hardening in the Helm chart (chart 0.3.0).** Each opt-in below is off by default,
