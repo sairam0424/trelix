@@ -249,8 +249,9 @@ class TestVisualizeOutputMustBeHtml:
     def test_a_nul_byte_in_output_is_400_not_500(
         self, viz: tuple[Path, TestClient], shape: str
     ) -> None:
-        """A relative ``output`` skips the guard's per-field check (the route joins and
-        re-checks it), so the route has to answer a NUL byte itself."""
+        """A relative ``output`` skips the guard's per-field check (the route resolves it
+        against the working directory and re-checks it), so the route has to answer a NUL byte
+        itself."""
         repo, client = viz
         output = "a\x00b.html" if shape == "relative" else f"{repo}/.trelix/a\x00b.html"
 
