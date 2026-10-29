@@ -175,6 +175,53 @@ Same indentation rule as trelix.storeEnv.
 {{- end }}
 
 {{/*
+"true" when securityContext.readOnlyRootFilesystem is on, else the empty string. The chart reads
+the flag out of the securityContext map itself, so one key both sets the field on every container
+and switches on the writable scratch volumes below. The `kindIs` guard is for a securityContext
+that is not a map: `null` (the way to remove the defaults) leaves it nil, and `--set
+securityContext={}` makes it a list, and reading a key off either would fail the render.
+*/}}
+{{- define "trelix.readOnlyRoot" -}}
+{{- $context := .Values.securityContext -}}
+{{- if kindIs "map" $context -}}
+{{- if $context.readOnlyRootFilesystem -}}true{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Writable scratch space for a read-only root filesystem, and nothing when that is off (a default
+render is unchanged). What the process writes outside the PVC: /tmp (Python's tempfile, SQLite
+temp files) and the cache directory (the tree-sitter grammars downloaded on first use, the
+Hugging Face cache of the "-local" image, the embedding cache when it is switched on), which
+XDG_CACHE_HOME points at /cache. Both are emptyDirs on the node, so they are empty after a pod
+restart. Same indentation rule as trelix.storeEnv: container level, included WITHOUT nindent.
+*/}}
+{{- define "trelix.scratchEnv" }}
+            {{- if include "trelix.readOnlyRoot" . }}
+            - name: XDG_CACHE_HOME
+              value: /cache
+            {{- end }}
+{{- end }}
+
+{{- define "trelix.scratchMounts" }}
+            {{- if include "trelix.readOnlyRoot" . }}
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /cache
+            {{- end }}
+{{- end }}
+
+{{- define "trelix.scratchVolumes" }}
+        {{- if include "trelix.readOnlyRoot" . }}
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+        {{- end }}
+{{- end }}
+
+{{/*
 Host allow-list of the trelix-mcp container (TRELIX_MCP_ALLOWED_HOSTS): the release's Service
 names, which is what an in-cluster client puts in `Host`, plus mcp.allowedHosts. The `.svc`
 form is listed; the `.svc.cluster.local` one is not (add it through mcp.allowedHosts). The
