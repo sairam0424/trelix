@@ -6,6 +6,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+- **The TypeScript SDK's README no longer tells you to `npm install` a package that is not on
+  npm.** `@trelix/sdk` is not published to npm, so `npm install @trelix/sdk` fails with a 404.
+  The README now says so at the top and shows how to use the SDK from this repository: build
+  `packages/trelix-typescript` there (`npm ci`, then `npm run build`) and `npm install` that
+  folder in your own project. The 2.9.0 notes in the root README and in `docs/ROADMAP.md` now
+  say it is not on npm either.
+
 ## [3.5.1] — 2026-10-29
 
 A patch release. The Python changes below (the REST API and `trelix-mcp` confinement, the

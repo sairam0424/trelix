@@ -1,5 +1,5 @@
 # OSSF Scorecard — a supply-chain health signal for a public repo publishing 4 PyPI
-# packages, 2 GHCR images, and 2 npm packages. Free, standard, and non-overlapping with
+# packages and 2 GHCR images, but no npm package. Free, standard, and non-overlapping with
 # anything else in this repo: it does not scan this repo's own code (CodeQL/semgrep do
 # that) or its dependency graph for known CVEs (Dependabot/pip-audit do that) — it scores
 # repository and supply-chain PRACTICES (branch protection, SAST presence, pinned
