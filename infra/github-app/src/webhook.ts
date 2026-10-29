@@ -18,8 +18,9 @@ const HANDLED_ACTIONS = new Set(["opened", "synchronize", "reopened"]);
 // (memory and one HMAC, never a parse). GitHub delivers payloads of up to
 // 25MB, but the only event this App subscribes to, pull_request, is mostly
 // its PR body (GitHub caps that at 65,536 characters), under 1 MiB.
-// A larger body is answered 413 while it is read.
-const MAX_WEBHOOK_PAYLOAD_BYTES = 5 * 1024 * 1024;
+// A larger body is answered 413 while it is read. server-limits.ts sizes its
+// connection cap from this number.
+export const MAX_WEBHOOK_PAYLOAD_BYTES = 5 * 1024 * 1024;
 
 // express.json() drops one leading byte order mark before it parses, although the
 // signature is over the bytes as sent, mark included. Dropping it here keeps a signed
@@ -131,7 +132,14 @@ export function createWebhookRouter(config: AppConfig, options: WebhookRouterOpt
 
   // Raw bytes only: nothing is parsed until verifyThenParse has checked the signature.
   // A body of any other content type is not read at all and reaches it with no body (401).
-  router.use(express.raw({ type: "application/json", limit: MAX_WEBHOOK_PAYLOAD_BYTES }));
+  // `inflate: false` answers a body with a Content-Encoding other than identity 415 before any
+  // of it is read. By default the limit counts the inflated bytes, so a few KB of gzip, deflate,
+  // brotli or zstd could expand to the whole cap, and one HMAC, per unsigned request. GitHub's
+  // documented delivery headers (docs.github.com, "Webhook events and payloads", "Delivery
+  // headers") have no Content-Encoding, and its example delivery states a Content-Length.
+  router.use(
+    express.raw({ type: "application/json", limit: MAX_WEBHOOK_PAYLOAD_BYTES, inflate: false }),
+  );
   router.use(verifyThenParse(config));
 
   router.post("/", (req: Request, res: Response) => {

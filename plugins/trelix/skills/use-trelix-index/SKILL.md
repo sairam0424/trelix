@@ -27,7 +27,7 @@ from an index it keeps in `<repo_path>/.trelix/index.db`. Every trelix tool take
    `mcp__plugin_trelix_trelix__index_codebase(repo_path)`: it embeds every symbol in the
    repository, which takes minutes on a large tree and costs money with an API embedder.
    Until the index exists, use grep.
-3. On this release of the server (trelix-mcp 3.5.0) a search on a repository WITHOUT an
+3. On this release of the server (trelix-mcp 3.5.1) a search on a repository WITHOUT an
    index fails with a tool error, `No index found at <repo>/.trelix/index.db. Run trelix
    index <repo> first.`, and writes nothing. Read it as "not indexed", never as "not found",
    and index with `index_codebase` (step 2). Version 3.4.3 answered empty (or, with no

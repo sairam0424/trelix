@@ -6,6 +6,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Security
+- **The GitHub App's webhook route refuses encoded bodies and cuts slow or stalled uploads.**
+  Before the signature is checked, a sender who does not know the webhook secret could make the
+  App hold far more than the 5 MiB read limit suggests: a body with a `Content-Encoding` (gzip,
+  deflate, brotli or zstd) was inflated as it was read and the limit counted the inflated bytes,
+  so 5 KB on the wire cost as much as 5 MiB (64 such requests, 16 at a time, grew the process by
+  about 180 to 200 MiB on Node 26.9). The route now answers `415` without reading the body;
+  GitHub's documented delivery headers have no `Content-Encoding`, so no genuine delivery is
+  refused. The server also answers `408` and closes a request whose headers take more than 5
+  seconds, or whose whole body takes more than 15 seconds, to arrive (GitHub gives up after 10;
+  Node's defaults allowed 60 and 300), and once 40 connections are open it closes every further
+  connection without an answer (40 x 5 MiB = 200 MiB of bodies, under 40 percent of 512 MiB).
+  **That 40 is one pool shared by every sender, not a limit per client.** A sender that holds all
+  40 with slow uploads makes the App refuse every other connection, GitHub's deliveries and
+  `/health` included, and can keep doing so by reopening connections as they are cut. The cap
+  trades a possible out-of-memory kill, which loses the in-memory review queue, for a possible
+  refusal of service; a refused delivery is a failed delivery like any other, so the redelivery
+  backstop sends it again. The App still does not rate-limit requests, so the CodeQL
+  `js/missing-rate-limiting` alert on this route (#182) will probably stay open. This is the
+  GitHub App in `infra/github-app`, which is in neither the wheels nor the images: it reaches the
+  hosted App with the next promotion to `main`.
+
 ### Fixed
 - **The TypeScript SDK's README no longer tells you to `npm install` a package that is not on
   npm.** `@trelix/sdk` is not published to npm, so `npm install @trelix/sdk` fails with a 404.
@@ -13,6 +35,51 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `packages/trelix-typescript` there (`npm ci`, then `npm run build`) and `npm install` that
   folder in your own project. The 2.9.0 notes in the root README and in `docs/ROADMAP.md` now
   say it is not on npm either.
+- **`trelix serve` answers `400`, not `500`, when a path it was given cannot be used.**
+  `POST /parse` ended in `500 Internal Server Error` (and a traceback in the server log) for a
+  relative `file_path` that is a symlink loop (Python 3.12), for a name longer than the
+  filesystem allows or a directory the server may not enter (Python 3.12 and 3.13), and for a
+  file the server may not read (any version). It also ended in `500`, on any version, when the
+  "file not found" answer had to print a name that is not valid UTF-8; the name is now printed as
+  an escape such as `\udcff`, and a file that does exist under such a name is parsed as before.
+  `GET /graph/visualize?output=` did the same for a name it could not write (a symlink loop, a
+  name that is too long, a parent that is a file, or a directory of that name). These now answer
+  a `400`, and the cause is in the server log. A failure that is not about the name (a failing
+  device, a stale network handle, a full disk) still ends in `500`, and so does a failure of the
+  default `.trelix/graph.html`, which no caller named.
+
+### Changed
+- **The Claude Code plugin now runs `trelix-mcp` 3.5.1, still started with `--tools core`, and
+  its version is 3.5.1.** Update with `claude plugin marketplace update trelix` and
+  `claude plugin update trelix@trelix`. Claude Code reads the plugin from the repository's default
+  branch, so the update appears once this change reaches it. The first start after updating
+  fetches `trelix-mcp` 3.5.1 and `trelix` 3.5.1 (the new server needs the core at 3.5.1 or newer);
+  the two packages themselves are under 1 MB, and from an empty uv cache the whole first start is
+  about 280 MiB. Run `uvx --from trelix-mcp==3.5.1 trelix-mcp --version` once to do it before your
+  next session.
+  - *For an absolute `repo_path` the read tools answer what they answered on 3.5.0; a `~` path and
+    indexing can differ.* The same seven tools are listed, the server sends the same short
+    instructions, and `search_code`, `get_symbol` and `blast_radius` gave the same answers on an
+    indexed repository, on one with no index (a `No index found` tool error, nothing created), on
+    one with an empty `.trelix/index.db` and on three whose index store is a symlink.
+    `index_codebase`, `build_knowledge_graph`, `graph_search_mcp` and `ask_agent` were not
+    compared. The 3.5.1 fixes for slow parsing (see its Security section) name symbols differently
+    in malformed or unusual Razor, CSHTML, CSS and `.csproj` files, so `index_codebase` can store
+    other symbols for a repository that has such files.
+  - *A `repo_path` that starts with `~` differs in one case.* The server first checks for a folder
+    with that literal name under its working directory and answers `repo_path does not exist`
+    when there is none, on 3.5.0 and on 3.5.1 alike. Where such a folder exists, 3.5.0 read it and
+    3.5.1 reads your home directory instead.
+  - *The symlink refusal of 3.5.1 does not apply to the plugin.* A repository whose `.trelix`,
+    `index.db` or another entry directly inside `.trelix` is a symlink is refused only by a
+    server started with `--root` or with `TRELIX_ALLOWED_REPO_ROOTS` in its environment. The
+    plugin starts the server with neither flag, so it does not refuse such a store, unless you
+    set that variable where the server starts.
+  - *Local embeddings, registered by hand.* If you registered the server yourself with the
+    README's `--with "trelix[local]==X.Y.Z"` command, change both pins together: `trelix-mcp` 3.5.1
+    requires `trelix` 3.5.1 or newer, so `trelix-mcp==3.5.1` with `trelix[local]==3.5.0` cannot
+    be installed. The README command now reads `trelix[local]==3.5.1`; a server you registered
+    earlier keeps the pins you gave it.
 
 ## [3.5.1] — 2026-10-29
 

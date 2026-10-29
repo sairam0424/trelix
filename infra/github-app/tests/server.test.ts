@@ -1,3 +1,4 @@
+import http from "node:http";
 import express from "express";
 import request from "supertest";
 import { sign } from "@octokit/webhooks-methods";
@@ -29,9 +30,13 @@ const PEM_CANARY = "canary-pem-body";
 describe("server entry point", () => {
     let app: express.Express;
     let listen: ReturnType<typeof spyOnListen>;
+    // What `app.listen` returns in the entry point; the limits must end up on it.
+    const httpServer = http.createServer();
 
     function spyOnListen() {
-        return vi.spyOn(express.application, "listen").mockReturnThis();
+        return vi
+            .spyOn(express.application, "listen")
+            .mockReturnValue(httpServer);
     }
 
     beforeAll(async () => {
@@ -67,6 +72,16 @@ describe("server entry point", () => {
     it("listens once, on the configured port", () => {
         expect(listen).toHaveBeenCalledTimes(1);
         expect(listen.mock.calls[0]?.[0]).toBe(4321);
+    });
+
+    it("applies the server limits to the server it listens with", () => {
+        expect(httpServer.headersTimeout).toBe(5_000);
+        expect(httpServer.requestTimeout).toBe(15_000);
+        expect(httpServer.maxConnections).toBe(40);
+        expect(
+            (httpServer as unknown as Record<string, unknown>)
+                .connectionsCheckingInterval,
+        ).toBe(1_000);
     });
 
     it("announces the port once it is listening", () => {
