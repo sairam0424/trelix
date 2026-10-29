@@ -209,6 +209,30 @@ GitHub -- pull_request webhook -->  this service (Express)
   delivery over the cap is a failed delivery like any other: the redelivery
   backstop above sends it again on each run while it is among the 100 newest,
   and it is refused again.
+- ✅ **Encoded bodies, slow uploads and open connections.** The webhook route
+  answers a request that declares a `Content-Encoding` other than `identity`
+  with `415` (`{"error":"unsupported media type"}`) before it reads any of the
+  body. Without that, the 5 MiB limit above would count the inflated bytes, and
+  a few KB of gzip, deflate, brotli or zstd would cost as much as 5 MiB.
+  GitHub's documented delivery headers have no `Content-Encoding` (see "Webhook
+  events and payloads", "Delivery headers" in its documentation), so no genuine
+  delivery is refused. `src/server-limits.ts` also limits the HTTP server
+  itself: a request whose headers take more than 5 seconds, or whose whole body
+  takes more than 15 seconds, to arrive is answered `408` and closed (GitHub
+  gives up on a delivery after 10 seconds), and once 40 connections are open
+  the server closes every further connection without an answer. The 40 is a
+  memory budget: the bodies alone are at most 40 x 5 MiB = 200 MiB, under 40
+  percent of the 512 MB this service is sized for (the Dockerfile's budget, and
+  the Railway Free plan's 0.5 GB). **The 40 is one pool shared
+  by every sender, not a limit per client.** A sender that holds all 40 with
+  slow uploads makes the App refuse every other connection, GitHub's deliveries
+  and `/health` included, and can keep doing so by opening a new connection each
+  time the 15-second timeout cuts one. This trades a possible out-of-memory
+  kill, which loses the in-memory review queue and dedupe memory, for a
+  possible refusal of service. A refused, cut or closed delivery is a failed
+  delivery like any other, so the redelivery backstop above sends it again.
+  These limits bound memory and time: they identify no one and they are not a
+  rate limiter.
 - ✅ **Subprocess timeout.** `runReviewCli` passes a 5-minute `timeout` to
   the `trelix review` shell-out; Node kills the child process (`SIGTERM`)
   and the call rejects if it hangs past that — a slow/stuck review no
@@ -682,7 +706,10 @@ policy, reviews on.
 - `src/server.ts` — the entry point: loads the config and the abuse controls
   (it does not start under an unknown `TRELIX_APP_INSTALL_POLICY`), builds the
   review queue and the app with `createApp`, sweeps stale workspaces, listens on
-  the port and installs the shutdown handlers.
+  the port, applies the server limits and installs the shutdown handlers.
+- `src/server-limits.ts` — the limits `src/server.ts` puts on the HTTP server:
+  the header and request timeouts, how often Node checks them, and the cap on
+  open connections (see "Encoded bodies, slow uploads and open connections").
 - `src/app.ts` — `createApp(config, deps)`: the Express app without a port
   (`/health`, `/webhooks/github`, then the error handler as the last
   middleware), so tests drive it in process. `deps` replaces the webhook
@@ -691,7 +718,8 @@ policy, reviews on.
 - `src/error-handler.ts` — the final error middleware (`createErrorHandler`):
   a fixed response body for any error, one redacted log line; see
   "`NODE_ENV` and error responses" above.
-- `src/webhook.ts` — reads the raw body, verifies `X-Hub-Signature-256` over
+- `src/webhook.ts` — reads the raw body (refusing one with a
+  `Content-Encoding`), verifies `X-Hub-Signature-256` over
   it, parses it only then, and routes `pull_request`
   `opened`/`synchronize`/`reopened` deliveries (mirrors the Actions
   workflow's trigger) to the intake and sends its answer.

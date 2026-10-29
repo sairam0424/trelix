@@ -6,6 +6,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Security
+- **The GitHub App's webhook route refuses encoded bodies and cuts slow or stalled uploads.**
+  Before the signature is checked, a sender who does not know the webhook secret could make the
+  App hold far more than the 5 MiB read limit suggests: a body with a `Content-Encoding` (gzip,
+  deflate, brotli or zstd) was inflated as it was read and the limit counted the inflated bytes,
+  so 5 KB on the wire cost as much as 5 MiB (64 such requests, 16 at a time, grew the process by
+  about 180 to 200 MiB on Node 26.9). The route now answers `415` without reading the body;
+  GitHub's documented delivery headers have no `Content-Encoding`, so no genuine delivery is
+  refused. The server also answers `408` and closes a request whose headers take more than 5
+  seconds, or whose whole body takes more than 15 seconds, to arrive (GitHub gives up after 10;
+  Node's defaults allowed 60 and 300), and once 40 connections are open it closes every further
+  connection without an answer (40 x 5 MiB = 200 MiB of bodies, under 40 percent of 512 MiB).
+  **That 40 is one pool shared by every sender, not a limit per client.** A sender that holds all
+  40 with slow uploads makes the App refuse every other connection, GitHub's deliveries and
+  `/health` included, and can keep doing so by reopening connections as they are cut. The cap
+  trades a possible out-of-memory kill, which loses the in-memory review queue, for a possible
+  refusal of service; a refused delivery is a failed delivery like any other, so the redelivery
+  backstop sends it again. The App still does not rate-limit requests, so the CodeQL
+  `js/missing-rate-limiting` alert on this route (#182) will probably stay open. This is the
+  GitHub App in `infra/github-app`, which is in neither the wheels nor the images: it reaches the
+  hosted App with the next promotion to `main`.
+
 ## [3.5.1] — 2026-10-29
 
 A patch release. The Python changes below (the REST API and `trelix-mcp` confinement, the
