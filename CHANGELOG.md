@@ -6,6 +6,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Changed
+- **The Claude Code plugin now runs `trelix-mcp` 3.5.1, still started with `--tools core`, and
+  its version is 3.5.1.** Update with `claude plugin marketplace update trelix` and
+  `claude plugin update trelix@trelix`. Claude Code reads the plugin from the repository's default
+  branch, so the update appears once this change reaches it. The first start after updating
+  fetches `trelix-mcp` 3.5.1 and `trelix` 3.5.1 (the new server needs the core at 3.5.1 or newer);
+  the two packages themselves are under 1 MB, and from an empty uv cache the whole first start is
+  about 280 MiB. Run `uvx --from trelix-mcp==3.5.1 trelix-mcp --version` once to do it before your
+  next session.
+  - *For an absolute `repo_path` the read tools answer what they answered on 3.5.0; a `~` path and
+    indexing can differ.* The same seven tools are listed, the server sends the same short
+    instructions, and `search_code`, `get_symbol` and `blast_radius` gave the same answers on an
+    indexed repository, on one with no index (a `No index found` tool error, nothing created), on
+    one with an empty `.trelix/index.db` and on three whose index store is a symlink.
+    `index_codebase`, `build_knowledge_graph`, `graph_search_mcp` and `ask_agent` were not
+    compared. The 3.5.1 fixes for slow parsing (see its Security section) name symbols differently
+    in malformed or unusual Razor, CSHTML, CSS and `.csproj` files, so `index_codebase` can store
+    other symbols for a repository that has such files.
+  - *A `repo_path` that starts with `~` differs in one case.* The server first checks for a folder
+    with that literal name under its working directory and answers `repo_path does not exist`
+    when there is none, on 3.5.0 and on 3.5.1 alike. Where such a folder exists, 3.5.0 read it and
+    3.5.1 reads your home directory instead.
+  - *The symlink refusal of 3.5.1 does not apply to the plugin.* A repository whose `.trelix`,
+    `index.db` or another entry directly inside `.trelix` is a symlink is refused only by a
+    server started with `--root` or with `TRELIX_ALLOWED_REPO_ROOTS` in its environment. The
+    plugin starts the server with neither flag, so it does not refuse such a store, unless you
+    set that variable where the server starts.
+  - *Local embeddings, registered by hand.* If you registered the server yourself with the
+    README's `--with "trelix[local]==X.Y.Z"` command, change both pins together: `trelix-mcp` 3.5.1
+    requires `trelix` 3.5.1 or newer, so `trelix-mcp==3.5.1` with `trelix[local]==3.5.0` cannot
+    be installed. The README command now reads `trelix[local]==3.5.1`; a server you registered
+    earlier keeps the pins you gave it.
+
 ## [3.5.1] — 2026-10-29
 
 A patch release. The Python changes below (the REST API and `trelix-mcp` confinement, the
