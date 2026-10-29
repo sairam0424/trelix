@@ -1,14 +1,29 @@
 # @trelix/sdk
 
+> **Not on npm yet.** `@trelix/sdk` is not published to the npm registry, so `npm install @trelix/sdk` fails with a 404. Build it from this repository instead (see [Install](#install)). This README will say so until that changes.
+
 TypeScript client for the [trelix](https://github.com/sairam0424/trelix) REST API — hybrid code search, LLM synthesis, indexing, and knowledge-graph queries.
 
 This is a thin hand-written HTTP client, not a fully generated one: types are generated from the API's OpenAPI schema (`src/generated/schema.ts`), but request/response glue is hand-written in `src/client.ts`/`src/sse.ts`. Full client codegen has a documented failure mode of dropping operations on non-trivial specs — hand-gluing a typed client on top of generated types avoids that risk.
 
 ## Install
 
+The package is not on npm, so build it from a checkout of this repository (this needs git, npm, and Node 18 or newer, as `engines` in `package.json` declares; on Node older than 20.19, `npm ci` may print engine warnings for the test tools it installs) and install it from that folder:
+
 ```bash
-npm install @trelix/sdk
+git clone https://github.com/sairam0424/trelix.git
+cd trelix/packages/trelix-typescript
+npm ci
+npm run build
 ```
+
+Then, in your own project:
+
+```bash
+npm install /path/to/trelix/packages/trelix-typescript
+```
+
+npm links that folder into your project as `@trelix/sdk`, so the imports below work as written. The package loads its compiled `dist/` folder, which `npm run build` creates; without it, `import` fails with `ERR_MODULE_NOT_FOUND`. Run `npm run build` again in the checkout after you update it. Load it with `import` (from a CommonJS project, `await import("@trelix/sdk")`), not `require`: the package exports an `import` entry only, so `require("@trelix/sdk")` fails.
 
 Requires a running `trelix serve` instance (`pip install 'trelix[serve]' && trelix serve /path/to/repo --port 8765`).
 

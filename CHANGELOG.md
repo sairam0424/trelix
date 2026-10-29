@@ -29,6 +29,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   hosted App with the next promotion to `main`.
 
 ### Fixed
+- **The TypeScript SDK's README no longer tells you to `npm install` a package that is not on
+  npm.** `@trelix/sdk` is not published to npm, so `npm install @trelix/sdk` fails with a 404.
+  The README now says so at the top and shows how to use the SDK from this repository: build
+  `packages/trelix-typescript` there (`npm ci`, then `npm run build`) and `npm install` that
+  folder in your own project. The 2.9.0 notes in the root README and in `docs/ROADMAP.md` now
+  say it is not on npm either.
 - **`trelix serve` answers `400`, not `500`, when a path it was given cannot be used.**
   `POST /parse` ended in `500 Internal Server Error` (and a traceback in the server log) for a
   relative `file_path` that is a symlink loop (Python 3.12), for a name longer than the

@@ -186,7 +186,7 @@ Step 3 above, for real — `trelix query` against trelix's own `retrieval/` + `g
 
 **v2.10.0 — REST API Auth & Cross-Source Graph:** REST API-key auth (`TRELIX_API_AUTH_TOKEN`) + HTTP-layer OpenTelemetry spans, a new `/parse` endpoint, leg-level path filtering, cross-source `generic_edges` + a git-log ticket linker (`trelix link-tickets`), and the original Jira/TestRail artifact connectors.
 
-**v2.9.0 — Python 3.13, Tracing & TypeScript SDK:** Python 3.13 support, OpenTelemetry tracing for the retrieval pipeline, typed REST API response models with cursor pagination, an official `@trelix/sdk` TypeScript client, and a Docker image + Helm chart.
+**v2.9.0 — Python 3.13, Tracing & TypeScript SDK:** Python 3.13 support, OpenTelemetry tracing for the retrieval pipeline, typed REST API response models with cursor pagination, an official `@trelix/sdk` TypeScript client (source in `packages/trelix-typescript`; not published to npm), and a Docker image + Helm chart.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
