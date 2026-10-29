@@ -23,7 +23,10 @@ _WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 _SECTION_GATE = "CHANGELOG has a section for this version"
 _DATE_GATE = "CHANGELOG section is dated to the tag's UTC day"
 _REF = "v9.9.9"
-# Dated far from every tag below, so a gate that read the commit date instead would fail.
+# Dated far from every tag below, so the cases fail if the gate read a commit date. They model
+# an annotated tag, whose date is the tagger's. On the runner, checkout later overwrites the ref
+# with the tagged commit and the gate reads its committer date (see release.yml), a path these
+# cases do not exercise: they test the day arithmetic and the refusals, not that overwrite.
 _COMMIT_INSTANT = "2000-01-01T00:00:00+0000"
 
 
@@ -191,7 +194,7 @@ def test_the_date_gate_follows_the_tags_utc_day(
 def test_the_date_gate_refuses_what_it_cannot_check(
     tmp_path: Path, heading: str, tag_instant: str | None, fragment: str
 ) -> None:
-    """No date, or no tag object to compare it with: the gate checked nothing, so it fails."""
+    """No date, or no tag ref to compare it with: the gate checked nothing, so it fails."""
     code, output = _run_gate(_DATE_GATE, _scratch_repo(tmp_path, heading, tag_instant))
 
     assert code == 1, output

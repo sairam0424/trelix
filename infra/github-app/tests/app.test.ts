@@ -212,12 +212,10 @@ describe("createApp body errors", () => {
         expect(lines[0]).not.toContain("canary-body");
     });
 
-    it("answers a body over the 25MB cap with a fixed 413", async () => {
+    it("answers a body over the 5 MiB cap with a fixed 413", async () => {
         const { app, lines, runReview } = buildApp();
-        const oversized = JSON.stringify({
-            ...pullRequestPayload("opened"),
-            padding: "x".repeat(26 * 1024 * 1024),
-        });
+        // 5 MiB is 5,242,880 bytes; one more is over the cap. ASCII, so characters are bytes.
+        const oversized = "x".repeat(5_242_881);
 
         const res = await request(app)
             .post("/webhooks/github")
@@ -230,6 +228,34 @@ describe("createApp body errors", () => {
         expect(runReview).not.toHaveBeenCalled();
         expect(lines).toHaveLength(1);
     }, 30_000);
+
+    // The body is not parsed before its signature has verified, so a sender without the
+    // secret gets the signature's 401 for malformed JSON, not the parser's 400.
+    it("answers malformed JSON with no signature with the fixed 401, and logs nothing", async () => {
+        const { app, lines, runReview } = buildApp();
+
+        const res = await request(app)
+            .post("/webhooks/github")
+            .set("X-GitHub-Event", "pull_request")
+            .set("Content-Type", "application/json")
+            .send('{"canary-body": ');
+
+        expect(res.status).toBe(401);
+        expect(res.text).toBe('{"error":"missing signature or body"}');
+        expect(runReview).not.toHaveBeenCalled();
+        expect(lines).toHaveLength(0);
+    });
+
+    it("answers malformed JSON with a signature made over other bytes with the fixed 401, and logs nothing", async () => {
+        const { app, lines, runReview } = buildApp();
+
+        const res = await postSigned(app, '{"canary-body": ', "{}");
+
+        expect(res.status).toBe(401);
+        expect(res.text).toBe('{"error":"signature verification failed"}');
+        expect(runReview).not.toHaveBeenCalled();
+        expect(lines).toHaveLength(0);
+    });
 
     // The injected logger is a public dependency. If it throws, Express's own
     // handler would take over and, with NODE_ENV unset, answer with the stack.
@@ -282,13 +308,14 @@ describe("createApp body errors", () => {
         }
     });
 
-    it("answers an unsupported charset with a fixed 415", async () => {
+    it("answers an unsupported content encoding with a fixed 415", async () => {
         const { app } = buildApp();
 
         const res = await request(app)
             .post("/webhooks/github")
             .set("X-GitHub-Event", "pull_request")
-            .set("Content-Type", "application/json; charset=canary-charset")
+            .set("Content-Type", "application/json")
+            .set("Content-Encoding", "canary-encoding")
             .send("{}");
 
         expect(res.status).toBe(415);

@@ -30,9 +30,9 @@ function logToConsole(line: string): void {
  * calls `createApp`, sweeps stale workspaces, listens and installs the
  * shutdown handlers.
  *
- * Order matters: the body parser lives inside the webhook router (it keeps
- * the raw bytes the signature is computed over), and the error handler must
- * be the last thing registered to see what the routes throw.
+ * Order matters: the body is read inside the webhook router (it takes the raw
+ * bytes, checks the signature over them and only then parses them), and the
+ * error handler must be the last thing registered to see what the routes throw.
  */
 export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     const { logError = logToConsole, ...webhook } = deps;
