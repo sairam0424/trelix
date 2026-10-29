@@ -1,7 +1,7 @@
 """The plugin skill names only tools the pinned server has, and grants only the read-only ones.
 
 WHY. `plugins/trelix/skills/use-trelix-index/SKILL.md` is what makes Claude reach for trelix
-instead of grep: the published `trelix-mcp==3.5.0` the plugin pins sends server instructions, but
+instead of grep: the published `trelix-mcp==3.5.1` the plugin pins sends server instructions, but
 they say nothing about falling back to grep, so the skill carries that rule. The plugin starts
 the server with `--tools core`, so a skill that named a tool the server does not register
 (`repo_map`, `exact_search`) or one of the eight tools `--tools core` hides would read as

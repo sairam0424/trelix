@@ -251,7 +251,13 @@ commands, both listed with their purpose in `plugins/trelix/README.md`:
   published release and with the `core` tool profile: seven of the fifteen tools are
   listed, and a call to one of the other eight (the federation, agent-session and
   subscription tools) is answered as an unknown tool. Everything above about the
-  server applies, unchanged, to the seven tools it lists.
+  server applies, unchanged, to the seven tools it lists, except what the roots
+  confine: the plugin starts the server with neither `--root` nor
+  `TRELIX_ALLOWED_REPO_ROOTS`, so no `repo_path` is checked against roots and a
+  symlinked `.trelix` (or `index.db`, or an entry directly inside `.trelix`) is not
+  refused: the tools read the index, and write beside it, wherever the link points.
+  `TRELIX_ALLOWED_REPO_ROOTS` in the environment the server starts with turns both
+  on; a value only in `~/.config/trelix/env` is not seen.
 - `uv run --no-project --script "${CLAUDE_PLUGIN_ROOT}/scripts/session_start.py"`,
   the SessionStart hook (`startup`, `resume`, `clear`; 15 s timeout). The script is
   standard-library Python (a test pins its import roots and that the name `urlopen`
@@ -283,7 +289,7 @@ The skill's `allowed-tools` pre-approves `search_code`, `get_symbol` and
 `blast_radius`: the three tools annotated `readOnlyHint` since 3.5.0
 (`packages/trelix-mcp/tests/test_tool_readonly.py`, which measures the
 index database, not every file). On the pinned
-3.5.0 a call to any of them against an unindexed repository answers a tool error
+3.5.1 a call to any of them against an unindexed repository answers a tool error
 (`No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`) and
 creates nothing; 3.4.3 created an empty, gitignored `.trelix/index.db` there and answered
 empty, and such a leftover file still answers empty (`search_code` needs an embedder configured to get that

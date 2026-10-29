@@ -4,7 +4,7 @@ This directory is the `trelix` plugin that the marketplace at the repository roo
 (`.claude-plugin/marketplace.json`) lists. Installing it gives Claude Code three things:
 
 1. **The `trelix-mcp` server**, registered as `plugin:trelix:trelix` and launched exactly as
-   `.mcp.json` says: `uvx --from trelix-mcp==3.5.0 trelix-mcp --tools core`. Its tools are
+   `.mcp.json` says: `uvx --from trelix-mcp==3.5.1 trelix-mcp --tools core`. Its tools are
    callable as `mcp__plugin_trelix_trelix__<tool>` (for example
    `mcp__plugin_trelix_trelix__search_code`); `--tools core` lists seven of its fifteen (see
    [Decisions taken for this version](#decisions-taken-for-this-version)).
@@ -23,7 +23,7 @@ release and never points at a version PyPI does not have. The current pin is in 
 
 - `uv` on your `PATH` (<https://docs.astral.sh/uv/>; the plugin was written against uv 0.10.7).
   `uvx` downloads a Python >= 3.12 if none is available.
-- Network access on the first start: `uvx` downloads `trelix-mcp==3.5.0` and its dependencies
+- Network access on the first start: `uvx` downloads `trelix-mcp==3.5.1` and its dependencies
   (about 280 MiB in the uv cache; about 10 s measured on one fast connection, longer on a slow
   one, and later starts take about a second). Run the warm-up command below once so the first
   session does not wait.
@@ -34,7 +34,7 @@ release and never points at a version PyPI does not have. The current pin is in 
 ```bash
 claude plugin marketplace add sairam0424/trelix
 claude plugin install trelix@trelix
-uvx --from trelix-mcp==3.5.0 trelix-mcp --version   # one-time warm-up; prints "trelix-mcp 3.5.0"
+uvx --from trelix-mcp==3.5.1 trelix-mcp --version   # one-time warm-up; prints "trelix-mcp 3.5.1"
 ```
 
 The server registers as `plugin:trelix:trelix` (`/mcp` in a session lists plugin servers), and
@@ -50,7 +50,7 @@ tells Claude which case applies.
 
 | When | Command | Purpose |
 |---|---|---|
-| Session start, by Claude Code | `uvx --from trelix-mcp==3.5.0 trelix-mcp --tools core` | The MCP server over stdio |
+| Session start, by Claude Code | `uvx --from trelix-mcp==3.5.1 trelix-mcp --tools core` | The MCP server over stdio |
 | Session start (`startup`, `resume`, `clear`), by Claude Code, 15 s timeout | `uv run --no-project --script "${CLAUDE_PLUGIN_ROOT}/scripts/session_start.py"` | One line on stdout: whether this project has a trelix index |
 | Inside that script, only when the index records the commit it was built from | `git -C <project> rev-list --count <commit>..HEAD` (5 s timeout, `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0`) | How many commits HEAD is ahead of the index |
 
@@ -74,7 +74,7 @@ Hooks run with your permissions, outside any sandbox.
 
 The server works on the repository you pass as `repo_path`, inside `<repo_path>/.trelix/`:
 `index_codebase` creates or updates `index.db` (and a `.gitignore` beside it), and
-`build_knowledge_graph` / `graph_search_mcp` write graph metadata into it. On the pinned 3.5.0 a
+`build_knowledge_graph` / `graph_search_mcp` write graph metadata into it. On the pinned 3.5.1 a
 call to `search_code`, `get_symbol` or `blast_radius` against a repository with **no** index
 answers a tool error (`No index found at <repo>/.trelix/index.db. Run trelix index <repo>
 first.`) and creates nothing. Version 3.4.3 created an empty `.trelix/index.db` on such a call
@@ -117,7 +117,7 @@ multi-gigabyte download on some platforms. Pick one:
 - **Local embeddings, by registering the server yourself.** Run
 
   ```bash
-  claude mcp add --transport stdio trelix -- uvx --from trelix-mcp==3.5.0 --with "trelix[local]==3.5.0" trelix-mcp
+  claude mcp add --transport stdio trelix -- uvx --from trelix-mcp==3.5.1 --with "trelix[local]==3.5.1" trelix-mcp
   ```
 
   then toggle the plugin's server `plugin:trelix:trelix` off in `/mcp`: Claude Code stops
@@ -134,9 +134,9 @@ A tool error that names `sentence-transformers` means neither option is in place
 ## Permissions
 
 The skill's `allowed-tools` pre-approves `search_code`, `get_symbol` and `blast_radius`: the three
-tools the pinned 3.5.0 annotates `readOnlyHint`
+tools the pinned 3.5.1 annotates `readOnlyHint`
 (`packages/trelix-mcp/tests/test_tool_readonly.py`, which measures the index database, not every
-file). On the pinned 3.5.0 a call to any of them against an unindexed repository answers a tool
+file). On the pinned 3.5.1 a call to any of them against an unindexed repository answers a tool
 error and creates nothing, while a `search_code` call that completes a search also writes a trace
 file (see above). The grant is kept because the skill forbids searching before indexing, and it
 lasts one turn (Claude Code clears it at your next message). Every other tool keeps its
@@ -169,15 +169,15 @@ claude plugin marketplace remove trelix   # from the last scope that declares it
 ## Decisions taken for this version
 
 - **No `trelix[local]` in `.mcp.json`** (see Embeddings): opt in with the command above.
-- **Pinned to the published `trelix-mcp==3.5.0`, started with `--tools core`.** `core` lists
+- **Pinned to the published `trelix-mcp==3.5.1`, started with `--tools core`.** `core` lists
   seven tools: `index_codebase`, `search_code`, `get_symbol`, `blast_radius`,
   `build_knowledge_graph`, `graph_search_mcp` and `ask_agent`, which are every tool the skill
   names. The other eight (the federation, agent-session and subscription tools) are hidden, not
   removed, and a call to one is answered as an unknown tool; to have all fifteen, register the
   server yourself without the flag, for example
-  `claude mcp add --transport stdio trelix -- uvx --from trelix-mcp==3.5.0 trelix-mcp`
+  `claude mcp add --transport stdio trelix -- uvx --from trelix-mcp==3.5.1 trelix-mcp`
   (the command under Embeddings does the same and also installs the local embedder), and
-  toggle the plugin's server off. 3.5.0 also sends the model short server instructions (about
+  toggle the plugin's server off. 3.5.1 also sends the model short server instructions (about
   1,200 characters under `core`: the order to call the tools in); they say nothing about
   falling back to grep, so the skill still carries that. They also tell the model to call
   `index_codebase` first, while the skill tells it to ask you before indexing; the permission
