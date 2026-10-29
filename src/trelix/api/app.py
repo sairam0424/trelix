@@ -83,6 +83,7 @@ so this adds no new dependency.
 
 from __future__ import annotations
 
+import errno
 import hmac
 import logging
 from collections.abc import Generator, Sequence
@@ -130,14 +131,25 @@ _LOCAL_PRINCIPAL = "static-token"
 _REPO_ROOT_FIELDS = ("repo", "repo_path")
 
 # Body/query fields naming a path *within* a repository. Only checked when the
-# caller sends them as absolute paths — a relative value is joined to the
-# (now-confined) repo root by the route and re-checked there, so confining it
-# here against the allow-list would reject legitimate "src/foo.py" callers.
+# caller sends them as absolute paths; a relative value is the route's to answer:
+# POST /parse joins a relative `file_path` to the (now-confined) repo root and re-checks
+# it, so confining it here against the allow-list would reject legitimate "src/foo.py"
+# callers. GET /graph/visualize joins nothing: it resolves a relative `output` against
+# the SERVER's working directory and accepts the result only inside <repo>/.trelix, so
+# it fails closed (400) unless the result lands there.
 _REPO_RELATIVE_PATH_FIELDS = ("file_path", "output")
 
 # Where GET /graph/visualize writes when the caller names no `output`, relative to the repository.
 # Checked by the route itself because the store path the guard examines can be set elsewhere.
 _GRAPH_HTML = ".trelix/graph.html"
+
+# errno values that mean "the NAME the caller chose for `output` cannot be written": too long, a
+# symlink loop, a parent that is a file (mkdir says EEXIST or ENOTDIR) or a directory of that
+# name. A full disk, a failing device or a refused permission are the server's problem and stay
+# a 500.
+_UNUSABLE_OUTPUT_ERRNOS = frozenset(
+    {errno.ENAMETOOLONG, errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.EEXIST}
+)
 
 
 class _ApiAuthSettings(BaseSettings):
@@ -312,6 +324,12 @@ class GraphSearchResultModel(BaseModel):
     kind: str
     score: float
     source: str
+
+
+def _echoable(path: Path) -> str:
+    """``path`` as response text. A file name that is not UTF-8 reaches Python as a lone
+    surrogate ("\\udcff") that Starlette cannot encode, so it is written out as an escape."""
+    return str(path).encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def _build_oidc_verifier(sso: Any) -> Any:  # noqa: ANN401
@@ -581,8 +599,9 @@ def create_app(
                 # A non-string is the route model's 422, not ours.
                 continue
             if field in _REPO_RELATIVE_PATH_FIELDS and not Path(value).is_absolute():
-                # Relative values are joined to the (now-confined) repo root by
-                # the route and re-checked there — see _REPO_RELATIVE_PATH_FIELDS.
+                # A relative value is the route's to answer and re-check: /parse joins
+                # `file_path` to the repo root, /graph/visualize resolves `output` against
+                # the working directory — see _REPO_RELATIVE_PATH_FIELDS.
                 continue
             candidates.append((field, value))
 
@@ -651,6 +670,20 @@ def create_app(
             str(link),
         )
         raise HTTPException(status_code=403, detail=f"{field} has a symlinked index store")
+
+    def _unusable_path(field: str, value: str, exc: Exception) -> HTTPException:
+        """The 400 for a path the caller chose that the filesystem cannot resolve, look up or use.
+
+        The answer is fixed on purpose: the exception text carries the path and the errno, and
+        this reaches any caller. The cause goes to the log, with the value quoted because the
+        caller chose it. 400 and not 403, a denied permission included, and that is a judgement
+        call: the guard answers 403 for a repository or store it refuses and for an absolute
+        path outside the allow-list, but inside a confined repository the route's own answer to
+        a bad ``file_path`` / ``output`` is 400, and Python 3.14 itself reports a path it cannot
+        examine as missing, which this API answers with a 400.
+        """
+        logger.warning("Refused request: %s=%r cannot be used: %s", field, value, exc)
+        return HTTPException(status_code=400, detail=f"{field} is not a valid path")
 
     async def _json_object(request: Request) -> dict[str, Any]:
         """The request's JSON body as a dict, or ``{}`` when it is not one.
@@ -832,10 +865,13 @@ def create_app(
                     path = repo_root / path
                 try:
                     path = path.resolve()
-                except ValueError:  # a NUL byte
-                    raise HTTPException(
-                        status_code=400, detail="file_path is not a valid path"
-                    ) from None
+                except (ValueError, RuntimeError) as exc:
+                    # A NUL byte or a lone surrogate that is no byte of a file name ("\ud800"):
+                    # ValueError. A symlink loop: Python 3.12 raises RuntimeError here, 3.13 and
+                    # later do not and the loop surfaces in the lookup below. A relative
+                    # file_path skips confine_repo's per-field check, so this is the route's
+                    # to answer.
+                    raise _unusable_path("file_path", body.file_path, exc) from None
                 # Containment check — same intent as /graph/visualize's, but
                 # using is_relative_to() instead of a raw string prefix match
                 # (a prefix match would wrongly accept a sibling directory
@@ -848,12 +884,33 @@ def create_app(
                         status_code=400,
                         detail="file_path must resolve to a location inside repo_path",
                     )
-                if not path.exists():
-                    raise HTTPException(status_code=400, detail=f"file_path not found: {path}")
-                if not path.is_file():  # "" and a directory name both land here
-                    raise HTTPException(status_code=400, detail=f"file_path is not a file: {path}")
+                try:
+                    # Python 3.12 and 3.13 raise OSError from exists() / is_file() for a name
+                    # over NAME_MAX or a directory the server may not enter; 3.14 answers False.
+                    found = path.exists()
+                    is_regular = found and path.is_file()
+                except OSError as exc:
+                    # Only what is about the name is the caller's mistake: a refused permission
+                    # or a name over NAME_MAX. A failing device or a stale network handle is the
+                    # server's: 500.
+                    if not isinstance(exc, PermissionError) and exc.errno != errno.ENAMETOOLONG:
+                        raise
+                    raise _unusable_path("file_path", body.file_path, exc) from None
+                if not found:
+                    raise HTTPException(
+                        status_code=400, detail=f"file_path not found: {_echoable(path)}"
+                    )
+                if not is_regular:  # "" and a directory name both land here
+                    raise HTTPException(
+                        status_code=400, detail=f"file_path is not a file: {_echoable(path)}"
+                    )
                 file_name = path.name
-                source = path.read_text(encoding="utf-8", errors="replace")
+                try:
+                    source = path.read_text(encoding="utf-8", errors="replace")
+                except PermissionError as exc:
+                    # A file that exists but may not be read, on any version. Any other read
+                    # failure (a failing device, no descriptors left) is the server's: 500.
+                    raise _unusable_path("file_path", body.file_path, exc) from None
             else:
                 file_name = body.file_name or ""
                 source = body.content or ""
@@ -976,12 +1033,12 @@ def create_app(
             if output:
                 try:
                     requested = _Path(output).resolve()
-                except ValueError:
-                    # A NUL byte. confine_repo answers the absolute case; a relative
-                    # `output` skips its per-field check, so this is the route's to answer.
-                    raise HTTPException(
-                        status_code=400, detail="output is not a valid path"
-                    ) from None
+                except (ValueError, RuntimeError) as exc:
+                    # A NUL byte, or a symlink loop on Python 3.12 (3.13 and later do not
+                    # raise; the loop surfaces at the write below). confine_repo answers the
+                    # absolute case; a relative `output` skips its per-field check, so this
+                    # is the route's to answer.
+                    raise _unusable_path("output", output, exc) from None
                 allowed = repo_root / ".trelix"
                 # is_relative_to(), not a raw string prefix match — same fix
                 # as /parse's containment check above. A prefix match would
@@ -1000,7 +1057,15 @@ def create_app(
             else:
                 out = str(repo_root / _GRAPH_HTML)
             viz = GraphVisualizer()
-            path = viz.export_html(result.code_graph, out)
+            try:
+                path = viz.export_html(result.code_graph, out)
+            except OSError as exc:
+                # export_html creates the directory and writes the file, so the name the caller
+                # chose can fail there. Only that is the caller's mistake: the default file
+                # and a failure that is not about the name stay what they were.
+                if not output or exc.errno not in _UNUSABLE_OUTPUT_ERRNOS:
+                    raise
+                raise _unusable_path("output", output, exc) from None
             return GraphVisualizeResponse(path=path, node_count=result.node_count)
 
     @app.get("/graph/search", dependencies=indexed)

@@ -28,6 +28,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   GitHub App in `infra/github-app`, which is in neither the wheels nor the images: it reaches the
   hosted App with the next promotion to `main`.
 
+### Fixed
+- **`trelix serve` answers `400`, not `500`, when a path it was given cannot be used.**
+  `POST /parse` ended in `500 Internal Server Error` (and a traceback in the server log) for a
+  relative `file_path` that is a symlink loop (Python 3.12), for a name longer than the
+  filesystem allows or a directory the server may not enter (Python 3.12 and 3.13), and for a
+  file the server may not read (any version). It also ended in `500`, on any version, when the
+  "file not found" answer had to print a name that is not valid UTF-8; the name is now printed as
+  an escape such as `\udcff`, and a file that does exist under such a name is parsed as before.
+  `GET /graph/visualize?output=` did the same for a name it could not write (a symlink loop, a
+  name that is too long, a parent that is a file, or a directory of that name). These now answer
+  a `400`, and the cause is in the server log. A failure that is not about the name (a failing
+  device, a stale network handle, a full disk) still ends in `500`, and so does a failure of the
+  default `.trelix/graph.html`, which no caller named.
+
 ## [3.5.1] — 2026-10-29
 
 A patch release. The Python changes below (the REST API and `trelix-mcp` confinement, the
