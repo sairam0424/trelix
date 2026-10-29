@@ -69,7 +69,7 @@ try {
   }
 } catch (err) {
   if (err instanceof TrelixAskError) {
-    console.error("synthesis failed:", err.message);
+    console.error(err.message); // "synthesis failed"; the cause is in the server log
   }
 }
 ```

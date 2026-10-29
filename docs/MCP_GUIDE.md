@@ -184,7 +184,9 @@ Trelix-mcp exposes 15 MCP tools organized into five functional groups:
 server confines every `repo_path` argument, `federation_add_repo`'s `path` and every
 `trelix://repo/...` resource URI to those roots. A value that is blank, cannot be resolved (a NUL
 byte, a symlink loop) or resolves outside every root (`..`, a symlink pointing out, a sibling
-`<root>-evil`) is refused before the tool runs:
+`<root>-evil`) is refused before the tool runs, and so is a repository inside a root whose
+`.trelix` store is a symlink (`.trelix`, `index.db` or any entry directly inside `.trelix`; git
+tracks symlinks, so a cloned repository can carry one) or cannot be examined:
 `isError: true` with exactly `repo_path is not inside an allowed repository root` (`path is not
 inside an allowed repository root` for `federation_add_repo`), and the value is never echoed.
 The federation registry is read from a file, so its entries are filtered instead:

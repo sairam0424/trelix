@@ -7,8 +7,12 @@ on every `tools/call` whose arguments carry a string `repo_path`, and `federatio
 is `trelix.core.confinement.is_within_allowed_roots`, the one the REST API applies: both sides
 resolved, `is_relative_to`, so `..`, a symlink inside a root that points outside, a sibling
 `<root>-evil`, a blank value (which `Path("")` turns into the server's working directory) and a
-value the filesystem cannot resolve at all (a NUL byte, a symlink loop) are all refused. The
-refusal names the field and nothing else; the value and the roots go to the operator log only.
+value the filesystem cannot resolve at all (a NUL byte, a symlink loop) are all refused. So is a
+repository inside a root whose index store is a symlink (`.trelix`, `index.db` or any entry
+directly inside `.trelix`, see `trelix.core.confinement.symlinked_store_entry`) or cannot be
+examined: a committed link moves the store outside the roots although the path named is inside
+them. The refusal names the field and nothing else; the value and the roots go to the operator
+log only.
 
 `entries_inside_roots` is the same rule for the federation registry, which `federation_search_all`
 reads from a file rather than from the caller. A non-string `repo_path` is left alone here:
@@ -30,7 +34,8 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools.base import ToolResult
 from mcp.types import CallToolRequestParams
 
-from trelix.core.confinement import is_within_allowed_roots
+from trelix.core.config import StoreConfig
+from trelix.core.confinement import is_within_allowed_roots, symlinked_store_entry
 from trelix.federation.registry import RepoEntry
 
 # The whole refusal: the field name and nothing the caller sent (a path outside the roots is
@@ -56,7 +61,11 @@ def _confined_fields(name: str, arguments: Mapping[str, Any]) -> list[tuple[str,
 
 
 def inside_roots(value: str, roots: Sequence[Path]) -> bool:
-    """`is_within_allowed_roots`, answering False for a value that cannot be resolved at all.
+    """`is_within_allowed_roots` for a repository whose store stays there, else False.
+
+    False for a repository whose index store is a symlink (or holds one) and for one whose store
+    cannot be examined (`symlinked_store_entry` raises `PermissionError`): the path named is inside
+    a root, the store the tools would open is not, or may not be.
 
     `Path.resolve()` raises instead of answering for a NUL byte (ValueError), for a symlink loop on
     Python 3.12 (RuntimeError) and for a relative value when the working directory no longer exists
@@ -64,7 +73,10 @@ def inside_roots(value: str, roots: Sequence[Path]) -> bool:
     `Internal server error` with a traceback in the log instead of the refusal.
     """
     try:
-        return is_within_allowed_roots(value, roots)
+        return (
+            is_within_allowed_roots(value, roots)
+            and symlinked_store_entry(value, StoreConfig().db_path) is None
+        )
     except (ValueError, OSError, RuntimeError):
         return False
 
@@ -80,7 +92,8 @@ class RepoConfinementMiddleware(Middleware):
         if value.strip() and inside_roots(value, self._roots):
             return
         _log.warning(
-            "Refused %s=%r: outside the allowed repository roots %s",
+            "Refused %s=%r: outside the allowed repository roots %s, "
+            "or its index store is a symlink or cannot be examined",
             field,
             value[:LOGGED_VALUE_CHARS],
             [str(root) for root in self._roots],

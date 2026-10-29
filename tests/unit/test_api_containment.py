@@ -227,7 +227,7 @@ class TestCrossRepoContainment:
     def test_ask_on_an_unserved_repo_is_refused_with_a_status_code(self, tmp_path: Path) -> None:
         """``/ask`` is the one route whose failures are otherwise invisible: it
         returns a StreamingResponse, so anything that goes wrong inside the
-        generator arrives as ``data: [ERROR: ...]`` inside an HTTP **200**.
+        generator arrives as ``data: [ERROR: synthesis failed]`` inside an HTTP **200**.
         Containment has to answer before the response is committed, or the
         refusal would be a 200 that status-code monitoring never sees."""
         served = tmp_path / "served"
