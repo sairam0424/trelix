@@ -91,6 +91,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   carry no new code.
 
 ### Changed
+- **The Claude Code plugin now pins the `trelix` core package beside `trelix-mcp`, and its version
+  is 3.5.1.1.** It started `uvx --from trelix-mcp==3.5.1 trelix-mcp --tools core`, and
+  `trelix-mcp` declares only a minimum core version, so `uvx` took the newest `trelix` on PyPI
+  whenever it resolved the launch: a core release would have changed what the plugin runs with no
+  plugin update (the plugin that pinned `trelix-mcp` 3.5.0 already started core 3.5.1). It now
+  starts `uvx --from trelix-mcp==3.5.1 --with trelix==3.5.1 trelix-mcp --tools core`. Nothing
+  changes for you today, because 3.5.1 is the newest core: the same seven tools, the same 88
+  packages and the same size from an empty uv cache. This narrows the float; it is not a lock:
+  the other 86 packages still resolve to the newest releases their declared ranges allow. Core
+  fixes now reach the plugin with the next pin move, as `trelix-mcp` fixes do. Update with
+  `claude plugin marketplace update trelix` and `claude plugin update trelix@trelix`; Claude Code
+  reads the plugin from the repository's default branch, so the update appears once this change
+  reaches it. A server you registered by hand keeps the pins you gave it; add
+  `--with trelix==X.Y.Z` to its `uvx` command to pin the core there too.
 - **The Claude Code plugin now runs `trelix-mcp` 3.5.1, still started with `--tools core`, and
   its version is 3.5.1.** Update with `claude plugin marketplace update trelix` and
   `claude plugin update trelix@trelix`. Claude Code reads the plugin from the repository's default

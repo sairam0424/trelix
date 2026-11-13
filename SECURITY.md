@@ -246,9 +246,11 @@ is validated server-side:
 The plugin (`.claude-plugin/marketplace.json`, `plugins/trelix/`) runs exactly two
 commands, both listed with their purpose in `plugins/trelix/README.md`:
 
-- `uvx --from trelix-mcp==<pin> trelix-mcp --tools core`: the MCP server, the same
-  `trelix-mcp` that `claude mcp add trelix -- trelix-mcp` registers, at the pinned
-  published release and with the `core` tool profile: seven of the fifteen tools are
+- `uvx --from trelix-mcp==<pin> --with trelix==<pin> trelix-mcp --tools core`: the MCP
+  server, the same `trelix-mcp` that `claude mcp add trelix -- trelix-mcp` registers, at the
+  pinned published release (the `trelix` core package is pinned to the same release; the
+  other dependencies are not locked and resolve within the ranges `trelix` and `trelix-mcp`
+  declare) and with the `core` tool profile: seven of the fifteen tools are
   listed, and a call to one of the other eight (the federation, agent-session and
   subscription tools) is answered as an unknown tool. Everything above about the
   server applies, unchanged, to the seven tools it lists, except what the roots
