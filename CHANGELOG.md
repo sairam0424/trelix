@@ -67,6 +67,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   client sends when they are the token's UTF-8 bytes. A surrogate in a path keeps its `400`.
   Two nearby cases are unchanged and still answer `500`: a bare `NaN` or `Infinity` in a body that
   fails validation, and bytes that are not UTF-8 sent with a content type other than JSON.
+- **The Docker images now install the fixed `zlib1g`, and their base images are pinned by
+  digest.** The weekly container scan (Trivy) went red on 2026-11-09 because the
+  `python:3.14-slim` base image still ships a `zlib1g` with two fixable HIGH findings,
+  CVE-2026-85091 and CVE-2026-76844. The runtime stage of the `trelix` image and of the GitHub
+  App image now installs the fixed build (1:1.3.dfsg+really1.3.1-1+deb13u1) from Debian's
+  security channel, the same way it already does for OpenSSL. **The `trelix` images already
+  published for 3.5.1 still carry the old `zlib1g`; the fix reaches them with the next release
+  tag.** Every `FROM` line in both Dockerfiles now names its base image by tag and digest (for
+  example `python:3.14-slim@sha256:...`, the digest of the multi-architecture index), so a
+  rebuild of one commit builds on the same base and a changed base shows up as a one-line
+  Dependabot pull request. A new test finds every Dockerfile in the repository and fails if a
+  floating `FROM` comes back in any of them, including a Dockerfile added later.
+  `scripts/build-binary.sh` no longer installs PyInstaller a second time: the `dev` extra it
+  already installs provides it.
 
 ### Added
 - **Property tests for the GitHub App's sanitiser, for contributors only

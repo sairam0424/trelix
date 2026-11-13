@@ -5,7 +5,7 @@
 #   docker build --build-arg EXTRAS=serve,local    -> ghcr.io/sairam0424/trelix:X.Y.Z-local  (bundles sentence-transformers/torch)
 # See .github/workflows/docker-publish.yml for the release-time build matrix.
 
-FROM python:3.14-slim AS builder
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS builder
 
 ARG EXTRAS=serve
 
@@ -38,7 +38,7 @@ RUN pip install --no-cache-dir --prefix=/install \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         ".[${EXTRAS}]" ./packages/trelix-mcp
 
-FROM python:3.14-slim AS runtime
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS runtime
 
 # CVE-2026-14456 (libssl3t64 / openssl / openssl-provider-legacy): python:3.14-slim's
 # plain trixie/main apt suite still ships the vulnerable 3.5.6-1~deb13u2 build.
@@ -46,10 +46,16 @@ FROM python:3.14-slim AS runtime
 # (3.5.7-1~deb13u2) but the upstream base image has not been rebuilt against it
 # yet, so pull it explicitly here instead of waiting on an image rebuild or doing
 # a blanket `apt-get upgrade -y`.
+#
+# CVE-2026-85091 and CVE-2026-76844 (zlib1g): the same gap. The base image pinned above
+# (rebuilt 2026-11-05) ships 1:1.3.dfsg+really1.3.1-1+b1; trixie-security has the fix in
+# 1:1.3.dfsg+really1.3.1-1+deb13u1. Once the pinned digest moves to a base image built
+# past that, naming zlib1g here changes nothing and the line can go.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3t64 \
         openssl \
         openssl-provider-legacy \
+        zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system trelix \
