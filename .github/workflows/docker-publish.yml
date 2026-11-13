@@ -56,6 +56,11 @@ on:
         type: boolean
         default: false
 
+# Default the token to read-only. `publish` is the only job and re-declares the one extra scope
+# it needs (`packages: write`, to push to ghcr.io): a job-level block replaces this one.
+permissions:
+  contents: read
+
 jobs:
   publish:
     name: Build and push (extras=${{ matrix.extras }})

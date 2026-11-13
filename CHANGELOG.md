@@ -161,6 +161,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `is-in-ssh` and `powershell-utils` (required by `open` and `wsl-utils`) are new in the
   lockfile. This affects the VS Code extension's dependency tree only, not the Python packages or
   the GitHub App.
+- **`docker-publish.yml` and `trelix-review.yml` now default the workflow token to read-only
+  (`permissions: contents: read`).** They were the only two of the 15 workflows without a
+  workflow-level `permissions:` block, which is what kept OSSF Scorecard's Token-Permissions check
+  at 9 of 10. Each has one job that declares its own grants, and a job-level block replaces the
+  workflow default, so no job's token changes: `publish` keeps `contents: read` and
+  `packages: write`; the review job keeps `pull-requests: write`, `checks: write` and
+  `contents: read`. A new test, `tests/unit/test_workflows_declare_top_level_permissions.py`, fails
+  for any workflow whose workflow-level default is not `{}` or `contents: read`. The trailing
+  comment on the pinned
+  `azure/setup-helm` step in `helm-lint.yml` and `verify-release.yml` now says `# v5.0.1`, the tag
+  that commit has, instead of the floating `# v5`, which has since moved to another commit; the
+  pin itself is unchanged. For contributors; nothing changes for users of the package.
 
 ## [3.5.1] — 2026-10-29
 
