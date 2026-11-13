@@ -1,0 +1,175 @@
+# The values.yaml of chart 0.2.8 (trelix 3.5.0), frozen. `helm upgrade --reuse-values` replaces
+# the new chart's own defaults with the old release's values, so these are the only values the
+# chart sees when a 0.2.8 release is upgraded that way. They have no `networkPolicy` key, which
+# the chart refuses with its own message; tests/unit/test_helm_chart_reuse_values.py and the
+# `lint` job in .github/workflows/helm-lint.yml render the current chart from them. Do not edit
+# them to follow the chart: they stand for a release that already exists.
+#
+# Verbatim from `git show v3.5.0:helm/trelix/values.yaml`, below this header.
+#
+# Default values for the trelix chart.
+# See README.md for the repo model this chart assumes (shared multi-repo PVC)
+# and the security posture (no auth on the REST API — ingress disabled by default).
+
+replicaCount: 1
+
+image:
+  # :3.1.5 is the slim, API-embedder-only tag. Use the "-local" suffix
+  # (e.g. 3.1.5-local) for the variant bundling sentence-transformers/torch.
+  #
+  # This tag MUST equal Chart.yaml's appVersion. It sat on 2.12.0 while
+  # appVersion was bumped by all five releases since, so the chart advertised
+  # 3.1.2 and deployed 2.12.0 — `helm install` at defaults ran an image five
+  # releases behind the version the chart claimed to be.
+  # CONTRIBUTING.md's checklist could not catch it: it greps for the PREVIOUS
+  # version, which never matches a site stranded on 2.x. release.yml's
+  # verify-version job now compares this line against the release tag.
+  repository: ghcr.io/sairam0424/trelix
+  tag: "3.5.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# trelix serve's REST API has zero auth middleware. Only enable ingress once
+# you've fronted it with an authenticating proxy (see README.md's Security section).
+service:
+  type: ClusterIP
+  port: 8765
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: trelix.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# One PVC, shared across every repo this server indexes/serves — see README.md.
+# Pass `repo=/data/<name>` (an absolute path inside this volume) on every
+# REST request. Disabling this only makes sense if store.backend is qdrant
+# AND you never intend to call POST /index (no local checkout to read from).
+persistence:
+  enabled: true
+  mountPath: /data
+  size: 10Gi
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+  existingClaim: ""
+
+# fsGroup grants the container's (non-root) process group-write access to the
+# mounted PVC without needing to know its exact UID (the Dockerfile's `trelix`
+# user has no pinned UID — see Dockerfile). Kubernetes adds this GID as a
+# supplemental group and chowns the volume at mount time.
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext: {}
+
+resources: {}
+# Uncomment and tune for production:
+# resources:
+#   requests:
+#     cpu: 500m
+#     memory: 1Gi
+#   limits:
+#     memory: 4Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ---------------------------------------------------------------------------
+# trelix StoreConfig — mirrors src/trelix/core/config.py's StoreConfig fields
+# and env var aliases exactly.
+# ---------------------------------------------------------------------------
+store:
+  backend: sqlite # sqlite | qdrant | lance
+
+  hnsw: true
+  hnswM: 16
+  hnswEfSearch: 50
+  bm25ReadPoolSize: 0
+
+  qdrant:
+    # Qdrant is NOT deployed by this chart — bring your own (Qdrant Cloud or
+    # self-hosted). See README.md's "Qdrant is external" section for why.
+    url: "http://localhost:6333"
+    collection: trelix
+    preferGrpc: false
+    timeout: 10.0
+    # Set one of these for QDRANT_API_KEY. apiKey is a plaintext values.yaml
+    # convenience for local/dev use — prefer existingSecretName in any shared
+    # cluster.
+    apiKey: ""
+    existingSecretName: ""
+    existingSecretKey: "QDRANT_API_KEY"
+
+  lance:
+    uri: ".trelix/lance"
+    table: chunks
+
+# Embedder provider credentials. Same apiKey/existingSecretName pattern as
+# store.qdrant above — set at most one of the two per provider.
+embedder:
+  openai:
+    apiKey: ""
+    existingSecretName: ""
+    existingSecretKey: "OPENAI_API_KEY"
+  voyage:
+    apiKey: ""
+    existingSecretName: ""
+    existingSecretKey: "VOYAGE_API_KEY"
+  cohere:
+    apiKey: ""
+    existingSecretName: ""
+    existingSecretKey: "COHERE_API_KEY"
+
+# REST API auth — opt-in. Unset (both fields empty) leaves every route open,
+# matching trelix serve's own default. Set one of these to require an
+# `X-Trelix-Api-Key` header on every route except /health before enabling
+# ingress. Same apiKey/existingSecretName pattern as store.qdrant above.
+apiAuth:
+  token: ""
+  existingSecretName: ""
+  existingSecretKey: "TRELIX_API_AUTH_TOKEN"
+
+# Plain (non-secret) extra environment variables, e.g. TRELIX_EMBEDDER_PROVIDER=openai.
+extraEnv: []
+# - name: TRELIX_EMBEDDER_PROVIDER
+#   value: openai
+
+# Extra env vars sourced from an existing Secret, for credentials this chart
+# doesn't already model above.
+extraSecretEnv: []
+# - name: AZURE_OPENAI_API_KEY
+#   secretName: my-azure-secret
+#   secretKey: api-key
+
+# trelix-mcp — MCP over Streamable HTTP, as a second container in the same pod, sharing the
+# PVC. Off by default. Needs a token (it binds 0.0.0.0 in the pod and exits 2 without one, so
+# the chart refuses to render without one) and persistence.enabled (it serves the repositories
+# under persistence.mountPath). The token is its own, NOT apiAuth's. The chart adds the
+# release's Service names to the Host allow-list itself; list any other name a client sends
+# in allowedHosts (an Ingress host, the `.svc.cluster.local` form). Same token pattern as
+# apiAuth above: set at most one of token / existingSecretName. image.tag must be a release
+# whose trelix-mcp has `--transport http`. See README.md.
+mcp:
+  enabled: false
+  port: 8766
+  allowedHosts: []
+  auth:
+    token: ""
+    existingSecretName: ""
+    existingSecretKey: "TRELIX_MCP_AUTH_TOKEN"
+  # Resources for the trelix-mcp container only; `resources` above sizes the trelix one.
+  resources: {}

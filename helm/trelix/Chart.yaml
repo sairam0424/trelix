@@ -12,12 +12,15 @@ type: application
 # container, Service port, Secret key, shared env in named templates), to 0.2.8 for the
 # checksum/secret pod-template annotation (a changed chart-owned Secret now rolls the pod),
 # and to 0.3.0 for the hardened defaults (a minor step on purpose: an unchanged values file now
-# renders a different pod, and kubeVersion rejects clusters older than 1.19).
+# renders a different pod, and kubeVersion rejects clusters older than 1.19), and to 0.3.1 for the
+# refusal of values that predate 0.3.0 (`helm upgrade --reuse-values` from a 0.2.x release now stops
+# with a message that names the fix, where it failed with a nil pointer error; a render differs
+# from 0.3.0's only in the chart label and in the checksum/secret annotation that covers it).
 # Deliberately NOT lockstep with appVersion, and still 0.x: nothing in CI runs `helm package`
 # (helm-lint.yml only lints and templates), so the chart ships from the git tree and no
 # one has pinned 0.1.0 from an index. verify-version does not check this line —
 # appVersion is the site that has to match the tag.
-version: 0.3.0
+version: 0.3.1
 appVersion: "3.5.1"
 # seccompProfile (podSecurityContext) is GA in 1.19. The "-0" lets pre-release suffixes such as
 # v1.29.1-gke.100 or v1.29.1-eks-a5ec690 satisfy the range.

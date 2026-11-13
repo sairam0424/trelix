@@ -247,3 +247,18 @@ on it; `helm lint` only logs the message and exits 0. Included at the top of dep
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Refuse values that predate chart 0.3.0. `helm upgrade --reuse-values` does not merge the old
+release's values into the chart's defaults, it replaces them, so a key added after that release
+(networkPolicy, in 0.3.0) is missing. Reading it failed with a nil pointer, and a render that got
+past it would keep the old image.tag and leave out the hardening 0.3.0 turns on, so the chart
+stops here and names the way out. The key is in every values.yaml since 0.3.0: only a values
+source without it (this upgrade, or `--set networkPolicy=null`, which deletes a default) is
+refused. Included at the top of networkpolicy.yaml, where the key is read.
+*/}}
+{{- define "trelix.requireCurrentValues" -}}
+{{- if not (hasKey .Values "networkPolicy") }}
+{{- fail "The values predate chart 0.3.0 (they have no networkPolicy key): helm upgrade --reuse-values replaces the chart's defaults with the old release's values, which would leave out the 0.3.0 hardening and keep the old image.tag. Upgrade with helm upgrade --reset-then-reuse-values (Helm 3.14 or newer), or with --reset-values plus your overrides." }}
+{{- end }}
+{{- end }}
