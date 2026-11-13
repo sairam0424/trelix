@@ -137,7 +137,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkov
-        uses: bridgecrewio/checkov-action@5798bad4f6dd9c1fb67ae3ec10d42d8fb67037c4 # v12.3126.0
+        uses: bridgecrewio/checkov-action@c3e106d5f8f4253a6de5110efb41a080f83db294 # v12.3135.0
         env:
           # CKV_K8S_21 (default namespace): the chart sets no metadata.namespace on purpose, so that
           # `helm install -n <ns>` decides it. Checkov's check passes when HELM_NAMESPACE names a
