@@ -47,8 +47,72 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   a `400`, and the cause is in the server log. A failure that is not about the name (a failing
   device, a stale network handle, a full disk) still ends in `500`, and so does a failure of the
   default `.trelix/graph.html`, which no caller named.
+- **`trelix serve` no longer answers `500` for text UTF-8 cannot encode or a non-ASCII API key.**
+  A JSON body can carry a lone surrogate (`"\ud800"`: a JavaScript string may hold half of a pair,
+  and a Python client that reads a file with `errors="surrogateescape"` sends the byte `0xff` as
+  `"\udcff"`). `POST /parse` with such an inline `content` ended in `500` for Python, JavaScript,
+  TypeScript, Go, Rust, Java, Kotlin, C, C++, C#, `.csproj`, HTML, CSS and Ruby (the extractor
+  encodes the text as UTF-8) and for shell, SQL, Makefile, Dockerfile, protobuf, Markdown and a
+  Razor or CSHTML `@page` route (a symbol copied the text and the response could not be written).
+  It now parses the text with each surrogate replaced by one U+FFFD, the replacement character a
+  file on disk gets for bytes it cannot decode. JSON, TOML and YAML content that held one was
+  read differently before (a `?` in JSON and TOML; a parse error and no symbols for YAML) and
+  now parses like the disk-backed file. A `422` echoes the body it rejected, so any body that
+  failed validation on `POST /parse` or `POST /index` and held a surrogate anywhere (an unknown
+  key included) was a `500` too; the `422` now writes the surrogate as its JSON escape and
+  everything else as before. With `TRELIX_API_AUTH_TOKEN` set, an `X-Trelix-Api-Key` or
+  `Authorization` header carrying a byte outside ASCII was a `500` (`hmac.compare_digest` on two
+  strings); it is a `401` now, like any other wrong credential. A token that itself holds a
+  non-ASCII character, which made every authenticated request a `500`, now matches the bytes the
+  client sends when they are the token's UTF-8 bytes. A surrogate in a path keeps its `400`.
+  Two nearby cases are unchanged and still answer `500`: a bare `NaN` or `Infinity` in a body that
+  fails validation, and bytes that are not UTF-8 sent with a content type other than JSON.
+- **The Docker images now install the fixed `zlib1g`, and their base images are pinned by
+  digest.** The weekly container scan (Trivy) went red on 2026-11-09 because the
+  `python:3.14-slim` base image still ships a `zlib1g` with two fixable HIGH findings,
+  CVE-2026-85091 and CVE-2026-76844. The runtime stage of the `trelix` image and of the GitHub
+  App image now installs the fixed build (1:1.3.dfsg+really1.3.1-1+deb13u1) from Debian's
+  security channel, the same way it already does for OpenSSL. **The `trelix` images already
+  published for 3.5.1 still carry the old `zlib1g`; the fix reaches them with the next release
+  tag.** Every `FROM` line in both Dockerfiles now names its base image by tag and digest (for
+  example `python:3.14-slim@sha256:...`, the digest of the multi-architecture index), so a
+  rebuild of one commit builds on the same base and a changed base shows up as a one-line
+  Dependabot pull request. A new test finds every Dockerfile in the repository and fails if a
+  floating `FROM` comes back in any of them, including a Dockerfile added later.
+  `scripts/build-binary.sh` no longer installs PyInstaller a second time: the `dev` extra it
+  already installs provides it.
+
+### Added
+- **Property tests for the GitHub App's sanitiser, for contributors only
+  (`infra/github-app/tests/sanitize-property.test.ts`, fast-check, fixed seed): `sanitizeText`
+  keeps to its cap, leaves no active markup, writes a single line when asked and returns plain
+  text unchanged, and `sanitizeAnnotationPath` accepts only a short, relative, clean path.**
+  `fast-check` is a development dependency of `infra/github-app`, so the App image and the wheels
+  carry no new code.
+- **Seven contributor reference pages under `docs/codebase/`.** `ARCHITECTURE.md`,
+  `CONCERNS.md`, `CONVENTIONS.md`, `INTEGRATIONS.md`, `STACK.md`, `STRUCTURE.md` and `TESTING.md`
+  summarise the repository's stack, layout, architecture, coding conventions, integrations, test
+  setup and known concerns. They were added by #582, which was merged straight to `main`;
+  promotions run from `develop` to `main`, so `develop` never had them. They are now on `develop`
+  too, identical to the copies on `main`. They are reference for people working on the code, not
+  part of the product: the wheels and the images do not include them, and no code or behaviour
+  changes.
 
 ### Changed
+- **The Claude Code plugin now pins the `trelix` core package beside `trelix-mcp`, and its version
+  is 3.5.1.1.** It started `uvx --from trelix-mcp==3.5.1 trelix-mcp --tools core`, and
+  `trelix-mcp` declares only a minimum core version, so `uvx` took the newest `trelix` on PyPI
+  whenever it resolved the launch: a core release would have changed what the plugin runs with no
+  plugin update (the plugin that pinned `trelix-mcp` 3.5.0 already started core 3.5.1). It now
+  starts `uvx --from trelix-mcp==3.5.1 --with trelix==3.5.1 trelix-mcp --tools core`. Nothing
+  changes for you today, because 3.5.1 is the newest core: the same seven tools, the same 88
+  packages and the same size from an empty uv cache. This narrows the float; it is not a lock:
+  the other 86 packages still resolve to the newest releases their declared ranges allow. Core
+  fixes now reach the plugin with the next pin move, as `trelix-mcp` fixes do. Update with
+  `claude plugin marketplace update trelix` and `claude plugin update trelix@trelix`; Claude Code
+  reads the plugin from the repository's default branch, so the update appears once this change
+  reaches it. A server you registered by hand keeps the pins you gave it; add
+  `--with trelix==X.Y.Z` to its `uvx` command to pin the core there too.
 - **The Claude Code plugin now runs `trelix-mcp` 3.5.1, still started with `--tools core`, and
   its version is 3.5.1.** Update with `claude plugin marketplace update trelix` and
   `claude plugin update trelix@trelix`. Claude Code reads the plugin from the repository's default
@@ -80,6 +144,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     requires `trelix` 3.5.1 or newer, so `trelix-mcp==3.5.1` with `trelix[local]==3.5.0` cannot
     be installed. The README command now reads `trelix[local]==3.5.1`; a server you registered
     earlier keeps the pins you gave it.
+- **CI: a failing optional Python 3.13 or 3.14 leg no longer cancels the required
+  `Test (Python 3.12)` check, and the Integration and E2E jobs now cache and prefetch the
+  tree-sitter grammars like the unit job.** Every leg now runs to the end (the workflow still
+  fails if any leg fails). A GitHub 504 while downloading a grammar, which failed the required
+  Integration Tests check on 2026-11-09, now finds a warm cache; a cold cache during a GitHub
+  outage still fails, at the prefetch step instead of inside a test. This touches only
+  `.github/workflows/ci.yml`, so nothing in a release changes.
+- **`workspace-vscode/package-lock.json` is refreshed within the version ranges it already
+  allows.** Only the lockfile changes (#583): `package.json` and every range it declares are
+  untouched. `@azure/identity` goes from 4.13.1 to 4.14.1, which takes `@azure/msal-node` from
+  5.4.0 to 7.1.2; `@hono/node-server` goes from 2.1.1 to 2.1.3 and `serialize-javascript` from
+  7.1.0 to 7.1.3. `open`, `wsl-utils` and `default-browser` move up because `@azure/identity`
+  4.14.1 requires newer ones, `bundle-name` also moves from 4.1.0 to 4.1.1 inside the range
+  `default-browser` already declares. `@azure/core-process` (required by `@azure/identity`) and
+  `is-in-ssh` and `powershell-utils` (required by `open` and `wsl-utils`) are new in the
+  lockfile. This affects the VS Code extension's dependency tree only, not the Python packages or
+  the GitHub App.
+- **`docker-publish.yml` and `trelix-review.yml` now default the workflow token to read-only
+  (`permissions: contents: read`).** They were the only two of the 15 workflows without a
+  workflow-level `permissions:` block, which is what kept OSSF Scorecard's Token-Permissions check
+  at 9 of 10. Each has one job that declares its own grants, and a job-level block replaces the
+  workflow default, so no job's token changes: `publish` keeps `contents: read` and
+  `packages: write`; the review job keeps `pull-requests: write`, `checks: write` and
+  `contents: read`. A new test, `tests/unit/test_workflows_declare_top_level_permissions.py`, fails
+  for any workflow whose workflow-level default is not `{}` or `contents: read`. The trailing
+  comment on the pinned
+  `azure/setup-helm` step in `helm-lint.yml` and `verify-release.yml` now says `# v5.0.1`, the tag
+  that commit has, instead of the floating `# v5`, which has since moved to another commit; the
+  pin itself is unchanged. For contributors; nothing changes for users of the package.
+- **For contributors: CI installs semgrep, pip-audit and the schema-drift runtime from
+  hash-locked requirements.** `security-scan.yml` (semgrep and pip-audit), `verify-release.yml`
+  (the pip-audit it installs on the runner) and `schema-drift.yml` (the `[serve]` runtime) now run
+  `pip install --require-hashes -r .github/requirements/requirements-<name>.txt`, so the files pip
+  unpacks must match the hashes recorded in the repository and a changed upload on the index
+  fails the job instead of running. The versions do not change: semgrep 1.173.0 and pip-audit
+  2.10.1, which `verify-release.yml` used to take as whatever was newest. `schema-drift.yml` now
+  installs trelix itself with `--no-deps` and runs `pip check`, which fails the job if the lock
+  has fallen behind a floor in `dependencies` in `pyproject.toml`. It does not check the `serve`
+  extra (`fastapi`, `uvicorn`), because `pip check` ignores a package's extras: regenerate the
+  lock by hand when that extra changes (the command is on its first lines). The locks are
+  compiled with `--exclude-newer`, so nothing in them was published less than a week before they
+  were made, and a new Dependabot `pip` entry for `/.github/requirements` proposes bumps as one
+  weekly group. Not covered: `scripts/verify_release.py` builds its own venv and runs
+  `pip install pip-audit` in it with no version and no hashes, and that copy is the only
+  pip-audit `verify-release.yml` runs (nothing in the job calls the locked runner-level one),
+  with the job token in its environment; hash-locking it is a change to the script and is left
+  for a separate change. `schema-drift.yml` also still fetches its build backend (`hatchling`)
+  unpinned when it builds trelix. This addresses four OSSF Scorecard
+  Pinned-Dependencies code-scanning alerts (numbers 148, 152, 154 and 180), which close after this
+  reaches `main` and Scorecard next scans it (alert 154 is the runner-level install, not the
+  script's). It changes no published package or image.
 
 ## [3.5.1] — 2026-10-29
 

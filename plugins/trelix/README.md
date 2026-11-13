@@ -4,7 +4,8 @@ This directory is the `trelix` plugin that the marketplace at the repository roo
 (`.claude-plugin/marketplace.json`) lists. Installing it gives Claude Code three things:
 
 1. **The `trelix-mcp` server**, registered as `plugin:trelix:trelix` and launched exactly as
-   `.mcp.json` says: `uvx --from trelix-mcp==3.5.1 trelix-mcp --tools core`. Its tools are
+   `.mcp.json` says:
+   `uvx --from trelix-mcp==3.5.1 --with trelix==3.5.1 trelix-mcp --tools core`. Its tools are
    callable as `mcp__plugin_trelix_trelix__<tool>` (for example
    `mcp__plugin_trelix_trelix__search_code`); `--tools core` lists seven of its fifteen (see
    [Decisions taken for this version](#decisions-taken-for-this-version)).
@@ -15,18 +16,19 @@ This directory is the `trelix` plugin that the marketplace at the repository roo
    trelix index, how old it is, and what to pass as `repo_path`; see
    [What Claude sees at session start](#what-claude-sees-at-session-start).
 
-The plugin pins the newest *published* `trelix-mcp` release, so it trails this repository by one
-release and never points at a version PyPI does not have. The current pin is in `.mcp.json`;
-`plugin.json`'s `version` is that pin (or `<pin>.N` for a plugin-only change).
+The plugin pins the newest *published* `trelix-mcp` release and the `trelix` core release of the
+same version, so it trails this repository by one release and never points at a version PyPI does
+not have. The current pin is in `.mcp.json`; `plugin.json`'s `version` is that pin (or `<pin>.N`
+for a plugin-only change).
 
 ## Prerequisites
 
 - `uv` on your `PATH` (<https://docs.astral.sh/uv/>; the plugin was written against uv 0.10.7).
   `uvx` downloads a Python >= 3.12 if none is available.
-- Network access on the first start: `uvx` downloads `trelix-mcp==3.5.1` and its dependencies
-  (about 280 MiB in the uv cache; about 10 s measured on one fast connection, longer on a slow
-  one, and later starts take about a second). Run the warm-up command below once so the first
-  session does not wait.
+- Network access on the first start: `uvx` downloads `trelix-mcp==3.5.1`, `trelix==3.5.1` and
+  their dependencies (about 280 MiB in the uv cache; about 10 s measured on one fast connection,
+  longer on a slow one, and later starts take about a second). Run the warm-up command below
+  once so the first session does not wait.
 - An embedding provider (see [Embeddings](#embeddings)): the plugin's server has no local model.
 
 ## Install
@@ -34,7 +36,7 @@ release and never points at a version PyPI does not have. The current pin is in 
 ```bash
 claude plugin marketplace add sairam0424/trelix
 claude plugin install trelix@trelix
-uvx --from trelix-mcp==3.5.1 trelix-mcp --version   # one-time warm-up; prints "trelix-mcp 3.5.1"
+uvx --from trelix-mcp==3.5.1 --with trelix==3.5.1 trelix-mcp --version   # one-time warm-up; prints "trelix-mcp 3.5.1"
 ```
 
 The server registers as `plugin:trelix:trelix` (`/mcp` in a session lists plugin servers), and
@@ -50,7 +52,7 @@ tells Claude which case applies.
 
 | When | Command | Purpose |
 |---|---|---|
-| Session start, by Claude Code | `uvx --from trelix-mcp==3.5.1 trelix-mcp --tools core` | The MCP server over stdio |
+| Session start, by Claude Code | `uvx --from trelix-mcp==3.5.1 --with trelix==3.5.1 trelix-mcp --tools core` | The MCP server over stdio |
 | Session start (`startup`, `resume`, `clear`), by Claude Code, 15 s timeout | `uv run --no-project --script "${CLAUDE_PLUGIN_ROOT}/scripts/session_start.py"` | One line on stdout: whether this project has a trelix index |
 | Inside that script, only when the index records the commit it was built from | `git -C <project> rev-list --count <commit>..HEAD` (5 s timeout, `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0`) | How many commits HEAD is ahead of the index |
 
@@ -175,7 +177,7 @@ claude plugin marketplace remove trelix   # from the last scope that declares it
   names. The other eight (the federation, agent-session and subscription tools) are hidden, not
   removed, and a call to one is answered as an unknown tool; to have all fifteen, register the
   server yourself without the flag, for example
-  `claude mcp add --transport stdio trelix -- uvx --from trelix-mcp==3.5.1 trelix-mcp`
+  `claude mcp add --transport stdio trelix -- uvx --from trelix-mcp==3.5.1 --with trelix==3.5.1 trelix-mcp`
   (the command under Embeddings does the same and also installs the local embedder), and
   toggle the plugin's server off. 3.5.1 also sends the model short server instructions (about
   1,200 characters under `core`: the order to call the tools in); they say nothing about
@@ -183,7 +185,17 @@ claude plugin marketplace remove trelix   # from the last scope that declares it
   `index_codebase` first, while the skill tells it to ask you before indexing; the permission
   prompt on `index_codebase` is what keeps that decision with you. A later change moves the pin
   once the next release is on PyPI.
-- **`plugin.json` `version` equals the pin** (a literal in `tests/unit/test_claude_plugin_manifest.py`).
+- **The core `trelix==3.5.1` is pinned beside it, with `--with`.** `trelix-mcp` declares only a
+  minimum core version, so a launch that pinned `trelix-mcp` alone let `uvx` take the newest
+  `trelix` on PyPI each time it resolved, and a core release would have changed what the plugin
+  runs with no plugin update (the plugin that pinned the previous release already started core
+  3.5.1). The tools answer through the core (the `No index found` error and the trace file that
+  `search_code` writes both come from it), so the two are pinned to one release, and what this
+  README says a tool answers is about that pair. This narrows the float; it is not a lock: the
+  other dependencies of the two packages still resolve within the ranges the two declare. A
+  test fails when the two pins differ.
+- **`plugin.json` `version` is the pin, or `<pin>.N` for a plugin-only change** (a literal in
+  `tests/unit/test_claude_plugin_manifest.py`; `3.5.1.1` is the release that added the core pin).
   A hash over this directory's contents makes every edit here fail that test until its literal
   is updated; the failure message asks for the `version` bump, which no test can see.
 - **The SessionStart hook prints plain text** (which Claude Code adds to the session context),

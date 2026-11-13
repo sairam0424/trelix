@@ -75,10 +75,12 @@
 #   * trufflehog's action defaults `version: latest` and pulls that Docker tag at run time,
 #     so the CLI version is pinned explicitly at each call site below.
 #
-# Two pins here are NOT dependabot-managed and must be refreshed by hand: `semgrep==1.173.0`
-# and `pip-audit==2.10.1` are installed by `run:` steps, which no ecosystem watches. That is
-# the price of an exact pin on a blocking gate; the alternative (pyproject's `semgrep>=1.60.0`
-# floor, which dependabot does see) leaves the gate's engine free to change under it.
+# `semgrep` and `pip-audit` are exact pins on a blocking gate, installed by `run:` steps, which
+# no Dependabot ecosystem reads. So the pins live in .github/requirements/ instead:
+# requirements-semgrep.in (`semgrep==1.173.0`) and requirements-pip-audit.in (`pip-audit==2.10.1`),
+# each with a hashed closure in the matching .txt that the steps install with `--require-hashes`.
+# Dependabot's pip entry for that directory (dependabot.yml) proposes the bumps. The alternative
+# (pyproject's `semgrep>=1.60.0` floor) leaves the gate's engine free to change under it.
 
 name: Security Scan
 
@@ -130,9 +132,12 @@ jobs:
 
       # Exact pin, not the `>=1.60.0` floor in pyproject's `taint` extra: this job is a
       # blocking gate, and a gate whose engine can change under it is not a gate. 1.173.0
-      # is the version the 0-finding baseline in the header was measured on.
+      # is the version the 0-finding baseline in the header was measured on. The pin is in
+      # .github/requirements/requirements-semgrep.in; the .txt is its hashed closure, installed
+      # with --require-hashes so semgrep's own dependencies cannot change under the gate either.
+      # A Dependabot bump of semgrep arrives as a PR on which this job re-measures the baseline.
       - name: Install semgrep
-        run: pip install --quiet "semgrep==1.173.0"
+        run: pip install --quiet --require-hashes -r .github/requirements/requirements-semgrep.txt
 
       # --metrics=off: a security job should not phone home, and the rules file's own
       # header argues for offline reproducibility. No `--error` here — findings must not
@@ -295,12 +300,14 @@ jobs:
       # pip-audit goes in a second venv of its own. Installed alongside the project it
       # would audit its OWN dependency tree too (cyclonedx-python-lib, packageurl, ...) and
       # report the scanner's advisories as the product's. A venv rather than pipx so the
-      # step depends on nothing beyond the interpreter setup-python just installed.
+      # step depends on nothing beyond the interpreter setup-python just installed. pip-audit
+      # comes from .github/requirements/requirements-pip-audit.txt (exact version, hashes,
+      # --require-hashes), the same file verify-release.yml installs.
       - name: Install pip-audit
         run: |
           set -euo pipefail
           python -m venv /tmp/auditor
-          /tmp/auditor/bin/python -m pip install --quiet "pip-audit==2.10.1"
+          /tmp/auditor/bin/python -m pip install --quiet --require-hashes -r .github/requirements/requirements-pip-audit.txt
 
       # --vulnerability-service osv: OSV carries both GHSA and PYSEC entries, which is what
       # produced the 10-of-288 figure in the header; the default `pypi` service sees fewer.
