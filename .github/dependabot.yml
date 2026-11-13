@@ -180,18 +180,24 @@ updates:
 
   # ./Dockerfile — the base image for both published GHCR tags.
   #
-  # Read the PRs from this entry as decisions, not chores. `FROM python:3.11-slim` is a
-  # floating minor tag, so there is no patch stream for dependabot to follow: the only
-  # updates it can offer are 3.12/3.13/3.14-slim, and taking one moves the shipped runtime
+  # Read the tag PRs from this entry as decisions, not chores. `FROM python:3.11-slim` is a
+  # floating minor tag, so there is no patch stream of tags for dependabot to follow: the only
+  # tag updates it can offer are 3.12/3.13/3.14-slim, and taking one moves the shipped runtime
   # off the 3.11 that ci.yml's lint job, release.yml (4 jobs) and build-binaries.yml all
   # pin via setup-python. Two of those three are the publish path. ci.yml's test matrix
   # does already run 3.12/3.13/3.14, and requires-python is ">=3.12", so a bump to
   # 3.12-slim is tested — but 3.14-slim is not tested anywhere. Limit 2 so a bump that is
   # declined for that reason does not accumulate.
   #
-  # Base-image CVEs are NOT what this entry reports — a Debian security update inside
-  # python:3.11-slim republishes the same tag and changes no line in the Dockerfile. That
-  # signal comes from the `image` job in security-scan.yml, which scans the built image.
+  # Both FROM lines carry `@sha256:<index digest>` after the tag: OSSF Scorecard's
+  # Pinned-Dependencies check flags a FROM without one, and
+  # tests/unit/test_dockerfile_base_images_pinned.py keeps it that way. Dependabot moves the
+  # digest when the tag is re-pushed, so a Debian security rebuild of the base image arrives
+  # as a one-line PR (on the weekly schedule; the cooldown below may hold it back a further
+  # week) instead of silently changing the next build. A PR that changes only the digest is
+  # an exception to the tag PRs described above, a chore and not a decision: merge it once the
+  # `docker-build` job in ci.yml is green. The `image` job in security-scan.yml still scans
+  # the built image and says whether the pinned base is behind a fixable HIGH.
   - package-ecosystem: "docker"
     directory: "/"
     target-branch: "develop"
@@ -204,8 +210,10 @@ updates:
 
   # infra/github-app/Dockerfile — the App image (build context is the repo root; see the
   # Dockerfile's header). Same reading as the entry above: a base-image bump moves the runtime
-  # the App ships on, so treat these PRs as decisions. Limit 2 for the same reason as the root
-  # entry.
+  # the App ships on, so treat a PR that changes a tag as a decision. Limit 2 for the same
+  # reason as the root entry. Its four FROM lines (two node, two python) carry the same
+  # `@sha256:` pins, so most PRs here change only a digest; merge those once the `docker-build`
+  # job in github-app-ci.yml is green.
   - package-ecosystem: "docker"
     directory: "/infra/github-app"
     target-branch: "develop"

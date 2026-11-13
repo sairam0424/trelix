@@ -8,7 +8,7 @@ authoritative list of every command it runs. This page is the user guide.
 
 | Component | What it is | How you see it |
 |---|---|---|
-| MCP server `trelix` | The published `trelix-mcp` release that `plugins/trelix/.mcp.json` pins, launched by `uvx` with `--tools core` | Server `plugin:trelix:trelix`; tools `mcp__plugin_trelix_trelix__<tool>` |
+| MCP server `trelix` | The published `trelix-mcp` release that `plugins/trelix/.mcp.json` pins, with the `trelix` core of the same version, launched by `uvx` with `--tools core` | Server `plugin:trelix:trelix`; tools `mcp__plugin_trelix_trelix__<tool>` |
 | Skill `use-trelix-index` | When to search with trelix, how to page, when to fall back to grep | `/trelix:use-trelix-index` |
 | SessionStart hook | One line of context at session start: whether the project has a trelix index, how old it is, which `repo_path` to pass | A line starting `trelix:` in the session context (`uv run --no-project --script` runs `plugins/trelix/scripts/session_start.py`) |
 
@@ -21,16 +21,17 @@ The plugin starts the server with `--tools core`, which lists seven of its fifte
 `graph_search_mcp` and `ask_agent`, every tool the skill names. The other eight (the federation,
 agent-session and subscription tools) are hidden, not removed, and a call to one is answered as an
 unknown tool. To have all fifteen, register the server yourself without the flag, for example
-`claude mcp add --transport stdio trelix -- uvx --from trelix-mcp==<pin> trelix-mcp`, and toggle
-the plugin's server `plugin:trelix:trelix` off in `/mcp` (see [Embeddings](#embeddings)).
+`claude mcp add --transport stdio trelix -- uvx --from trelix-mcp==<pin> --with trelix==<pin> trelix-mcp`,
+and toggle the plugin's server `plugin:trelix:trelix` off in `/mcp` (see
+[Embeddings](#embeddings)).
 
 ## Prerequisites
 
 - `uv` on your `PATH` (the server launch and the SessionStart hook both run through it). `uvx`
   fetches a Python >= 3.12 if none is available.
-- Network access on the first start, when `uvx` downloads the pinned `trelix-mcp` and its
-  dependencies (about 280 MiB in the uv cache; about 10 s measured on one fast connection,
-  longer on a slow one, and about a second on later starts).
+- Network access on the first start, when `uvx` downloads the pinned `trelix-mcp`, the `trelix`
+  core of the same version and their dependencies (about 280 MiB in the uv cache; about 10 s
+  measured on one fast connection, longer on a slow one, and about a second on later starts).
 - An embedding provider: the plugin's server does not install the `local` embedder (see
   [Embeddings](#embeddings)).
 
@@ -45,7 +46,7 @@ To warm the `uvx` cache before the first session, run the server once with `--ve
 the pin from `plugins/trelix/.mcp.json`:
 
 ```bash
-uvx --from trelix-mcp==<pin> trelix-mcp --version
+uvx --from trelix-mcp==<pin> --with trelix==<pin> trelix-mcp --version
 ```
 
 Then open a session in your project. `/mcp` lists plugin servers; the trelix one is
@@ -145,10 +146,14 @@ claude plugin marketplace remove trelix   # from the last scope that declares it
 
 ## How the pin relates to releases
 
-`plugins/trelix/.mcp.json` pins the newest *published* `trelix-mcp` with `==`. A release PR never
-touches it, so `main` never points at a version PyPI does not have yet; after PyPI shows a new
-release, a separate PR moves the pin and `plugin.json`'s `version`. The plugin therefore trails
-this repository by one release. A test fails when the pin is newer than the repository's own
+`plugins/trelix/.mcp.json` pins the newest *published* `trelix-mcp`, and the `trelix` core of the
+same version, with `==`. `trelix-mcp` declares only a minimum core version, so without the second
+pin `uvx` would take the newest `trelix` on PyPI each time it resolves. The pins narrow that
+float; they are not a lock, because the other dependencies of the two packages still resolve
+within the ranges the two declare. A release PR never touches them, so `main` never points at a
+version PyPI does not have yet; after PyPI shows a new release, a separate PR moves both pins and
+`plugin.json`'s `version`. The plugin therefore trails this repository by one release. A test
+fails when the two pins differ, when the pin is newer than the repository's own
 stamp or names a version with no `## [X.Y.Z]` CHANGELOG section. Marketplaces are fetched from
 the repository's default branch, so a change becomes installable when it reaches `main`. CI also
 runs Claude Code's own `claude plugin validate --strict` (a pinned release of

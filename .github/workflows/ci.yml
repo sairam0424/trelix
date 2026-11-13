@@ -151,6 +151,8 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     strategy:
+      # Optional 3.13/3.14 legs must not cancel the required 3.12 leg: each leg reports its own result, and the workflow still fails if any leg fails.
+      fail-fast: false
       matrix:
         # 3.14 is here because Dockerfile's base image moves to python:3.14-slim (#165).
         # Without this leg the shipped container would run a Python the suite has never
@@ -384,6 +386,18 @@ jobs:
           python-version: "3.12"
       - name: Install project + dev deps
         run: pip install -e ".[local,otel,sso,dev]"
+      # Same grammar cache and prefetch as the unit job: a GitHub 504 on a grammar download
+      # failed this required check on 2026-11-09. A warm cache avoids the download.
+      - name: Locate tree-sitter grammar cache dir
+        id: ts-cache
+        run: echo "dir=$(python -c 'from tree_sitter_language_pack import cache_dir; print(cache_dir())')" >> "$GITHUB_OUTPUT"
+      - name: Cache tree-sitter grammars
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.ts-cache.outputs.dir }}
+          key: tree-sitter-language-pack-${{ hashFiles('pyproject.toml') }}
+      - name: Prefetch tree-sitter grammars
+        run: python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
       # The suite indexes fixture repos with the local embedder, so a fresh runner
       # has to download the sentence-transformers model on first use — HF_HUB_OFFLINE
       # is deliberately NOT set here. That download is the main reason this job is
@@ -445,6 +459,17 @@ jobs:
         run: pip install -e ".[local,otel,sso,dev]"
       - name: Install trelix-mcp, trelix-langchain, trelix-llama-index
         run: pip install -e packages/trelix-mcp -e packages/trelix-langchain -e packages/trelix-llama-index
+      # Same grammar cache and prefetch as the unit job (see the Integration Tests job above).
+      - name: Locate tree-sitter grammar cache dir
+        id: ts-cache
+        run: echo "dir=$(python -c 'from tree_sitter_language_pack import cache_dir; print(cache_dir())')" >> "$GITHUB_OUTPUT"
+      - name: Cache tree-sitter grammars
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.ts-cache.outputs.dir }}
+          key: tree-sitter-language-pack-${{ hashFiles('pyproject.toml') }}
+      - name: Prefetch tree-sitter grammars
+        run: python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
       - name: Cache Hugging Face hub
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
