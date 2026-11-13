@@ -1349,8 +1349,8 @@ claude plugin marketplace update trelix && claude plugin update trelix@trelix   
 On the first session after installing, the cold start downloads the pinned `trelix-mcp` through
 `uvx`, so the server may show as connecting or failed until that finishes.
 Warm the cache once with the launch command from `plugins/trelix/.mcp.json` plus `--version`
-(`uvx --from trelix-mcp==<pin> trelix-mcp --version`), then start a new session or run
-`/reload-plugins`. `uv` must be on your `PATH`.
+(`uvx --from trelix-mcp==<pin> --with trelix==<pin> trelix-mcp --version`), then start a new
+session or run `/reload-plugins`. `uv` must be on your `PATH`.
 
 ### `index_codebase` fails or returns 0 files
 

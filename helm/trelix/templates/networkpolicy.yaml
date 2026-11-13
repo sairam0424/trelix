@@ -1,3 +1,4 @@
+{{- include "trelix.requireCurrentValues" . -}}
 {{- if .Values.networkPolicy.enabled -}}
 {{- /*
 Ingress only, off by default. The pod accepts connections on its container port(s) from pods in

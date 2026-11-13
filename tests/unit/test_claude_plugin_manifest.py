@@ -42,7 +42,15 @@ EXPECTED_MCP_JSON = {
     "mcpServers": {
         "trelix": {
             "command": "uvx",
-            "args": ["--from", "trelix-mcp==3.5.1", "trelix-mcp", "--tools", "core"],
+            "args": [
+                "--from",
+                "trelix-mcp==3.5.1",
+                "--with",
+                "trelix==3.5.1",
+                "trelix-mcp",
+                "--tools",
+                "core",
+            ],
         }
     }
 }
@@ -62,10 +70,11 @@ EXPECTED_PLUGIN_FILES = [
 ]
 # sha256 over `rel_path\0bytes\0` for every file above, in that order. Any edit under
 # plugins/trelix/ changes it and must come with a bump of plugin.json's `version`.
-_PLUGIN_TREE_SHA256 = "9cbd652dcd134c7dc1aad0537af5332a069fd11f78f83882b5c4d2a982082346"
+_PLUGIN_TREE_SHA256 = "79ddddb7c837770f2f33e9bc9de2c80221e1c20a3a7bf86fb41460620ec5ff5b"
 # The row of the README's "Every command the plugin executes" table that is the server launch.
 _README_LAUNCH_ROW = (
-    "| Session start, by Claude Code | `uvx --from trelix-mcp==3.5.1 trelix-mcp --tools core` "
+    "| Session start, by Claude Code | "
+    "`uvx --from trelix-mcp==3.5.1 --with trelix==3.5.1 trelix-mcp --tools core` "
     "| The MCP server over stdio |"
 )
 # Every `trelix-mcp`, `trelix[local]` or bare `trelix` version specifier in the README, with its
@@ -139,7 +148,7 @@ def test_plugin_manifest_uses_default_component_locations() -> None:
 
     version = data["version"]
     pin = _pin()
-    assert version == "3.5.1", (
+    assert version == "3.5.1.1", (
         f"plugin version is {version!r}: move this literal with every plugin bump (the "
         f"trelix-mcp pin is {pin!r}; `{pin}.N` is the form for a plugin-only change)"
     )
@@ -160,7 +169,21 @@ def test_mcp_json_is_exactly_the_pinned_uvx_launch() -> None:
     with MCP_PYPROJECT.open("rb") as handle:
         scripts = tomllib.load(handle)["project"]["scripts"]
     args = EXPECTED_MCP_JSON["mcpServers"]["trelix"]["args"]
-    assert args[2] in scripts, f"{args[2]!r} is not a console script of packages/trelix-mcp"
+    assert args[4] in scripts, f"{args[4]!r} is not a console script of packages/trelix-mcp"
+
+
+def test_mcp_json_pins_core_to_the_same_release_as_trelix_mcp() -> None:
+    """`trelix-mcp` only requires `trelix>=X`, so a launch that pins `trelix-mcp` alone lets `uvx`
+    take the newest core on PyPI whenever it resolves. All four distributions ship on one core
+    tag, so the core pin is always the `trelix-mcp` pin.
+
+    MUTATIONS that must make this fail: drop `--with trelix==X`; set it to `trelix==3.5.0` while
+    the trelix-mcp pin stays at 3.5.1 (uv answers `No solution found` at every start); loosen it
+    to `trelix>=3.5.1`; add a second `--with`.
+    """
+    args = json.loads(MCP_JSON.read_text(encoding="utf-8"))["mcpServers"]["trelix"]["args"]
+    assert args.count("--with") == 1, f"expected exactly one --with in {args!r}"
+    assert args[args.index("--with") + 1] == f"trelix=={_pin()}"
 
 
 def test_pin_trails_the_core_stamp_and_names_a_released_section() -> None:

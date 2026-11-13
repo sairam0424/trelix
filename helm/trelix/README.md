@@ -137,14 +137,19 @@ can break one off, each behind a single value. The chart needs Kubernetes 1.19 o
 service-account token, a `RuntimeDefault` seccomp profile, no privilege escalation, no
 capabilities and CPU and memory requests. A sidecar or injector that authenticates with the pod's
 token (a Vault Agent injector, for example) stops working until you set
-`serviceAccount.automount=true`. `helm upgrade --reuse-values` fails to render, as it did for
-`mcp` in 0.2.7, because the old release's values have no `networkPolicy`: use
-`--reset-then-reuse-values`, which needs Helm 3.14 or newer. With an older Helm, run
-`helm get values RELEASE -o yaml > values.yaml`, then
-`helm upgrade RELEASE helm/trelix --reset-values -f values.yaml`. If you already set
-`resources.limits` below the new requests (under `250m` CPU or `512Mi` memory) and no
-`resources.requests`, the API server rejects the Deployment, since a request may not exceed its
-limit: set `resources.requests` at or below your limits.
+`serviceAccount.automount=true`. `helm upgrade --reuse-values` is refused with a message that names
+the fix (chart 0.3.0 failed with `nil pointer evaluating interface {}.enabled` instead). It
+replaces the chart's defaults with the old release's values, which have no `networkPolicy`, so it
+would keep the old `image.tag` and leave out the hardening above. Use `--reset-then-reuse-values`,
+which needs Helm 3.14 or newer: it starts from the chart's defaults and puts your old overrides on
+top. With an older Helm, run `helm get values RELEASE -o yaml > values.yaml`, then
+`helm upgrade RELEASE helm/trelix --reset-values -f values.yaml`. The check looks for the
+`networkPolicy` key, so `--reuse-values --set networkPolicy.enabled=false` gets past it and gives
+the partial upgrade it exists to prevent: do not combine them. From a chart older than 0.2.7 the
+first failure is still the missing `mcp` values (a nil pointer error, since 0.2.7), and the fix is
+the same. If you already set `resources.limits` below the new requests (under `250m` CPU or `512Mi`
+memory) and no `resources.requests`, the API server rejects the Deployment, since a request may not
+exceed its limit: set `resources.requests` at or below your limits.
 
 **Going back.** In a values file, set `serviceAccount.automount: true`, `securityContext: null`,
 `resources: null` and `podSecurityContext.seccompProfile: null` (on the command line,

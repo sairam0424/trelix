@@ -11,19 +11,19 @@
 # both — this image needs Node (to run the Express service) AND Python +
 # `trelix` (to run `trelix index`/`trelix review` as subprocesses).
 
-FROM node:24-bookworm-slim AS node-deps
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node-deps
 WORKDIR /app
 COPY infra/github-app/package.json infra/github-app/package-lock.json ./
 RUN npm ci --omit=dev
 
-FROM node:24-bookworm-slim AS node-builder
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node-builder
 WORKDIR /app
 COPY infra/github-app/package.json infra/github-app/package-lock.json ./
 RUN npm ci
 COPY infra/github-app/ .
 RUN npm run build
 
-FROM python:3.14-slim AS python-deps
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS python-deps
 WORKDIR /build
 
 # build-essential covers any optional-dependency wheel that needs a
@@ -46,7 +46,7 @@ COPY src/ src/
 # sentence-transformers/torch.
 RUN pip install --no-cache-dir --prefix=/python-install .
 
-FROM python:3.14-slim AS runtime
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS runtime
 
 # Same CVE mitigation as the root Dockerfile's runtime stage, for the same
 # reason: this stage shares that exact base image (python:3.14-slim), so
@@ -62,10 +62,17 @@ FROM python:3.14-slim AS runtime
 # already published the fix (3.5.7-1~deb13u2) but the upstream base image
 # has not been rebuilt against it yet, so pull it explicitly here instead
 # of waiting on an image rebuild or doing a blanket `apt-get upgrade -y`.
+#
+# CVE-2026-85091 and CVE-2026-76844 (zlib1g): the same gap. The base image
+# pinned above (rebuilt 2026-11-05) ships 1:1.3.dfsg+really1.3.1-1+b1;
+# trixie-security has the fix in 1:1.3.dfsg+really1.3.1-1+deb13u1. Once the
+# pinned digest moves to a base image built past that, naming zlib1g here
+# changes nothing and the line can go.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3t64 \
         openssl \
         openssl-provider-legacy \
+        zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 # Node 24 (LTS, end of life 2028-04-30; Node 20 reached end of life on

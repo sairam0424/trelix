@@ -85,7 +85,9 @@ from __future__ import annotations
 
 import errno
 import hmac
+import json
 import logging
+import re
 from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import Any
@@ -326,6 +328,40 @@ class GraphSearchResultModel(BaseModel):
     source: str
 
 
+# Every code point UTF-8 cannot encode: the surrogates. A JSON body can carry one ("\ud800"; a
+# JavaScript string may hold half of a pair, and a Python client that reads a file with
+# errors="surrogateescape" sends the undecodable byte 0xff as "\udcff"), json.loads accepts it,
+# and every later .encode("utf-8") and the JSON response writer refuse it.
+_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def _readable_text(text: str) -> str:
+    """``text`` with each surrogate replaced by U+FFFD, one for one.
+
+    U+FFFD is the replacement character ``Path.read_text(encoding="utf-8", errors="replace")``
+    writes for bytes UTF-8 cannot decode (the indexer reads its files that way). The count can
+    differ from a file's: a lone surrogate's three UTF-8 bytes would give three on disk, one here.
+    One character stays one character, so no line or column moves. A valid pair has already been
+    joined into one character by ``json.loads`` and is kept.
+    """
+    return _SURROGATE.sub("\N{REPLACEMENT CHARACTER}", text)
+
+
+def _same_secret(supplied: str, expected: str) -> bool:
+    """Constant-time equality of a header value and a configured secret.
+
+    ``supplied`` is a header, which Starlette decodes as latin-1, so ``encode("latin-1")`` gives
+    back the bytes on the wire; ``expected`` is compared as UTF-8 (``surrogateescape``: an
+    environment variable holding a byte that is not UTF-8 reaches Python as a lone surrogate, and
+    gets its byte back). ``hmac.compare_digest`` on two ``str`` raises ``TypeError`` for a
+    non-ASCII character in either, which any caller could trigger with ``X-Trelix-Api-Key: é``
+    and which answered 500 instead of 401.
+    """
+    return hmac.compare_digest(
+        supplied.encode("latin-1"), expected.encode("utf-8", "surrogateescape")
+    )
+
+
 def _echoable(path: Path) -> str:
     """``path`` as response text. A file name that is not UTF-8 reaches Python as a lone
     surrogate ("\\udcff") that Starlette cannot encode, so it is written out as an escape."""
@@ -384,6 +420,8 @@ def create_app(
     """
     try:
         from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+        from fastapi.encoders import jsonable_encoder
+        from fastapi.exceptions import RequestValidationError
         from fastapi.responses import JSONResponse, StreamingResponse  # noqa: F401
     except ImportError as e:
         raise ImportError(
@@ -412,6 +450,26 @@ def create_app(
     @app.exception_handler(ImportError)
     async def _import_error_handler(request: Request, exc: ImportError) -> JSONResponse:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    class _EscapingJSONResponse(JSONResponse):
+        """``JSONResponse`` that writes a surrogate as its JSON escape (``\\ud800``) instead of
+        failing: UTF-8 cannot hold one, and the escape is how JSON spells it."""
+
+        def render(self, content: object) -> bytes:
+            return json.dumps(
+                content, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            ).encode("utf-8", "backslashreplace")
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # FastAPI's own handler, with one difference: each error echoes the caller's `input`
+        # (for a model error the whole body), and a body holding a lone surrogate made that
+        # answer a 500 instead of the 422.
+        return _EscapingJSONResponse(
+            status_code=422, content={"detail": jsonable_encoder(exc.errors())}
+        )
 
     # Read once at app construction, not per-request — TRELIX_API_AUTH_TOKEN
     # unset means every route stays open (today's behavior, unchanged).
@@ -477,7 +535,7 @@ def create_app(
              becomes a real ``sub@iss`` principal (JIT-provisioned); a
              present-but-invalid token is a 401.
           2. **Static token** — ``X-Trelix-Api-Key`` compared via
-             ``hmac.compare_digest``, exactly as before.
+             ``hmac.compare_digest`` (on bytes: see ``_same_secret``).
           3. **Open** — neither OIDC nor a static token configured: every route
              stays open (unchanged default); principal = ``"static-token"``.
           4. Otherwise (auth configured but no valid credential): 401.
@@ -522,9 +580,9 @@ def create_app(
                 scheme, _, raw_token = authorization.partition(" ")
                 if scheme.lower() == "bearer" and raw_token:
                     bearer_token = raw_token
-            valid = (
-                x_trelix_api_key is not None and hmac.compare_digest(x_trelix_api_key, token)
-            ) or (bearer_token is not None and hmac.compare_digest(bearer_token, token))
+            valid = (x_trelix_api_key is not None and _same_secret(x_trelix_api_key, token)) or (
+                bearer_token is not None and _same_secret(bearer_token, token)
+            )
             if not valid:
                 logger.warning("Rejected request: missing or invalid API credential")
                 raise HTTPException(status_code=401, detail="Invalid or missing API key")
@@ -913,7 +971,11 @@ def create_app(
                     raise _unusable_path("file_path", body.file_path, exc) from None
             else:
                 file_name = body.file_name or ""
-                source = body.content or ""
+                # A lone surrogate in `content` ("\ud800") is no text any parser can take:
+                # most of them encode it as UTF-8, and the symbol names the rest copy out of it
+                # cannot be written to the response either. Read it as the disk-backed branch
+                # above reads bytes it cannot decode.
+                source = _readable_text(body.content or "")
 
             language = detect_language(Path(file_name))
             parser = get_parser(language)

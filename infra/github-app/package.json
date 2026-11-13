@@ -20,14 +20,15 @@
     "@octokit/auth-app": "^8.3.1",
     "@octokit/rest": "^22.0.1",
     "@octokit/webhooks-methods": "^6.0.0",
-    "express": "^5.2.1"
+    "express": "^5.3.0"
   },
   "devDependencies": {
     "@octokit/types": "^16.0.0",
     "@types/express": "^5.0.6",
-    "@types/node": "^24.19.1",
+    "@types/node": "^24.19.2",
     "@types/supertest": "^7.2.1",
-    "supertest": "^7.3.0",
+    "fast-check": "^4.10.2",
+    "supertest": "^7.3.1",
     "tsx": "^4.23.15",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"

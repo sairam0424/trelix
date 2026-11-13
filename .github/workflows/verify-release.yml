@@ -135,11 +135,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pip-audit + verify_release.py's own runtime needs
+      # Hashed lock, not a bare `pip-audit`. The pin is in
+      # .github/requirements/requirements-pip-audit.in and the closure in the .txt next to it
+      # (the same pair security-scan.yml installs); Dependabot proposes the bumps.
+      #
+      # This lock covers ONLY this runner-level install. The pip-audit that
+      # scripts/verify_release.py runs is not this one: check_security_audit builds its own venv
+      # and runs `pip install pip-audit` there, with no version and no hashes, inside the
+      # "Run scripts/verify_release.py" step below, where GH_TOKEN (`github.token`) is set.
+      # Hash-locking that install means changing the script (install from this lock with
+      # --require-hashes); that is not part of this change.
+      - name: Install pip-audit on the runner (verify_release.py installs its own, unhashed)
         if: steps.sibling.outputs.ready == 'true'
-        run: python -m pip install --quiet pip-audit
+        run: python -m pip install --quiet --require-hashes -r .github/requirements/requirements-pip-audit.txt
 
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         if: steps.sibling.outputs.ready == 'true'
 
       - name: Run scripts/verify_release.py

@@ -47,7 +47,9 @@ _APP_CI = _WORKFLOWS / "github-app-ci.yml"
 
 _SETUP_NODE_PREFIX = "actions/setup-node@"
 _FROM_NODE = re.compile(r"^FROM\s+node:\S+", re.MULTILINE | re.IGNORECASE)
-_PINNED_FROM_NODE = re.compile(r"^FROM node:24-bookworm-slim AS \w[\w-]*$", re.MULTILINE)
+_PINNED_FROM_NODE = re.compile(
+    r"^FROM node:24-bookworm-slim(?:@sha256:[0-9a-f]{64})? AS \w[\w-]*$", re.MULTILINE
+)
 _NODE_BINARY_COPY = re.compile(
     r"^COPY --from=node-builder /usr/local/bin/node /usr/local/bin/node$", re.MULTILINE
 )
