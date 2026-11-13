@@ -80,6 +80,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     requires `trelix` 3.5.1 or newer, so `trelix-mcp==3.5.1` with `trelix[local]==3.5.0` cannot
     be installed. The README command now reads `trelix[local]==3.5.1`; a server you registered
     earlier keeps the pins you gave it.
+- **CI: a failing optional Python 3.13 or 3.14 leg no longer cancels the required
+  `Test (Python 3.12)` check, and the Integration and E2E jobs now cache and prefetch the
+  tree-sitter grammars like the unit job.** Every leg now runs to the end (the workflow still
+  fails if any leg fails). A GitHub 504 while downloading a grammar, which failed the required
+  Integration Tests check on 2026-11-09, now finds a warm cache; a cold cache during a GitHub
+  outage still fails, at the prefetch step instead of inside a test. This touches only
+  `.github/workflows/ci.yml`, so nothing in a release changes.
 
 ## [3.5.1] — 2026-10-29
 
