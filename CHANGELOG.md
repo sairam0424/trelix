@@ -68,6 +68,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Two nearby cases are unchanged and still answer `500`: a bare `NaN` or `Infinity` in a body that
   fails validation, and bytes that are not UTF-8 sent with a content type other than JSON.
 
+### Added
+- **Property tests for the GitHub App's sanitiser, for contributors only
+  (`infra/github-app/tests/sanitize-property.test.ts`, fast-check, fixed seed): `sanitizeText`
+  keeps to its cap, leaves no active markup, writes a single line when asked and returns plain
+  text unchanged, and `sanitizeAnnotationPath` accepts only a short, relative, clean path.**
+  `fast-check` is a development dependency of `infra/github-app`, so the App image and the wheels
+  carry no new code.
+
 ### Changed
 - **The Claude Code plugin now runs `trelix-mcp` 3.5.1, still started with `--tools core`, and
   its version is 3.5.1.** Update with `claude plugin marketplace update trelix` and
