@@ -89,6 +89,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   text unchanged, and `sanitizeAnnotationPath` accepts only a short, relative, clean path.**
   `fast-check` is a development dependency of `infra/github-app`, so the App image and the wheels
   carry no new code.
+- **Seven contributor reference pages under `docs/codebase/`.** `ARCHITECTURE.md`,
+  `CONCERNS.md`, `CONVENTIONS.md`, `INTEGRATIONS.md`, `STACK.md`, `STRUCTURE.md` and `TESTING.md`
+  summarise the repository's stack, layout, architecture, coding conventions, integrations, test
+  setup and known concerns. They were added by #582, which was merged straight to `main`;
+  promotions run from `develop` to `main`, so `develop` never had them. They are now on `develop`
+  too, identical to the copies on `main`. They are reference for people working on the code, not
+  part of the product: the wheels and the images do not include them, and no code or behaviour
+  changes.
 
 ### Changed
 - **The Claude Code plugin now pins the `trelix` core package beside `trelix-mcp`, and its version
@@ -143,6 +151,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Integration Tests check on 2026-11-09, now finds a warm cache; a cold cache during a GitHub
   outage still fails, at the prefetch step instead of inside a test. This touches only
   `.github/workflows/ci.yml`, so nothing in a release changes.
+- **`workspace-vscode/package-lock.json` is refreshed within the version ranges it already
+  allows.** Only the lockfile changes (#583): `package.json` and every range it declares are
+  untouched. `@azure/identity` goes from 4.13.1 to 4.14.1, which takes `@azure/msal-node` from
+  5.4.0 to 7.1.2; `@hono/node-server` goes from 2.1.1 to 2.1.3 and `serialize-javascript` from
+  7.1.0 to 7.1.3. `open`, `wsl-utils` and `default-browser` move up because `@azure/identity`
+  4.14.1 requires newer ones, `bundle-name` also moves from 4.1.0 to 4.1.1 inside the range
+  `default-browser` already declares. `@azure/core-process` (required by `@azure/identity`) and
+  `is-in-ssh` and `powershell-utils` (required by `open` and `wsl-utils`) are new in the
+  lockfile. This affects the VS Code extension's dependency tree only, not the Python packages or
+  the GitHub App.
 
 ## [3.5.1] — 2026-10-29
 
