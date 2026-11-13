@@ -195,6 +195,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Pinned-Dependencies code-scanning alerts (numbers 148, 152, 154 and 180), which close after this
   reaches `main` and Scorecard next scans it (alert 154 is the runner-level install, not the
   script's). It changes no published package or image.
+- **Helm chart 0.3.1: `helm upgrade --reuse-values` from a 0.2.x release is refused with a message
+  that names the fix.** Chart 0.3.0 failed on it with `nil pointer evaluating interface
+  {}.enabled` at `templates/networkpolicy.yaml`. `--reuse-values` replaces the chart's defaults
+  with the old release's values, and those have no `networkPolicy`. A render that got past that
+  would not have been an upgrade to 0.3.0: the release would keep its old `image.tag` and get none
+  of the seccomp profile, dropped capabilities or resource requests that 0.3.0 turns on. The chart
+  now stops, and the message says to run `helm upgrade --reset-then-reuse-values` (Helm 3.14 or
+  newer), or `--reset-values` with your overrides in a values file. `--reuse-values --set
+  networkPolicy.enabled=false` still gets past the check, and gives that partial upgrade: do not
+  use it. `--set networkPolicy=null` is refused the same way (it failed with the nil pointer
+  before).
+  - *A release whose values have the key renders as under 0.3.0.* A default install and
+    `networkPolicy.enabled` set to `true` or `false` differ only in the chart label
+    (`helm.sh/chart: trelix-0.3.1`) and, where the chart owns a Secret, in the `checksum/secret`
+    annotation that hashes it, checked for the sqlite, lance and qdrant backends. That annotation
+    covers the chart label, so a release whose Secret the chart owns (a plaintext `apiAuth.token`,
+    a store API key or `mcp.auth.token`) rolls its pod once on the upgrade to 0.3.1; a release
+    with `existingSecretName` Secrets only does not.
+  - *From a chart older than 0.2.7 the first failure is still `mcp`.* `--reuse-values` there ends
+    in a nil pointer error on `.Values.mcp.enabled` in `service.yaml`, as since 0.2.7; the fix is
+    the same.
 
 ## [3.5.1] — 2026-10-29
 

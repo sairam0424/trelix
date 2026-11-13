@@ -117,6 +117,27 @@ jobs:
           fi
           grep -qF 'mcp.enabled needs persistence.enabled' <<< "$ERR"
 
+      # `helm upgrade --reuse-values` replaces the chart's defaults with the old release's values,
+      # which have no networkPolicy key from before chart 0.3.0. Without a cluster the same input
+      # is the chart minus its values.yaml plus the frozen 0.2.8 values: the chart must refuse it
+      # with its own message, not a nil pointer error. The chart with its defaults and those
+      # values on top is what `--reset-then-reuse-values` builds, and must render.
+      - name: Helm template refuses the values of a chart 0.2.x release
+        if: matrix.backend == 'sqlite'
+        run: |
+          CHART="$RUNNER_TEMP/trelix-reuse-values/trelix"
+          mkdir -p "$CHART"
+          cp -R helm/trelix/Chart.yaml helm/trelix/templates "$CHART/"
+          if ERR=$(helm template test "$CHART" -f tests/fixtures/helm/values-chart-0.2.8.yaml 2>&1); then
+            echo "::error::values with no networkPolicy key rendered"; exit 1
+          fi
+          grep -qF 'The values predate chart 0.3.0' <<< "$ERR"
+          grep -qF 'helm upgrade --reset-then-reuse-values' <<< "$ERR"
+          if grep -qF 'nil pointer' <<< "$ERR"; then
+            echo "::error::the refusal is a nil pointer error again"; exit 1
+          fi
+          helm template test helm/trelix -f tests/fixtures/helm/values-chart-0.2.8.yaml > /dev/null
+
   # ---------------------------------------------------------------------------
   # The `lint` job above only checks chart CORRECTNESS (does it lint, does it render,
   # does the image tag match appVersion) — it says nothing about the security posture of
