@@ -257,8 +257,16 @@ class TestStrataAndValidatedShare:
 
         assert result.exit_code == 2
         assert result.stdout == ""
-        needle = f"Invalid value for '{option}': {value} is not in the range"
-        assert plain(needle) in plain(result.stderr)
+        stderr = plain(result.stderr)
+        header = f"Invalid value for '{option}': "
+        # typer up to 0.28 says "<value> is not in the range"; 0.29 validates with Pydantic and
+        # says "Input should be greater/less than or equal to <bound>".
+        wordings = (
+            f"{value} is not in the range",
+            "Input should be greater than or equal to",
+            "Input should be less than or equal to",
+        )
+        assert any(plain(header + wording) in stderr for wording in wordings), result.stderr
 
 
 class TestAV1FileGetsOnlyTheV1Checks:
