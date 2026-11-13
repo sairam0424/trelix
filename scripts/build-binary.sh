@@ -31,12 +31,9 @@ fi
 
 echo "==> Python: $(python --version)"
 
-# 2. Install project + PyInstaller
+# 2. Install project + PyInstaller (the dev extra requires pyinstaller>=6.0.0)
 echo "==> Installing trelix[local,dev] (editable)"
 pip install --quiet -e ".[local,dev]"
-
-echo "==> Installing PyInstaller"
-pip install --quiet "pyinstaller>=6.0.0"
 
 # 3. Run PyInstaller
 echo "==> Running PyInstaller (trelix.spec) ..."

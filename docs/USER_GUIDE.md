@@ -1833,7 +1833,7 @@ curl -s "http://localhost:8765/search?query=where+are+tokens+refreshed&repo=./my
 
 `POST /parse` runs trelix's Tree-sitter parser over a single file **without touching the index** — no DB write, no embedding call. It is meant for editor or pre-commit tooling that wants structural info (symbols, signatures, edge counts) on unsaved or not-yet-indexed content.
 
-Exactly one of `file_path` (disk-backed, relative paths are resolved against `repo_path`) or `content` (inline unsaved text) must be set — the request is rejected with `422` if both or neither are set. `file_name` is required whenever `content` is set, so the parser can detect the language from the extension (also `422` if missing).
+Exactly one of `file_path` (disk-backed, relative paths are resolved against `repo_path`) or `content` (inline unsaved text) must be set — the request is rejected with `422` if both or neither are set. `file_name` is required whenever `content` is set, so the parser can detect the language from the extension (also `422` if missing). A lone surrogate in `content` (a JSON escape such as `\ud800`) is parsed as U+FFFD instead of being rejected.
 
 **Disk-backed file:**
 
