@@ -17,6 +17,7 @@
 #   npm             /infra/github-app                (@trelix/github-app)
 #   docker          /                                (ghcr.io/sairam0424/trelix[-local])
 #   docker          /infra/github-app                (the App image)
+#   pip             /.github/requirements            (CI tool and gate runtimes, hash-pinned; not published)
 #   github-actions  /
 #
 # Dependabot only reports advisories it can fix by moving a version constraint it can see.
@@ -223,6 +224,30 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 2
+
+  # .github/requirements/ — hash-pinned installs for CI tooling (semgrep, pip-audit, and the
+  # schema-drift job's runtime). Workflows install them with `pip install --require-hashes -r`, so
+  # a changed upload on the index fails the install instead of running. The files are named
+  # requirements-*.txt so Dependabot's pip fetcher recognises them by name; where a tool has a
+  # requirements-<tool>.in, Dependabot pairs it with the .txt of the same basename. One group,
+  # because most lines are transitive pins and a PR per line is noise. Major bumps are reviewed
+  # by hand, as in the root pip entry above.
+  - package-ecosystem: "pip"
+    directory: "/.github/requirements"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    groups:
+      ci-tool-requirements:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"

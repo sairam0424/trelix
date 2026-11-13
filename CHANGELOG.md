@@ -173,6 +173,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `azure/setup-helm` step in `helm-lint.yml` and `verify-release.yml` now says `# v5.0.1`, the tag
   that commit has, instead of the floating `# v5`, which has since moved to another commit; the
   pin itself is unchanged. For contributors; nothing changes for users of the package.
+- **For contributors: CI installs semgrep, pip-audit and the schema-drift runtime from
+  hash-locked requirements.** `security-scan.yml` (semgrep and pip-audit), `verify-release.yml`
+  (the pip-audit it installs on the runner) and `schema-drift.yml` (the `[serve]` runtime) now run
+  `pip install --require-hashes -r .github/requirements/requirements-<name>.txt`, so the files pip
+  unpacks must match the hashes recorded in the repository and a changed upload on the index
+  fails the job instead of running. The versions do not change: semgrep 1.173.0 and pip-audit
+  2.10.1, which `verify-release.yml` used to take as whatever was newest. `schema-drift.yml` now
+  installs trelix itself with `--no-deps` and runs `pip check`, which fails the job if the lock
+  has fallen behind a floor in `dependencies` in `pyproject.toml`. It does not check the `serve`
+  extra (`fastapi`, `uvicorn`), because `pip check` ignores a package's extras: regenerate the
+  lock by hand when that extra changes (the command is on its first lines). The locks are
+  compiled with `--exclude-newer`, so nothing in them was published less than a week before they
+  were made, and a new Dependabot `pip` entry for `/.github/requirements` proposes bumps as one
+  weekly group. Not covered: `scripts/verify_release.py` builds its own venv and runs
+  `pip install pip-audit` in it with no version and no hashes, and that copy is the only
+  pip-audit `verify-release.yml` runs (nothing in the job calls the locked runner-level one),
+  with the job token in its environment; hash-locking it is a change to the script and is left
+  for a separate change. `schema-drift.yml` also still fetches its build backend (`hatchling`)
+  unpinned when it builds trelix. This addresses four OSSF Scorecard
+  Pinned-Dependencies code-scanning alerts (numbers 148, 152, 154 and 180), which close after this
+  reaches `main` and Scorecard next scans it (alert 154 is the runner-level install, not the
+  script's). It changes no published package or image.
 
 ## [3.5.1] — 2026-10-29
 
