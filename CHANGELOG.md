@@ -216,6 +216,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   - *From a chart older than 0.2.7 the first failure is still `mcp`.* `--reuse-values` there ends
     in a nil pointer error on `.Values.mcp.enabled` in `service.yaml`, as since 0.2.7; the fix is
     the same.
+- **Development tooling and CI pins moved to newer releases, and one runtime dependency of the
+  GitHub App moved with them.** The VS Code extension's lockfile now resolves `hono` 4.13.16 and
+  `@hono/node-server` 2.1.6, the patched releases for the open Dependabot alerts and the
+  `npm audit` advisories on those two packages (neither is bundled into the extension, and its
+  `dist/extension.js` has no `hono` in it). `@modelcontextprotocol/sdk` is `^1.32.2` and
+  `@types/node` is `^26.6.6` in `workspace-vscode` (`@types/node` also in
+  `packages/trelix-typescript`). In `infra/github-app` `@types/node` is `^24.19.2` and
+  `supertest` `^7.3.1` for development, and **`express` is
+  `^5.3.0`, which is a runtime dependency of the hosted GitHub App**, a minor bump that reaches
+  the hosted App with the next promotion to `main`. The pins of `ossf/scorecard-action` (2.5.0),
+  `bridgecrewio/checkov-action` (12.3135.0, which runs checkov 3.3.30), `trufflesecurity/trufflehog`
+  (3.99.4, the scanner version in `security-scan.yml` stays 3.97.0) and
+  `github/codeql-action/init` and `/analyze` (4.39.1) moved, each still pinned to a full commit
+  SHA. Dependabot is now configured to group `github/codeql-action/*`, so that `init` and
+  `analyze` arrive in one pull request instead of two that each split the pair (the next bump
+  will show it). Nothing here changes the wheels or the images.
 
 ## [3.5.1] — 2026-10-29
 

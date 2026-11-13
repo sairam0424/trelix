@@ -259,6 +259,14 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    groups:
+      # codeql.yml runs github/codeql-action/init and /analyze, and the two have to stay on the
+      # same release. Without a group each arrives as its own PR (#578 moved only init, #579
+      # only analyze), and merging either alone leaves the pair on different releases. The
+      # upload-sarif steps join the same PR.
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
     ignore:
       # Ignore major version bumps for Actions — review manually
       - dependency-name: "actions/*"
