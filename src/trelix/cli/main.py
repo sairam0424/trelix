@@ -3455,6 +3455,10 @@ def eval(
     from trelix.core.config import IndexConfig
     from trelix.eval.harness import EvalHarness, aggregate_metrics, write_per_query_file
 
+    # The file is written only after every query has run: refuse a path that cannot be
+    # written now, as `eval-synthesis` does, rather than after the run has been paid for.
+    _check_synthesis_outputs(None, per_query_out)
+
     config = IndexConfig(repo_path=repo)
     if plan_cache_file is not None:
         # Rebuild rather than mutate, so the flag cannot half-apply if validation
@@ -3565,7 +3569,8 @@ def _load_replay_answers(replay: str | None) -> dict[str, str] | None:
 def _check_synthesis_outputs(record: str | None, per_query_out: str | None) -> None:
     """Exit 1, one line per problem and before anything is built or paid for, when `--record` or
     `--per-query-out` cannot be written or both name one file; `eval-suite` checks its `--out` the
-    same way. Advisory: the write at the end of the run still reports a failure, because the
+    same way. `eval` calls it with `record=None`, so only `--per-query-out` is checked.
+    Advisory: the write at the end of the run still reports a failure, because the
     directory can change while the run is paid for."""
     from trelix.eval.synthesis_records import output_file_problems
 

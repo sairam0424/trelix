@@ -15,6 +15,10 @@ the top):
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -359,7 +363,7 @@ class TestEvalCommandPerQueryOut:
         missing = tmp_path / "no-such-directory" / "per-query.json"
         result = _invoke(repo, _write_golden(tmp_path), "--per-query-out", str(missing))
         assert result.exit_code == 1
-        assert "Could not write per-query results" in result.output
+        assert f"--per-query-out: directory {missing.parent} does not exist" in result.output
         assert "Traceback" not in result.output
 
     @pytest.mark.parametrize("path", ["", "."])
@@ -370,7 +374,144 @@ class TestEvalCommandPerQueryOut:
         result = _invoke(repo, _write_golden(tmp_path), "--per-query-out", path)
         assert result.exit_code == 1
         assert isinstance(result.exception, SystemExit)
-        assert "Could not write per-query results" in result.output
+        assert "--per-query-out: . is a directory; name the file itself" in result.output
+
+
+def _plain(text: str) -> str:
+    """Strip the colour codes rich emits when a CI runner forces a terminal."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+_CANNOT_DENY_ACCESS = sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0
+
+
+def _forbid_building_the_harness(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make building the harness fail loudly, and return one entry per attempt to build it.
+
+    A refusal that comes before the run never reaches the harness, so the list stays empty.
+    """
+    built: list[str] = []
+
+    class _Tripwire(EvalHarness):
+        def __init__(self, config: Any) -> None:
+            built.append("built")
+            raise AssertionError("the harness was built before --per-query-out was checked")
+
+    monkeypatch.setattr(harness_module, "EvalHarness", _Tripwire)
+    return built
+
+
+class TestEvalCommandRefusesAnUnwritablePerQueryOutBeforeTheRun:
+    """`--per-query-out` is checked before the harness is built, as `eval-synthesis` does.
+
+    The file is written only after every golden query has run, so a path that can never be
+    written used to cost the whole run before it was reported.
+    """
+
+    @staticmethod
+    def _assert_refused_before_the_run(result: Any, built: list[str], line: str) -> None:
+        """Refused through `typer.Exit`: nothing was built, stdout is empty, stderr is `line`."""
+        assert built == []
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert result.stdout == ""
+        assert _plain(result.stderr).splitlines() == [line]
+
+    def test_a_missing_directory_is_refused_before_anything_runs(
+        self, tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built = _forbid_building_the_harness(monkeypatch)
+        missing = tmp_path / "no-such-directory" / "per-query.json"
+
+        result = _invoke(repo, _write_golden(tmp_path), "--per-query-out", str(missing))
+
+        self._assert_refused_before_the_run(
+            result, built, f"--per-query-out: directory {missing.parent} does not exist"
+        )
+
+    def test_an_existing_directory_is_refused_before_anything_runs(
+        self, tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built = _forbid_building_the_harness(monkeypatch)
+        a_directory = tmp_path / "results"
+        a_directory.mkdir()
+
+        result = _invoke(repo, _write_golden(tmp_path), "--per-query-out", str(a_directory))
+
+        self._assert_refused_before_the_run(
+            result, built, f"--per-query-out: {a_directory} is a directory; name the file itself"
+        )
+
+    def test_a_parent_that_is_a_file_is_refused_before_anything_runs(
+        self, tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built = _forbid_building_the_harness(monkeypatch)
+        parent = tmp_path / "a-file"
+        parent.write_text("not a directory", encoding="utf-8")
+
+        result = _invoke(repo, _write_golden(tmp_path), "--per-query-out", str(parent / "out.json"))
+
+        self._assert_refused_before_the_run(
+            result, built, f"--per-query-out: {parent} is not a directory"
+        )
+
+    @pytest.mark.skipif(_CANNOT_DENY_ACCESS, reason="root and Windows ignore permission bits")
+    def test_a_directory_that_cannot_be_written_is_refused_before_anything_runs(
+        self, tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built = _forbid_building_the_harness(monkeypatch)
+        read_only = tmp_path / "read-only"
+        read_only.mkdir()
+        read_only.chmod(0o500)
+        try:
+            result = _invoke(
+                repo, _write_golden(tmp_path), "--per-query-out", str(read_only / "out.json")
+            )
+        finally:
+            read_only.chmod(0o700)
+
+        self._assert_refused_before_the_run(
+            result, built, f"--per-query-out: cannot write in {read_only}"
+        )
+
+
+class TestEvalCommandStillReportsAWriteThatFailsAfterTheRun:
+    """The pre-run check is advisory: the write at the end of the run reports its own failure.
+
+    The directory can change while the run is going, so a path that passed the check can still
+    fail to be written. The refusal tests above cover the check; this one covers the write.
+    """
+
+    def test_a_directory_removed_during_the_run_is_reported_and_exits_one(
+        self, tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        out_dir = tmp_path / "results"
+        out_dir.mkdir()
+        ran: list[str] = []
+
+        class _RemovesTheDirectory(EvalHarness):
+            def __init__(self, config: Any) -> None:
+                self._config = config
+                self._retriever = _StubRetriever(_RANKED)
+                self._rerank_outcomes = ()
+
+            def run_detailed(self, golden_path: str, **kwargs: Any) -> list[QueryRecord]:
+                records = super().run_detailed(golden_path, **kwargs)
+                shutil.rmtree(out_dir)
+                ran.append("ran")
+                return records
+
+        monkeypatch.setattr(harness_module, "EvalHarness", _RemovesTheDirectory)
+
+        result = _invoke(
+            repo, _write_golden(tmp_path), "--per-query-out", str(out_dir / "per-query.json")
+        )
+
+        assert ran == ["ran"]
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "Could not write per-query results" in _plain(result.output)
+        assert "Traceback" not in result.output
 
 
 class TestEvalCommandFailsWhenAQueryRaised:

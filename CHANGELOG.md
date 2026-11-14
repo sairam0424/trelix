@@ -47,6 +47,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   a `400`, and the cause is in the server log. A failure that is not about the name (a failing
   device, a stale network handle, a full disk) still ends in `500`, and so does a failure of the
   default `.trelix/graph.html`, which no caller named.
+- **`trelix eval --per-query-out` now refuses a path it cannot write before the run starts.**
+  The file is written only after every golden query has run, so a missing directory, a
+  directory given instead of a file name, a parent that is not a directory, or a directory you
+  cannot write to was reported only at the end of the run, and the per-query file was never
+  written (`--per-query-out .` and `--per-query-out ""` ended in `ValueError: PosixPath('.')
+  has an empty name`). The command now exits 1 before it builds the evaluation harness or runs
+  a query, with the same one-line message `eval-synthesis` already prints (for example
+  `--per-query-out: directory <dir> does not exist`). The check is advisory: the write at the
+  end still reports its own failure, because the directory can change while the run is going.
 
 ### Changed
 - **The Claude Code plugin now runs `trelix-mcp` 3.5.1, still started with `--tools core`, and
