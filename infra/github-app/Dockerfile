@@ -23,7 +23,7 @@ RUN npm ci
 COPY infra/github-app/ .
 RUN npm run build
 
-FROM python:3.14-slim AS python-deps
+FROM python:3.15-slim AS python-deps
 WORKDIR /build
 
 # build-essential covers any optional-dependency wheel that needs a
@@ -46,7 +46,7 @@ COPY src/ src/
 # sentence-transformers/torch.
 RUN pip install --no-cache-dir --prefix=/python-install .
 
-FROM python:3.14-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 # Same CVE mitigation as the root Dockerfile's runtime stage, for the same
 # reason: this stage shares that exact base image (python:3.14-slim), so
