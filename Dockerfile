@@ -5,7 +5,7 @@
 #   docker build --build-arg EXTRAS=serve,local    -> ghcr.io/sairam0424/trelix:X.Y.Z-local  (bundles sentence-transformers/torch)
 # See .github/workflows/docker-publish.yml for the release-time build matrix.
 
-FROM python:3.14-slim AS builder
+FROM python:3.15-slim AS builder
 
 ARG EXTRAS=serve
 
@@ -38,7 +38,7 @@ RUN pip install --no-cache-dir --prefix=/install \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         ".[${EXTRAS}]" ./packages/trelix-mcp
 
-FROM python:3.14-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 # CVE-2026-14456 (libssl3t64 / openssl / openssl-provider-legacy): python:3.14-slim's
 # plain trixie/main apt suite still ships the vulnerable 3.5.6-1~deb13u2 build.
